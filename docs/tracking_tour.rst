@@ -1,8 +1,8 @@
 Tracking Fit Tour
 =================
 
-A tour of :class:`~adelmo.tracking.fitter.ArcByArcFitter` and
-:class:`~adelmo.tracking.fitter.ACDMarkerFitter`: what each part of the code does, in the
+A tour of :class:`~accelmo.tracking.fitter.ArcByArcFitter` and
+:class:`~accelmo.tracking.fitter.ACDMarkerFitter`: what each part of the code does, in the
 order it runs. Underlined words are defined in the :ref:`tour-glossary` at the bottom
 of the page.
 
@@ -20,10 +20,10 @@ The idea
 Package map
 -----------
 
-``adelmo.config``
+``accelmo.config``
     ``OptimiserConfig`` and ``SimulationConfig``.
 
-``adelmo.tracking``
+``accelmo.tracking``
     The tracking fitters.
 
     * ``fitter.py``: the fitter classes
@@ -33,7 +33,7 @@ Package map
     * ``worker.py``: the tracking worker
     * ``sgd/loop.py``: the optimisation loop
 
-``adelmo.fitting``
+``accelmo.fitting``
     Parts shared with the closed-orbit fitters.
 
     * ``setup.py``: model, BPM list, starting knobs
@@ -41,16 +41,16 @@ Package map
     * ``protocol.py``: messages between processes
     * ``reduction.py``: sums the worker results
 
-``adelmo.machine``
+``accelmo.machine``
     Accelerator models.
 
     * ``accelerators/``: LHC, SPS, PSB, FCC
     * ``mad/``: MAD-NG setup and tracking scripts
 
-``adelmo.optimisers``
+``accelmo.optimisers``
     Update rules: ``adam.py``, ``lbfgs.py``.
 
-``adelmo.measurements``
+``accelmo.measurements``
     Preprocessing.
 
     * ``reconstruction.py``: raw data → fitter input
@@ -70,7 +70,7 @@ Preprocessing
 -------------
 
 Turns raw turn-by-turn BPM data into the :term:`parquet` file the fitter reads.
-Entry point: :func:`~adelmo.measurements.reconstruction.process_single_dataframe`,
+Entry point: :func:`~accelmo.measurements.reconstruction.process_single_dataframe`,
 called once per :term:`bunch`.
 
 .. code-block:: text
@@ -168,7 +168,7 @@ Trace one fit
 -------------
 
 From ``fitter = ArcByArcFitter(...)`` to ``fitter.run()``. Paths are relative to
-``src/adelmo/``.
+``src/accelmo/``.
 
 1. Construction (main process)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -290,7 +290,7 @@ From ``fitter = ArcByArcFitter(...)`` to ``fitter.run()``. Paths are relative to
      - Each worker sends its part of the uncertainty matrices, then stops.
    * - Return the result
      - ``tracking/fitter.py``
-     - Returns a :class:`~adelmo.fitting.results.FitResult` with the fitted knobs and
+     - Returns a :class:`~accelmo.fitting.results.FitResult` with the fitted knobs and
        their uncertainties.
 
 Messages between processes

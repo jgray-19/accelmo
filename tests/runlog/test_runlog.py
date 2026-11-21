@@ -5,8 +5,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from adelmo.runlog import RunLog, StageLog, find_stages
-from adelmo.runlog.writer import KNOBS_FILE
+from accelmo.runlog import RunLog, StageLog, find_stages
+from accelmo.runlog.writer import KNOBS_FILE
 
 
 def _write_stage(directory, name="fit", steps=3) -> RunLog:
@@ -67,7 +67,7 @@ def test_find_stages_orders_by_start_time(tmp_path) -> None:
 
 def test_files_are_reopened_while_logging(tmp_path, monkeypatch) -> None:
     """Closing and reopening the files (so AFS publishes them) loses no rows."""
-    monkeypatch.setattr("adelmo.runlog.writer.REOPEN_SECONDS", 0.0)
+    monkeypatch.setattr("accelmo.runlog.writer.REOPEN_SECONDS", 0.0)
     run_log = _write_stage(tmp_path / "stage", steps=4)
     first_handle = run_log._history
     run_log.log(4, loss=1.0)

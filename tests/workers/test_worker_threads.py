@@ -7,8 +7,8 @@ from types import SimpleNamespace
 import pytest
 from threadpoolctl import threadpool_info, threadpool_limits
 
-from adelmo.config import SimulationConfig
-from adelmo.fitting.worker import AbstractWorker
+from accelmo.config import SimulationConfig
+from accelmo.fitting.worker import AbstractWorker
 
 
 def _blas_threads() -> set[int]:

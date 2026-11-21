@@ -38,14 +38,14 @@ runs:
         enable-cache: true
         activate-environment: true
         cache-dependency-glob: |
-          sgd-magnet-tuner/pyproject.toml
+          accelmo/pyproject.toml
           pymadng-utils/pyproject.toml
           tmom-recon/pyproject.toml
           xtrack-tools/pyproject.toml
 
     - name: Install package and local dependencies
       shell: bash
-      working-directory: sgd-magnet-tuner
+      working-directory: accelmo
       run: |
         uv pip install --upgrade pip setuptools wheel
         uv pip install \

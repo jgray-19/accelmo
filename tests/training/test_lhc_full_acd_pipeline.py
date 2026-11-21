@@ -38,17 +38,17 @@ from xtrack_tools.acd import run_ac_dipole_tracking
 from xtrack_tools.env import initialise_env
 from xtrack_tools.monitors import process_tracking_data
 
-from adelmo.config import OptimiserConfig, SimulationConfig
-from adelmo.fitting.config import OutputConfig, SequenceConfig
-from adelmo.machine.accelerators import LHC
-from adelmo.machine.mad import GradientDescentMadInterface
-from adelmo.measurements.acd_pipeline import (
+from accelmo.config import OptimiserConfig, SimulationConfig
+from accelmo.fitting.config import OutputConfig, SequenceConfig
+from accelmo.machine.accelerators import LHC
+from accelmo.machine.mad import GradientDescentMadInterface
+from accelmo.measurements.acd_pipeline import (
     ACDOpticsAnalysisConfig,
     run_driven_and_compensated_optics,
 )
-from adelmo.measurements.reference import reconstruction_frame
-from adelmo.tracking.config.models import MeasurementConfig, MeasurementDetails
-from adelmo.tracking.fitter import ACDMarkerFitter, FitterOptions
+from accelmo.measurements.reference import reconstruction_frame
+from accelmo.tracking.config.models import MeasurementConfig, MeasurementDetails
+from accelmo.tracking.fitter import ACDMarkerFitter, FitterOptions
 
 pytest.importorskip("tmom_recon")
 
@@ -273,7 +273,7 @@ def _reconstruct(*, root: Path, machine: LhcMachine, compensated_dir: Path) -> p
     # is now its own call rather than an attrs side effect.
     #
     # Dispersion stays on the model, as it does in production
-    # (adelmo/measurements/reconstruction.py): a single AC-dipole
+    # (accelmo/measurements/reconstruction.py): a single AC-dipole
     # acquisition measures no dispersion, so the compensated omc3 directory has
     # none. OpticsInput refuses to substitute the model silently, so requesting
     # "dispersion": "measurement" here raises rather than warning.

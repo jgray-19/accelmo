@@ -21,14 +21,14 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pytest
 
-from adelmo.fitting.config import SequenceConfig
-from adelmo.machine.accelerators import PSB
-from adelmo.poco import (
+from accelmo.fitting.config import SequenceConfig
+from accelmo.machine.accelerators import PSB
+from accelmo.poco import (
     ClosedOrbitMeasurement,
     ClosedOrbitSeries,
     LevenbergMarquardtConfig,
 )
-from adelmo.poco.calibrated import CalibratedClosedOrbitFitter
+from accelmo.poco.calibrated import CalibratedClosedOrbitFitter
 
 from .test_closed_orbit_machine_state import KWARGS, STATES, TRIM, _orbit, _quad_globals, _truth
 

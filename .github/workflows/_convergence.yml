@@ -28,14 +28,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
         with:
-          path: sgd-magnet-tuner
+          path: accelmo
           persist-credentials: false
 
       - name: Setup CI environment
-        uses: ./sgd-magnet-tuner/.github/actions/setup-ci
+        uses: ./accelmo/.github/actions/setup-ci
 
       - name: Run convergence tests
-        working-directory: sgd-magnet-tuner
+        working-directory: accelmo
         run: |
           pytest -ra \
             ${{ matrix.tests }} \

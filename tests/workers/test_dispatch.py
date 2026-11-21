@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import resource
 
-from adelmo.fitting import protocol
-from adelmo.fitting.protocol import distribute, machine_worker_limit
+from accelmo.fitting import protocol
+from accelmo.fitting.protocol import distribute, machine_worker_limit
 
 
 def test_distribute_balances_total_cost():

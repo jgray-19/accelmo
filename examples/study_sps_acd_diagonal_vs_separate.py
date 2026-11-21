@@ -42,12 +42,12 @@ from xtrack_tools.acd import run_ac_dipole_tracking
 from xtrack_tools.env import initialise_env
 from xtrack_tools.monitors import process_tracking_data
 
-from adelmo.config import OptimiserConfig, SimulationConfig
-from adelmo.fitting.config import OutputConfig, SequenceConfig
-from adelmo.machine.accelerators import SPS
-from adelmo.machine.mad.aba_mad_interface import AbaMadInterface
-from adelmo.tracking.config.models import MeasurementConfig, MeasurementDetails
-from adelmo.tracking.fitter import ACDMarkerFitter, FitterOptions
+from accelmo.config import OptimiserConfig, SimulationConfig
+from accelmo.fitting.config import OutputConfig, SequenceConfig
+from accelmo.machine.accelerators import SPS
+from accelmo.machine.mad.aba_mad_interface import AbaMadInterface
+from accelmo.tracking.config.models import MeasurementConfig, MeasurementDetails
+from accelmo.tracking.fitter import ACDMarkerFitter, FitterOptions
 
 LOGGER = logging.getLogger(__name__)
 

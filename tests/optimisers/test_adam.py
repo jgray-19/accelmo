@@ -1,6 +1,6 @@
 import numpy as np
 
-from adelmo.optimisers.adam import AdamOptimiser
+from accelmo.optimisers.adam import AdamOptimiser
 
 
 class TestAdamOptimiser:

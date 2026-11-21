@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from adelmo.optimisers.levenberg_marquardt import (
+from accelmo.optimisers.levenberg_marquardt import (
     LevenbergMarquardtConfig,
     LevenbergMarquardtOptimiser,
 )

@@ -1,7 +1,7 @@
-adelmo
+accelmo
 =============
 
-``adelmo`` estimates accelerator magnet errors (strengths, misalignments and
+``accelmo`` estimates accelerator magnet errors (strengths, misalignments and
 tilts) from beam measurements by gradient-based optimisation of MAD-NG models.
 Supported machines are the LHC, PSB, SPS and FCC.
 
@@ -16,18 +16,18 @@ Two families of fit are provided:
      - Entry points
    * - Tracking
      - Turn-by-turn BPM data tracked through the model
-     - :class:`~adelmo.tracking.fitter.ArcByArcFitter`,
-       :class:`~adelmo.tracking.fitter.ACDMarkerFitter`,
-       :class:`~adelmo.tracking.fitter.KickerFitter`
+     - :class:`~accelmo.tracking.fitter.ArcByArcFitter`,
+       :class:`~accelmo.tracking.fitter.ACDMarkerFitter`,
+       :class:`~accelmo.tracking.fitter.KickerFitter`
    * - Closed orbit
      - Closed orbit and phase advance, at one or more machine states
-     - :class:`~adelmo.poco.closed_orbit.ClosedOrbitFitter`,
-       :class:`~adelmo.poco.calibrated.CalibratedClosedOrbitFitter`
+     - :class:`~accelmo.poco.closed_orbit.ClosedOrbitFitter`,
+       :class:`~accelmo.poco.calibrated.CalibratedClosedOrbitFitter`
    * - Closed twiss
      - Closed orbit, phase advance, beta and dispersion
-     - :class:`~adelmo.poco.fitter.ClosedTwissFitter`
+     - :class:`~accelmo.poco.fitter.ClosedTwissFitter`
 
-All fitters return a :class:`~adelmo.fitting.results.FitResult`.
+All fitters return a :class:`~accelmo.fitting.results.FitResult`.
 
 Installation
 ------------
@@ -53,7 +53,7 @@ Optional dependency groups:
    * - ``measurements``
      - tmom-recon (momentum reconstruction)
    * - ``monitor``
-     - Panel, for the live fit monitor (``python -m adelmo.monitor``)
+     - Panel, for the live fit monitor (``python -m accelmo.monitor``)
    * - ``cern``
      - nxcals (CERN logging database access)
    * - ``test``

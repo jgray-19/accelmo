@@ -6,13 +6,13 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from adelmo.fitting.config import OutputConfig
-from adelmo.fitting.protocol import Evaluate
-from adelmo.fitting.uncertainty import HESSIAN_MIN_EIGENVALUE, sandwich_uncertainties
-from adelmo.fitting.weights import variance_to_weight
-from adelmo.machine.mad import merge_machine_states
-from adelmo.tracking.fitter import ArcByArcFitter, FitterOptions, TrackingFitter
-from adelmo.tracking.uncertainty import (
+from accelmo.fitting.config import OutputConfig
+from accelmo.fitting.protocol import Evaluate
+from accelmo.fitting.uncertainty import HESSIAN_MIN_EIGENVALUE, sandwich_uncertainties
+from accelmo.fitting.weights import variance_to_weight
+from accelmo.machine.mad import merge_machine_states
+from accelmo.tracking.fitter import ArcByArcFitter, FitterOptions, TrackingFitter
+from accelmo.tracking.uncertainty import (
     UncertaintyPart,
     merge_uncertainty_parts,
     noise_matrix,
@@ -148,9 +148,9 @@ def test_controller_worker_hessian_matches_finite_difference_on_reduced_knob_sub
     seq_b1,
     loaded_interface,
 ) -> None:
-    from adelmo.fitting.config import SequenceConfig
-    from adelmo.machine.accelerators import LHC
-    from adelmo.tracking.config.helpers import create_arc_measurement_config
+    from accelmo.fitting.config import SequenceConfig
+    from accelmo.machine.accelerators import LHC
+    from accelmo.tracking.config.helpers import create_arc_measurement_config
     from tests.training.controller_test_utils import (
         _generate_nonoise_track,
         _make_optimiser_config_quad,
@@ -256,10 +256,10 @@ def test_controller_worker_hessian_matches_finite_difference_for_psb_100um_noise
     seq_psb,
     loaded_psb_interface,
 ) -> None:
-    from adelmo.config import OptimiserConfig
-    from adelmo.fitting.config import SequenceConfig
-    from adelmo.machine.accelerators import PSB
-    from adelmo.tracking.config.helpers import create_arc_measurement_config
+    from accelmo.config import OptimiserConfig
+    from accelmo.fitting.config import SequenceConfig
+    from accelmo.machine.accelerators import PSB
+    from accelmo.tracking.config.helpers import create_arc_measurement_config
     from tests.training.controller_test_utils import (
         _generate_nonoise_track,
         _make_simulation_config_quad,

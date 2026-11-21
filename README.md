@@ -1,4 +1,4 @@
-# adelmo
+# accelmo
 
 [![Coverage Status](https://github.com/jgray-19/sgd-magnet-tuner/actions/workflows/coverage.yml/badge.svg)](https://github.com/jgray-19/sgd-magnet-tuner/actions/workflows/coverage.yml)
 [![codecov](https://codecov.io/github/jgray-19/sgd-magnet-tuner/graph/badge.svg?token=Y1KZACDFPL)](https://codecov.io/github/jgray-19/sgd-magnet-tuner)
@@ -34,7 +34,7 @@ Optional dependency groups:
 |---|---|
 | `tracking` | omc3, cpymad, pyarrow, psutil (required by the tracking workflows) |
 | `measurements` | tmom-recon (momentum reconstruction) |
-| `monitor` | Panel, for the live fit monitor (`python -m adelmo.monitor`) |
+| `monitor` | Panel, for the live fit monitor (`python -m accelmo.monitor`) |
 | `cern` | nxcals (CERN logging database access) |
 | `test` | pytest, pytest-cov, pytest-xdist, xtrack-tools |
 | `docs` | Sphinx and theme |
@@ -72,10 +72,10 @@ strengths for diagnostics, output and checkpoint settings, callbacks) go in a
 ```python
 from pathlib import Path
 
-from adelmo.config import OptimiserConfig, SimulationConfig
-from adelmo.fitting.config import OutputConfig, SequenceConfig
-from adelmo.machine.accelerators import LHC
-from adelmo.tracking import (
+from accelmo.config import OptimiserConfig, SimulationConfig
+from accelmo.fitting.config import OutputConfig, SequenceConfig
+from accelmo.machine.accelerators import LHC
+from accelmo.tracking import (
     ArcByArcFitter,
     FitterOptions,
     MeasurementConfig,
@@ -121,7 +121,7 @@ sequence must include the kicker element.
 
 ### Closed-twiss fits
 
-The closed-twiss and closed-orbit fitters live in `adelmo.poco` (Parametric
+The closed-twiss and closed-orbit fitters live in `accelmo.poco` (Parametric
 Optimisation of Closed Orbits) and return the same `FitResult` as the tracking fitters.
 
 `ClosedTwissFitter` fits knobs so that the model's periodic optics match measured
@@ -141,7 +141,7 @@ misalignments observable.
 Measured orbits are always absolute. A plane in `absolute_planes` is fitted as is; every
 other plane is fitted as the change from the fitter's own `machine_state` to the series'
 state, the fitter subtracting each measurement's `reference` orbit. `machine_state` accepts a
-dictionary, a knobs file or a TFS corrector table; `adelmo.machine.mad.merge_machine_states`
+dictionary, a knobs file or a TFS corrector table; `accelmo.machine.mad.merge_machine_states`
 combines several. Accepted iterations are recorded in `fitter.history`, and
 `fitter.close()` shuts down the MAD-NG process.
 
@@ -152,7 +152,7 @@ See `tests/training/test_closed_orbit_machine_state.py`.
 ```bash
 pytest -m "not slow"          # fast suite
 pytest -m slow                # convergence and end-to-end tests
-pytest --cov=adelmo
+pytest --cov=accelmo
 ```
 
 Markers are listed in `pyproject.toml` and `tests/README.md`.

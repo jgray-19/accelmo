@@ -179,7 +179,7 @@ plots/
 artifacts/measurements/plots/
 *.out
 *.png
-!src/adelmo/mad/mad_scripts/
+!src/accelmo/mad/mad_scripts/
 !tests/data
 
 # AFS filesystem temp files

@@ -16,10 +16,10 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from adelmo.config import SimulationConfig
-from adelmo.fitting.protocol import Ack, Command, CommandKind
-from adelmo.fitting.worker import WorkerConfig
-from adelmo.tracking.worker import PrecomputedTrackingWeights, TrackingData, TrackingWorker
+from accelmo.config import SimulationConfig
+from accelmo.fitting.protocol import Ack, Command, CommandKind
+from accelmo.fitting.worker import WorkerConfig
+from accelmo.tracking.worker import PrecomputedTrackingWeights, TrackingData, TrackingWorker
 
 # ---------------------------------------------------------------------------
 # Stubs (no mocking library)
@@ -156,7 +156,7 @@ def _recv_and_ack(child_conn, received_store: list, idx: int) -> None:
 
 def _make_pool(counts: list[int], id_offset: int = 0):
     """A WorkerPool backed by real mp.Pipe() connections; returns it and the child ends."""
-    from adelmo.fitting.pool import WorkerPool
+    from accelmo.fitting.pool import WorkerPool
 
     parent_conns, child_conns = zip(*[mp.Pipe() for _ in counts])
     pool = WorkerPool(
@@ -180,8 +180,8 @@ def _make_real_channels_with_validation(
 
     Only its pools are set: pushing coordinates touches nothing else.
     """
-    from adelmo.fitting.pool import WorkerPool
-    from adelmo.tracking.session import TrackingSession
+    from accelmo.fitting.pool import WorkerPool
+    from accelmo.tracking.session import TrackingSession
 
     wm = object.__new__(TrackingSession)
     wm.training, trn_children = _make_pool(training_counts)
@@ -287,7 +287,7 @@ def test_send_init_condition_updates_also_updates_validation_workers() -> None:
 
 
 def test_initial_conditions_hook_pushes_the_callbacks_coordinates() -> None:
-    from adelmo.tracking.fitter import initial_conditions_hook
+    from accelmo.tracking.fitter import initial_conditions_hook
 
     pushed: list[np.ndarray] = []
     new_coords = np.zeros((5, 4))
@@ -301,7 +301,7 @@ def test_initial_conditions_hook_pushes_the_callbacks_coordinates() -> None:
 
 
 def test_initial_conditions_hook_pushes_nothing_when_the_callback_returns_none() -> None:
-    from adelmo.tracking.fitter import initial_conditions_hook
+    from accelmo.tracking.fitter import initial_conditions_hook
 
     pushed: list[np.ndarray] = []
     hook = initial_conditions_hook(lambda knobs, best: None, {}, pushed.append)
@@ -311,7 +311,7 @@ def test_initial_conditions_hook_pushes_nothing_when_the_callback_returns_none()
 
 
 def test_initial_conditions_hook_reports_step_and_drift() -> None:
-    from adelmo.tracking.fitter import initial_conditions_hook
+    from accelmo.tracking.fitter import initial_conditions_hook
 
     coords = iter([np.zeros((2, 4)), np.ones((2, 4)), np.full((2, 4), 3.0)])
     hook = initial_conditions_hook(lambda knobs, best: next(coords), {}, lambda _: None)
@@ -329,7 +329,7 @@ def test_initial_conditions_hook_includes_non_optimised_strengths() -> None:
     in ``MachineSetup.initial_model_values``. A callback that rebuilds a model from
     the knobs it is handed would otherwise fall back to the bare model defaults.
     """
-    from adelmo.tracking.fitter import initial_conditions_hook
+    from accelmo.tracking.fitter import initial_conditions_hook
 
     seen: list[dict[str, float]] = []
 
@@ -346,7 +346,7 @@ def test_initial_conditions_hook_includes_non_optimised_strengths() -> None:
 
 def test_initial_conditions_hook_keeps_empty_best_knobs_empty() -> None:
     """An empty ``best_knobs`` must stay empty so callbacks can skip early epochs."""
-    from adelmo.tracking.fitter import initial_conditions_hook
+    from accelmo.tracking.fitter import initial_conditions_hook
 
     seen: list[dict[str, float]] = []
     hook = initial_conditions_hook(
@@ -358,7 +358,7 @@ def test_initial_conditions_hook_keeps_empty_best_knobs_empty() -> None:
 
 
 def test_initial_conditions_hook_passes_best_gains_but_not_current_gains() -> None:
-    from adelmo.tracking.fitter import initial_conditions_hook
+    from accelmo.tracking.fitter import initial_conditions_hook
 
     seen = []
 
