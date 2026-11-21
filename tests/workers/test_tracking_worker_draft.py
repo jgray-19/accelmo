@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from adelmo.machine.mad.scripts import dump_debug_script
-from adelmo.tracking.worker import TrackingWorker, active_observables
+from accelmo.machine.mad.scripts import dump_debug_script
+from accelmo.tracking.worker import TrackingWorker, active_observables
 
 
 def _build_worker(*, include_momentum: bool = True) -> TrackingWorker:

@@ -53,16 +53,16 @@ import pandas as pd
 import pytest
 from pymadng_utils.io.utils import save_knobs
 
-from adelmo.fitting.config import SequenceConfig
-from adelmo.machine.accelerators import PSB
-from adelmo.machine.mad import GradientDescentMadInterface
-from adelmo.poco import (
+from accelmo.fitting.config import SequenceConfig
+from accelmo.machine.accelerators import PSB
+from accelmo.machine.mad import GradientDescentMadInterface
+from accelmo.poco import (
     ClosedOrbitFitter,
     ClosedOrbitMeasurement,
     ClosedOrbitSeries,
     LevenbergMarquardtConfig,
 )
-from adelmo.poco.closed_orbit import difference_orbit
+from accelmo.poco.closed_orbit import difference_orbit
 
 from .test_closed_twiss_fitter import _knob_names
 

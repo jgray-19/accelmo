@@ -21,8 +21,8 @@ from omc3.model_creator import create_instance_and_model
 from pymadng_utils.io.utils import save_knobs
 from pymadng_utils.madx.make_sequence import make_madx_sequence
 
-from adelmo.machine.accelerators import LHC
-from adelmo.machine.mad.optimising_mad_interface import GenericMadInterface
+from accelmo.machine.accelerators import LHC
+from accelmo.machine.mad.optimising_mad_interface import GenericMadInterface
 
 BEAM = 1
 ENERGY_GEV = 6800.0

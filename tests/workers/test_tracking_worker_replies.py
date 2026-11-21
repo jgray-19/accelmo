@@ -6,10 +6,10 @@ import multiprocessing as mp
 
 import numpy as np
 
-from adelmo.config import SimulationConfig
-from adelmo.fitting.worker import WorkerConfig
-from adelmo.machine.accelerators import PSB
-from adelmo.tracking.worker import PrecomputedTrackingWeights, TrackingData, TrackingWorker
+from accelmo.config import SimulationConfig
+from accelmo.fitting.worker import WorkerConfig
+from accelmo.machine.accelerators import PSB
+from accelmo.tracking.worker import PrecomputedTrackingWeights, TrackingData, TrackingWorker
 
 
 def _worker(tmp_path, conn) -> TrackingWorker:

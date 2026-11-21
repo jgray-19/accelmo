@@ -7,13 +7,13 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pytest
 
-from adelmo.machine.accelerators import PSB
-from adelmo.machine.mad import GradientDescentMadInterface
+from accelmo.machine.accelerators import PSB
+from accelmo.machine.mad import GradientDescentMadInterface
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from adelmo.machine.mad.aba_mad_interface import AbaMadInterface
+    from accelmo.machine.mad.aba_mad_interface import AbaMadInterface
 
 
 def _get_element_attr(interface: AbaMadInterface, element_name: str, attr: str) -> float:

@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 import pytest
 from pymadng_utils.physics import PROTON_MASS_GEV
 
-from adelmo.machine.accelerators import LHC
+from accelmo.machine.accelerators import LHC
 
 if TYPE_CHECKING:
     from pathlib import Path

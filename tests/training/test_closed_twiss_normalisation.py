@@ -23,11 +23,11 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pytest
 
-from adelmo.config import SimulationConfig
-from adelmo.fitting.worker import WorkerConfig
-from adelmo.machine.accelerators import PSB
-from adelmo.poco.fitter import stamp_global_normalisation
-from adelmo.poco.workers.closed_twiss import (
+from accelmo.config import SimulationConfig
+from accelmo.fitting.worker import WorkerConfig
+from accelmo.machine.accelerators import PSB
+from accelmo.poco.fitter import stamp_global_normalisation
+from accelmo.poco.workers.closed_twiss import (
     ClosedTwissData,
     ClosedTwissWorker,
     Observable,

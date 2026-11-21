@@ -38,17 +38,17 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pytest
 
-from adelmo.config import SimulationConfig
-from adelmo.fitting.worker import WorkerConfig
-from adelmo.machine.accelerators import PSB
-from adelmo.machine.mad import GradientDescentMadInterface
-from adelmo.machine.mad.scripts import CLOSED_TWISS_INIT, PYTHON_IN_MAD
-from adelmo.poco.workers.closed_orbit import (
+from accelmo.config import SimulationConfig
+from accelmo.fitting.worker import WorkerConfig
+from accelmo.machine.accelerators import PSB
+from accelmo.machine.mad import GradientDescentMadInterface
+from accelmo.machine.mad.scripts import CLOSED_TWISS_INIT, PYTHON_IN_MAD
+from accelmo.poco.workers.closed_orbit import (
     ClosedOrbitMeasurementData,
     ClosedOrbitSeriesData,
     ClosedOrbitWorker,
 )
-from adelmo.poco.workers.closed_twiss import (
+from accelmo.poco.workers.closed_twiss import (
     ClosedTwissData,
     ClosedTwissWorker,
     Observable,

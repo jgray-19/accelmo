@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from adelmo.poco.calibration import CalibrationBlocks, gain_covariance
+from accelmo.poco.calibration import CalibrationBlocks, gain_covariance
 
 
 def test_marginal_sigmas_match_the_dense_inverse() -> None:

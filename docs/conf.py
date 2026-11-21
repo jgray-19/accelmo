@@ -16,13 +16,13 @@ if str(SRC_DIR) not in sys.path:
 
 # -- Project information -----------------------------------------------------
 
-project = "adelmo"
+project = "accelmo"
 author = "Joshua Gray"
 current_year = datetime.now().year
 copyright = f"{current_year}, {author}"  # noqa: A001
 
 try:
-    release = importlib.metadata.version("adelmo")
+    release = importlib.metadata.version("accelmo")
 except importlib.metadata.PackageNotFoundError:
     release = "0.1.0"
 version = release
@@ -108,7 +108,7 @@ def setup(app):  # type: ignore[override]
 
 html_theme = "shibuya"
 html_static_path = ["_static"]
-html_title = "adelmo documentation"
+html_title = "accelmo documentation"
 
 # -- Intersphinx configuration ----------------------------------------------
 

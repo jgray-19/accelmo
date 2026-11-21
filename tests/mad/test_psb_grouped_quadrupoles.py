@@ -6,8 +6,8 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from adelmo.machine.accelerators import PSB
-from adelmo.machine.mad import GradientDescentMadInterface
+from accelmo.machine.accelerators import PSB
+from accelmo.machine.mad import GradientDescentMadInterface
 
 if TYPE_CHECKING:
     from pathlib import Path

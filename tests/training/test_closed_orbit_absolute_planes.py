@@ -5,12 +5,12 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from adelmo.poco.workers.closed_orbit import (
+from accelmo.poco.workers.closed_orbit import (
     ClosedOrbitMeasurementData,
     ClosedOrbitSeriesData,
     ClosedOrbitWorker,
 )
-from adelmo.poco.workers.closed_twiss import Observable
+from accelmo.poco.workers.closed_twiss import Observable
 
 
 def _observable(name: str) -> Observable:

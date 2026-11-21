@@ -1,7 +1,7 @@
 API Reference
 =============
 
-The reference covers every module of the ``adelmo`` package. Measurement and campaign
+The reference covers every module of the ``accelmo`` package. Measurement and campaign
 workflows are maintained in separate repositories.
 
 
@@ -11,26 +11,26 @@ Primary Entry Points
 .. autosummary::
    :nosignatures:
 
-   adelmo.machine.accelerators.base.Accelerator
-   adelmo.machine.accelerators.lhc.LHC
-   adelmo.machine.accelerators.psb.PSB
-   adelmo.machine.accelerators.sps.SPS
-   adelmo.machine.accelerators.fcc.FCC
-   adelmo.config.OptimiserConfig
-   adelmo.config.SimulationConfig
-   adelmo.tracking.fitter.ArcByArcFitter
-   adelmo.tracking.fitter.ACDMarkerFitter
-   adelmo.tracking.fitter.KickerFitter
-   adelmo.tracking.fitter.FitterOptions
-   adelmo.tracking.config.models.MeasurementConfig
-   adelmo.fitting.config.SequenceConfig
-   adelmo.fitting.config.OutputConfig
-   adelmo.fitting.results.FitResult
-   adelmo.poco.closed_orbit.ClosedOrbitFitter
-   adelmo.poco.closed_orbit.ClosedOrbitSeries
-   adelmo.poco.calibrated.CalibratedClosedOrbitFitter
-   adelmo.poco.fitter.ClosedTwissFitter
-   adelmo.optimisers.levenberg_marquardt.LevenbergMarquardtConfig
+   accelmo.machine.accelerators.base.Accelerator
+   accelmo.machine.accelerators.lhc.LHC
+   accelmo.machine.accelerators.psb.PSB
+   accelmo.machine.accelerators.sps.SPS
+   accelmo.machine.accelerators.fcc.FCC
+   accelmo.config.OptimiserConfig
+   accelmo.config.SimulationConfig
+   accelmo.tracking.fitter.ArcByArcFitter
+   accelmo.tracking.fitter.ACDMarkerFitter
+   accelmo.tracking.fitter.KickerFitter
+   accelmo.tracking.fitter.FitterOptions
+   accelmo.tracking.config.models.MeasurementConfig
+   accelmo.fitting.config.SequenceConfig
+   accelmo.fitting.config.OutputConfig
+   accelmo.fitting.results.FitResult
+   accelmo.poco.closed_orbit.ClosedOrbitFitter
+   accelmo.poco.closed_orbit.ClosedOrbitSeries
+   accelmo.poco.calibrated.CalibratedClosedOrbitFitter
+   accelmo.poco.fitter.ClosedTwissFitter
+   accelmo.optimisers.levenberg_marquardt.LevenbergMarquardtConfig
 
 
 Accelerators And Configuration
@@ -39,16 +39,16 @@ Accelerators And Configuration
 .. autosummary::
    :toctree: _autosummary
 
-   adelmo.machine
-   adelmo.machine.accelerators
-   adelmo.machine.accelerators.base
-   adelmo.machine.accelerators.lhc
-   adelmo.machine.accelerators.psb
-   adelmo.machine.accelerators.sps
-   adelmo.machine.accelerators.fcc
-   adelmo.machine.accelerators.magnet_grouping
-   adelmo.machine.accelerators.selection
-   adelmo.config
+   accelmo.machine
+   accelmo.machine.accelerators
+   accelmo.machine.accelerators.base
+   accelmo.machine.accelerators.lhc
+   accelmo.machine.accelerators.psb
+   accelmo.machine.accelerators.sps
+   accelmo.machine.accelerators.fcc
+   accelmo.machine.accelerators.magnet_grouping
+   accelmo.machine.accelerators.selection
+   accelmo.config
 
 
 MAD Interface Layer
@@ -57,11 +57,11 @@ MAD Interface Layer
 .. autosummary::
    :toctree: _autosummary
 
-   adelmo.machine.mad
-   adelmo.machine.mad.aba_mad_interface
-   adelmo.machine.mad.optimising_mad_interface
-   adelmo.machine.mad.machine_state
-   adelmo.machine.mad.scripts
+   accelmo.machine.mad
+   accelmo.machine.mad.aba_mad_interface
+   accelmo.machine.mad.optimising_mad_interface
+   accelmo.machine.mad.machine_state
+   accelmo.machine.mad.scripts
 
 
 Closed-Orbit Fitting (POCO)
@@ -70,18 +70,18 @@ Closed-Orbit Fitting (POCO)
 .. autosummary::
    :toctree: _autosummary
 
-   adelmo.poco
-   adelmo.poco.closed_orbit
-   adelmo.poco.calibrated
-   adelmo.poco.fitter
-   adelmo.poco.lm_loop
-   adelmo.poco.prior
-   adelmo.poco.calibration
-   adelmo.poco.workers
-   adelmo.poco.workers.closed_orbit
-   adelmo.poco.workers.closed_twiss
-   adelmo.poco.workers.calibrated
-   adelmo.momentum_reference
+   accelmo.poco
+   accelmo.poco.closed_orbit
+   accelmo.poco.calibrated
+   accelmo.poco.fitter
+   accelmo.poco.lm_loop
+   accelmo.poco.prior
+   accelmo.poco.calibration
+   accelmo.poco.workers
+   accelmo.poco.workers.closed_orbit
+   accelmo.poco.workers.closed_twiss
+   accelmo.poco.workers.calibrated
+   accelmo.momentum_reference
 
 
 Tracking Fits
@@ -90,26 +90,26 @@ Tracking Fits
 .. autosummary::
    :toctree: _autosummary
 
-   adelmo.tracking
-   adelmo.tracking.fitter
-   adelmo.tracking.session
-   adelmo.tracking.ranges
-   adelmo.tracking.data_manager
-   adelmo.tracking.worker
-   adelmo.tracking.dispatch
-   adelmo.tracking.dispatch.payloads
-   adelmo.tracking.dispatch.screening
-   adelmo.tracking.dispatch.setup
-   adelmo.tracking.dispatch.turn_planner
-   adelmo.tracking.uncertainty
-   adelmo.tracking.sgd
-   adelmo.tracking.sgd.loop
-   adelmo.tracking.sgd.scheduler
-   adelmo.tracking.sgd.checkpointing
-   adelmo.tracking.config
-   adelmo.tracking.config.helpers
-   adelmo.tracking.config.models
-   adelmo.tracking.config.tracking
+   accelmo.tracking
+   accelmo.tracking.fitter
+   accelmo.tracking.session
+   accelmo.tracking.ranges
+   accelmo.tracking.data_manager
+   accelmo.tracking.worker
+   accelmo.tracking.dispatch
+   accelmo.tracking.dispatch.payloads
+   accelmo.tracking.dispatch.screening
+   accelmo.tracking.dispatch.setup
+   accelmo.tracking.dispatch.turn_planner
+   accelmo.tracking.uncertainty
+   accelmo.tracking.sgd
+   accelmo.tracking.sgd.loop
+   accelmo.tracking.sgd.scheduler
+   accelmo.tracking.sgd.checkpointing
+   accelmo.tracking.config
+   accelmo.tracking.config.helpers
+   accelmo.tracking.config.models
+   accelmo.tracking.config.tracking
 
 
 Shared Fitting Base
@@ -118,19 +118,19 @@ Shared Fitting Base
 .. autosummary::
    :toctree: _autosummary
 
-   adelmo.fitting
-   adelmo.fitting.setup
-   adelmo.fitting.config
-   adelmo.fitting.protocol
-   adelmo.fitting.worker
-   adelmo.fitting.shared_reference
-   adelmo.fitting.pool
-   adelmo.fitting.lifecycle
-   adelmo.fitting.reduction
-   adelmo.fitting.weights
-   adelmo.fitting.bpm_gains
-   adelmo.fitting.uncertainty
-   adelmo.fitting.results
+   accelmo.fitting
+   accelmo.fitting.setup
+   accelmo.fitting.config
+   accelmo.fitting.protocol
+   accelmo.fitting.worker
+   accelmo.fitting.shared_reference
+   accelmo.fitting.pool
+   accelmo.fitting.lifecycle
+   accelmo.fitting.reduction
+   accelmo.fitting.weights
+   accelmo.fitting.bpm_gains
+   accelmo.fitting.uncertainty
+   accelmo.fitting.results
 
 
 Optimisers And Numerical Helpers
@@ -139,11 +139,11 @@ Optimisers And Numerical Helpers
 .. autosummary::
    :toctree: _autosummary
 
-   adelmo.optimisers
-   adelmo.optimisers.base
-   adelmo.optimisers.adam
-   adelmo.optimisers.lbfgs
-   adelmo.optimisers.levenberg_marquardt
+   accelmo.optimisers
+   accelmo.optimisers.base
+   accelmo.optimisers.adam
+   accelmo.optimisers.lbfgs
+   accelmo.optimisers.levenberg_marquardt
 
 
 Measurement Preparation
@@ -152,13 +152,13 @@ Measurement Preparation
 .. autosummary::
    :toctree: _autosummary
 
-   adelmo.measurements
-   adelmo.measurements.acd_pipeline
-   adelmo.measurements.preprocessing
-   adelmo.measurements.reconstruction
-   adelmo.measurements.reference
-   adelmo.measurements.variances
-   adelmo.measurements.noise
+   accelmo.measurements
+   accelmo.measurements.acd_pipeline
+   accelmo.measurements.preprocessing
+   accelmo.measurements.reconstruction
+   accelmo.measurements.reference
+   accelmo.measurements.variances
+   accelmo.measurements.noise
 
 
 Analysis
@@ -167,8 +167,8 @@ Analysis
 .. autosummary::
    :toctree: _autosummary
 
-   adelmo.analysis
-   adelmo.analysis.degeneracy_checker
+   accelmo.analysis
+   accelmo.analysis.degeneracy_checker
 
 
 Run Logs And Monitor
@@ -177,12 +177,12 @@ Run Logs And Monitor
 .. autosummary::
    :toctree: _autosummary
 
-   adelmo.runlog
-   adelmo.runlog.reader
-   adelmo.runlog.writer
-   adelmo.monitor
-   adelmo.monitor.source
-   adelmo.monitor.view
-   adelmo.monitor.cache
-   adelmo.monitor.panels
-   adelmo.monitor.app
+   accelmo.runlog
+   accelmo.runlog.reader
+   accelmo.runlog.writer
+   accelmo.monitor
+   accelmo.monitor.source
+   accelmo.monitor.view
+   accelmo.monitor.cache
+   accelmo.monitor.panels
+   accelmo.monitor.app
