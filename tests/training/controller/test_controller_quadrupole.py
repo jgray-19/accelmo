@@ -11,11 +11,11 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pytest
 
-from adelmo.fitting.config import OutputConfig, SequenceConfig
-from adelmo.machine.accelerators import LHC
-from adelmo.machine.mad import merge_machine_states
-from adelmo.tracking.config.helpers import create_arc_measurement_config
-from adelmo.tracking.fitter import ArcByArcFitter, FitterOptions
+from accelmo.fitting.config import OutputConfig, SequenceConfig
+from accelmo.machine.accelerators import LHC
+from accelmo.machine.mad import merge_machine_states
+from accelmo.tracking.config.helpers import create_arc_measurement_config
+from accelmo.tracking.fitter import ArcByArcFitter, FitterOptions
 from tests.training.controller_test_utils import (
     _generate_nonoise_track,
     _make_optimiser_config_quad,
@@ -26,8 +26,8 @@ from tests.training.controller_test_utils import (
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from adelmo.config import OptimiserConfig
-    from adelmo.machine.mad.aba_mad_interface import AbaMadInterface
+    from accelmo.config import OptimiserConfig
+    from accelmo.machine.mad.aba_mad_interface import AbaMadInterface
 
 
 logger = logging.getLogger(__name__)

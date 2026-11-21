@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from adelmo.poco.calibration import (
+from accelmo.poco.calibration import (
     CalibrationBlocks,
     add_series,
     apply_prior,

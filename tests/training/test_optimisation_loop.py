@@ -8,12 +8,12 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from adelmo.config import OptimiserConfig
-from adelmo.fitting.protocol import Evaluate, GradReply, Start, WorkerChannels
-from adelmo.optimisers.adam import AdamOptimiser
-from adelmo.tracking.config.models import CheckpointConfig
-from adelmo.tracking.sgd.checkpointing import OptimisationCheckpointer
-from adelmo.tracking.sgd.loop import SGDLoop
+from accelmo.config import OptimiserConfig
+from accelmo.fitting.protocol import Evaluate, GradReply, Start, WorkerChannels
+from accelmo.optimisers.adam import AdamOptimiser
+from accelmo.tracking.config.models import CheckpointConfig
+from accelmo.tracking.sgd.checkpointing import OptimisationCheckpointer
+from accelmo.tracking.sgd.loop import SGDLoop
 
 
 def _make_loop(
@@ -263,7 +263,7 @@ def test_epoch_end_hook_note_is_appended_to_the_epoch_log_line(caplog) -> None:
     def hook(_knobs: dict[str, float], _best: dict[str, float]) -> str:
         return next(notes)
 
-    with caplog.at_level(logging.INFO, logger="adelmo.tracking.sgd.loop"):
+    with caplog.at_level(logging.INFO, logger="accelmo.tracking.sgd.loop"):
         loop.run(
             {"k1": 0.0},
             _make_channels(1, n_epochs * n_batches),
@@ -285,7 +285,7 @@ def test_epoch_line_omits_the_note_when_the_hook_returns_none(caplog) -> None:
 
     loop = _make_loop(["k1"], max_epochs=1, gradient_converged_value=-1.0)
 
-    with caplog.at_level(logging.INFO, logger="adelmo.tracking.sgd.loop"):
+    with caplog.at_level(logging.INFO, logger="accelmo.tracking.sgd.loop"):
         loop.run(
             {"k1": 0.0},
             _make_channels(1, 1),
@@ -376,7 +376,7 @@ def test_final_checkpoint_records_the_epoch_that_triggered_the_loss_stop(tmp_pat
 
 
 def test_run_log_records_every_epoch_and_how_the_fit_ended(tmp_path) -> None:
-    from adelmo.runlog import RunLog, StageLog
+    from accelmo.runlog import RunLog, StageLog
 
     loop = _make_loop(["k0"], max_epochs=3, gradient_converged_value=-1.0)
     run_log = RunLog(tmp_path, name="tracking_opt")

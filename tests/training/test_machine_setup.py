@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import pytest
 
-from adelmo.config import SimulationConfig
-from adelmo.fitting.config import OutputConfig, SequenceConfig
-from adelmo.fitting.setup import MachineSetup
-from adelmo.machine.accelerators import LHC
-from adelmo.tracking.config.models import MeasurementConfig, MeasurementDetails
-from adelmo.tracking.config.tracking import TrackingPlan
-from adelmo.tracking.ranges import resolve_bpm_ranges
+from accelmo.config import SimulationConfig
+from accelmo.fitting.config import OutputConfig, SequenceConfig
+from accelmo.fitting.setup import MachineSetup
+from accelmo.machine.accelerators import LHC
+from accelmo.tracking.config.models import MeasurementConfig, MeasurementDetails
+from accelmo.tracking.config.tracking import TrackingPlan
+from accelmo.tracking.ranges import resolve_bpm_ranges
 
 START, END = "BPM.9R1.B1", "BPM.9L2.B1"
 KNOB = "MQ.11R1.B1.dk1l"  # a quadrupole inside START/END

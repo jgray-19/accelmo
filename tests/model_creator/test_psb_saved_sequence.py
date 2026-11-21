@@ -5,8 +5,8 @@ from typing import TYPE_CHECKING
 import pytest
 import tfs
 
-from adelmo.machine.accelerators import PSB
-from adelmo.machine.mad.aba_mad_interface import AbaMadInterface
+from accelmo.machine.accelerators import PSB
+from accelmo.machine.mad.aba_mad_interface import AbaMadInterface
 
 if TYPE_CHECKING:
     from pathlib import Path

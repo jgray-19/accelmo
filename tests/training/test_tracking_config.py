@@ -1,4 +1,4 @@
-"""Tests for tracking-mode planning in adelmo.tracking.config.tracking."""
+"""Tests for tracking-mode planning in accelmo.tracking.config.tracking."""
 
 from __future__ import annotations
 
@@ -6,10 +6,10 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from adelmo.config import SimulationConfig
-from adelmo.machine.accelerators import PSB
-from adelmo.tracking.config.models import KickerConfig
-from adelmo.tracking.config.tracking import (
+from accelmo.config import SimulationConfig
+from accelmo.machine.accelerators import PSB
+from accelmo.tracking.config.models import KickerConfig
+from accelmo.tracking.config.tracking import (
     ACDArcByArcTrackingPlan,
     RangeContext,
     TrackingPlan,

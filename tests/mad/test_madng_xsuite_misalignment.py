@@ -21,10 +21,10 @@ import pytest
 xt = pytest.importorskip("xtrack")
 xtt = pytest.importorskip("xtrack_tools")
 
-from adelmo.machine.accelerators import LHC  # noqa: E402
-from adelmo.machine.accelerators.base import MagnetFamily  # noqa: E402
-from adelmo.machine.mad import GradientDescentMadInterface  # noqa: E402
-from adelmo.machine.mad.scripts import CLOSED_TWISS_INIT, PYTHON_IN_MAD  # noqa: E402
+from accelmo.machine.accelerators import LHC  # noqa: E402
+from accelmo.machine.accelerators.base import MagnetFamily  # noqa: E402
+from accelmo.machine.mad import GradientDescentMadInterface  # noqa: E402
+from accelmo.machine.mad.scripts import CLOSED_TWISS_INIT, PYTHON_IN_MAD  # noqa: E402
 
 if TYPE_CHECKING:
     from pathlib import Path

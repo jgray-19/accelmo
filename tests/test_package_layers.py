@@ -12,9 +12,9 @@ from pathlib import Path
 
 import pytest
 
-import adelmo
+import accelmo
 
-PACKAGE_ROOT = Path(adelmo.__file__).parent
+PACKAGE_ROOT = Path(accelmo.__file__).parent
 
 #: Packages each package must never import.
 FORBIDDEN = {
@@ -24,7 +24,7 @@ FORBIDDEN = {
     "tracking": {"poco", "momentum_reference"},
     "poco": {"tracking", "momentum_reference"},
     # Run logs and the monitor know nothing about machines or fitters: the machine
-    # side plugs in through ``adelmo.monitor.OpticsSource``.
+    # side plugs in through ``accelmo.monitor.OpticsSource``.
     "runlog": {"machine", "fitting", "tracking", "poco", "monitor", "measurements"},
     "monitor": {"machine", "fitting", "tracking", "poco", "measurements"},
 }
@@ -41,7 +41,7 @@ def _imported_packages(path: Path) -> set[str]:
             continue
         for name in names:
             parts = name.split(".")
-            if parts[0] == "adelmo" and len(parts) > 1:
+            if parts[0] == "accelmo" and len(parts) > 1:
                 packages.add(parts[1])
     return packages
 

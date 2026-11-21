@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from adelmo.tracking.dispatch.turn_planner import WorkerTurnPlanner
+from accelmo.tracking.dispatch.turn_planner import WorkerTurnPlanner
 
 
 class _TwoSpecPlan:

@@ -11,9 +11,9 @@ from __future__ import annotations
 
 import numpy as np
 
-from adelmo.fitting.worker import KickPlane
-from adelmo.tracking.dispatch.screening import OutlierScreener
-from adelmo.tracking.dispatch.setup import WorkerRuntimeMetadata
+from accelmo.fitting.worker import KickPlane
+from accelmo.tracking.dispatch.screening import OutlierScreener
+from accelmo.tracking.dispatch.setup import WorkerRuntimeMetadata
 
 
 def _meta(worker_id: int, file_idx: int, bpms: list[str], sdir: int = 1) -> WorkerRuntimeMetadata:
@@ -126,10 +126,10 @@ def test_validation_worker_has_worker_disabled_before_any_mask_arrives(tmp_path)
     validation command loop reads this attribute on runs where no mask is ever
     pushed.
     """
-    from adelmo.config import SimulationConfig
-    from adelmo.fitting.worker import WorkerConfig
-    from adelmo.machine.accelerators import PSB
-    from adelmo.tracking.worker import (
+    from accelmo.config import SimulationConfig
+    from accelmo.fitting.worker import WorkerConfig
+    from accelmo.machine.accelerators import PSB
+    from accelmo.tracking.worker import (
         PrecomputedTrackingWeights,
         TrackingData,
         TrackingWorker,

@@ -24,12 +24,12 @@ from xtrack_tools.monitors import (
 )
 from xtrack_tools.tracking import run_tracking, run_tracking_without_ac_dipole
 
-from adelmo.config import OptimiserConfig, SimulationConfig
-from adelmo.fitting.config import OutputConfig, SequenceConfig
-from adelmo.machine.mad import merge_machine_states
-from adelmo.tracking.config.helpers import create_arc_measurement_config
-from adelmo.tracking.dispatch.screening import OutlierScreener
-from adelmo.tracking.fitter import ArcByArcFitter, FitterOptions, TrackingFitter
+from accelmo.config import OptimiserConfig, SimulationConfig
+from accelmo.fitting.config import OutputConfig, SequenceConfig
+from accelmo.machine.mad import merge_machine_states
+from accelmo.tracking.config.helpers import create_arc_measurement_config
+from accelmo.tracking.dispatch.screening import OutlierScreener
+from accelmo.tracking.fitter import ArcByArcFitter, FitterOptions, TrackingFitter
 from tests.training.helpers import TRACK_COLUMNS, generate_xsuite_env_with_errors
 
 # Measurement noise assigned to the synthetic tracks' variance columns.
@@ -96,7 +96,7 @@ if TYPE_CHECKING:
 
     import xtrack as xt
 
-    from adelmo.machine.mad.aba_mad_interface import AbaMadInterface
+    from accelmo.machine.mad.aba_mad_interface import AbaMadInterface
 
 
 def _load_mad_twiss_for_tracking(

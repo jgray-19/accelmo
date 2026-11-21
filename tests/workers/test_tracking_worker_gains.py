@@ -6,11 +6,11 @@ import multiprocessing as mp
 
 import numpy as np
 
-from adelmo.config import SimulationConfig
-from adelmo.fitting.worker import WorkerConfig
-from adelmo.machine.accelerators import PSB
-from adelmo.fitting.bpm_gains import bpm_gain_names, point_gain_index
-from adelmo.tracking.worker import PrecomputedTrackingWeights, TrackingData, TrackingWorker
+from accelmo.config import SimulationConfig
+from accelmo.fitting.worker import WorkerConfig
+from accelmo.machine.accelerators import PSB
+from accelmo.fitting.bpm_gains import bpm_gain_names, point_gain_index
+from accelmo.tracking.worker import PrecomputedTrackingWeights, TrackingData, TrackingWorker
 
 BPMS = ("B1", "B2", "B3")
 # Two turns of B1, B2 and a marker; B3 has a gain but is not observed here.

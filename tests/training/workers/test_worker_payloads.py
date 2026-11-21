@@ -10,12 +10,12 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from adelmo.fitting.worker import KickPlane, WorkerConfig
-from adelmo.machine.accelerators import PSB
-from adelmo.tracking.data_manager import FileTracks
-from adelmo.tracking.dispatch.payloads import WorkerPayloadBuilder, observation_turn_offsets
-from adelmo.tracking.dispatch.setup import WorkerObservationPlan, WorkerRangeSpec
-from adelmo.tracking.worker import TrackingData
+from accelmo.fitting.worker import KickPlane, WorkerConfig
+from accelmo.machine.accelerators import PSB
+from accelmo.tracking.data_manager import FileTracks
+from accelmo.tracking.dispatch.payloads import WorkerPayloadBuilder, observation_turn_offsets
+from accelmo.tracking.dispatch.setup import WorkerObservationPlan, WorkerRangeSpec
+from accelmo.tracking.worker import TrackingData
 
 MARKERS = ["BR3.BPM1L3", "BR3.BPM2L3", "BR3.BPM3L3"]
 

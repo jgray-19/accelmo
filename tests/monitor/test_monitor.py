@@ -9,10 +9,10 @@ import pytest
 
 pytest.importorskip("panel")
 
-from adelmo.monitor import MonitorSpec
-from adelmo.monitor.app import Monitor
-from adelmo.monitor.cache import OpticsCache, refinement_order
-from adelmo.runlog import RunLog
+from accelmo.monitor import MonitorSpec
+from accelmo.monitor.app import Monitor
+from accelmo.monitor.cache import OpticsCache, refinement_order
+from accelmo.runlog import RunLog
 
 
 class FakeSource:
@@ -90,7 +90,7 @@ def test_monitor_follows_the_latest_step_and_draws_the_active_panel(tmp_path, ca
 
     def optics_panel(view):
         seen.append((view.step, view.optics is not None))
-        from adelmo.monitor.panels import message
+        from accelmo.monitor.panels import message
 
         return message("optics")
 
@@ -110,7 +110,7 @@ def test_monitor_follows_the_latest_step_and_draws_the_active_panel(tmp_path, ca
         monitor.tabs.active = index  # drawn on first show
         assert pane.object is not None
     monitor.tabs.active = 0
-    assert not [r for r in caplog.records if r.name == "adelmo.monitor.app"], "a panel failed"
+    assert not [r for r in caplog.records if r.name == "accelmo.monitor.app"], "a panel failed"
 
     monitor.step_slider.value = 2
     assert monitor.follow.value is False

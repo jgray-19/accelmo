@@ -8,26 +8,26 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from adelmo.config import SimulationConfig
-from adelmo.fitting.protocol import Evaluate, GradReply
-from adelmo.fitting.worker import WorkerConfig
-from adelmo.machine.accelerators import PSB
-from adelmo.machine.mad import GradientDescentMadInterface
-from adelmo.poco import (
+from accelmo.config import SimulationConfig
+from accelmo.fitting.protocol import Evaluate, GradReply
+from accelmo.fitting.worker import WorkerConfig
+from accelmo.machine.accelerators import PSB
+from accelmo.machine.mad import GradientDescentMadInterface
+from accelmo.poco import (
     ClosedOrbitMeasurement,
     ClosedOrbitSeries,
 )
-from adelmo.poco.fitter import (
+from accelmo.poco.fitter import (
     apply_prior,
     prior_alphas,
     validate_prior_strengths,
 )
-from adelmo.poco.workers.closed_orbit import (
+from accelmo.poco.workers.closed_orbit import (
     ClosedOrbitMeasurementData,
     ClosedOrbitSeriesData,
     ClosedOrbitWorker,
 )
-from adelmo.poco.workers.closed_twiss import Observable
+from accelmo.poco.workers.closed_twiss import Observable
 
 if TYPE_CHECKING:
     from pathlib import Path

@@ -29,8 +29,8 @@ from xtrack_tools import (
     run_tracking,
 )
 
-from adelmo.machine.accelerators import LHC
-from adelmo.machine.mad.aba_mad_interface import AbaMadInterface
+from accelmo.machine.accelerators import LHC
+from accelmo.machine.mad.aba_mad_interface import AbaMadInterface
 
 # Setup logging
 logging.basicConfig(

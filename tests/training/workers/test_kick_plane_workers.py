@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import pandas as pd
 
-from adelmo.tracking.data_manager import infer_kick_plane
-from adelmo.tracking.worker import active_observables
+from accelmo.tracking.data_manager import infer_kick_plane
+from accelmo.tracking.worker import active_observables
 
 
 def _frame(x, px, y, py) -> pd.DataFrame:

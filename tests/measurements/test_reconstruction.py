@@ -10,14 +10,14 @@ import tfs
 from omc3.scripts.fake_measurement_from_model import generate as fake_measurement
 from tmom_recon import ModelDetails
 
-from adelmo.machine.accelerators import PSB
-from adelmo.measurements.reconstruction import (
+from accelmo.machine.accelerators import PSB
+from accelmo.measurements.reconstruction import (
     _scale_position_variances_after_svd,
     append_acd_marker_rows,
     process_single_dataframe,
 )
-from adelmo.measurements.reference import reconstruction_frame
-from adelmo.measurements.variances import (
+from accelmo.measurements.reference import reconstruction_frame
+from accelmo.measurements.variances import (
     assign_known_noise_variances,
     assign_uniform_variances,
 )

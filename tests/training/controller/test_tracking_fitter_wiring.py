@@ -14,12 +14,12 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pytest
 
-from adelmo.config import OptimiserConfig
-from adelmo.fitting.config import OutputConfig, SequenceConfig
-from adelmo.machine.accelerators import PSB
-from adelmo.machine.mad import merge_machine_states
-from adelmo.tracking.config.helpers import create_arc_measurement_config
-from adelmo.tracking.fitter import ArcByArcFitter, FitterOptions
+from accelmo.config import OptimiserConfig
+from accelmo.fitting.config import OutputConfig, SequenceConfig
+from accelmo.machine.accelerators import PSB
+from accelmo.machine.mad import merge_machine_states
+from accelmo.tracking.config.helpers import create_arc_measurement_config
+from accelmo.tracking.fitter import ArcByArcFitter, FitterOptions
 from tests.training.controller.test_controller_quadrupole_psb import (
     PSB_BPM_END_POINTS,
     PSB_BPM_START_POINTS,
@@ -35,7 +35,7 @@ from tests.training.controller_test_utils import (
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from adelmo.machine.mad.aba_mad_interface import AbaMadInterface
+    from accelmo.machine.mad.aba_mad_interface import AbaMadInterface
 
 pytestmark = [pytest.mark.slow, pytest.mark.serial]
 
