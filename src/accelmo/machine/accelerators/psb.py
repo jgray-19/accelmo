@@ -143,12 +143,15 @@ class PSB(BasePSB, Accelerator):
 
     @property
     def has_ac_kickers(self) -> bool:
+        """True when ``acd_drive_tunes`` is set."""
         return self.acd_drive_tunes is not None
 
     def ac_kicker_freqs(self, file_index: int) -> tuple[float, float] | None:
+        """Drive tunes of the AC kickers for file ``file_index``."""
         return None if self.acd_drive_tunes is None else self.acd_drive_tunes[file_index]
 
     def ac_kicker_volt_knobs(self, file_index: int) -> tuple[str, ...] | None:
+        """Per-file AC-kicker voltage knobs, or None with one ACD file."""
         if self.acd_files == 1:
             return None
         return tuple(f"{name}.volt_f{file_index}" for name in AC_KICKERS)

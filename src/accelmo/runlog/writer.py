@@ -145,5 +145,6 @@ class RunLog:
         write_json(self.directory / RESULT_FILE, {"finished": time.time(), **summary})
 
     def close(self) -> None:
+        """Close the history and knob files."""
         self._history.close()
         self._knobs.close()

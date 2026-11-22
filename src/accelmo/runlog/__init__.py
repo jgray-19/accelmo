@@ -4,8 +4,8 @@ Each fit (a *stage*) writes one directory::
 
     <stage dir>/
         stage.json      name, start time, knob names and free-form metadata, written once
-        history.jsonl   one JSON object per step: ``step``, ``time`` and the logged scalars
-        knobs.f64       raw float64 rows ``[step, knob_0, knob_1, ...]``, one per step;
+        history.jsonl   one JSON object per step: step, time and the logged scalars
+        knobs.f64       raw float64 rows [step, knob_0, knob_1, ...], one per step;
                         the row with step -1 holds the starting knobs
         result.json     how the fit ended, written when it finishes
 

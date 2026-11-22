@@ -57,9 +57,6 @@ Fitters
    * - :class:`~accelmo.tracking.fitter.ACDSinusoidFitter`
      - First flattop turn of each bunch
      - Forward over ``n_run_turns`` turns through the model AC kickers.
-   * - :class:`~accelmo.tracking.fitter.ACDTurnSinusoidFitter`
-     - Fitted, one state per turn at the ``before`` marker
-     - Backward from ``before`` and forward from ``after``; needs ``fit_start_coords``.
 
 All fit families, the knob families of each machine and the solvers are listed in
 :doc:`fit_families`.

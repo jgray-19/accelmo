@@ -494,7 +494,6 @@ class TrackingWorker(AbstractWorker[TrackingData]):
             "knob_start": 2.0 * knob_start * scale,
             "start_start": 2.0 * start_start * scale,
             "start": self._init_coords_np[first : first + n_particles, :4].copy(),
-            "ids": self.init_reading_ids[batch].copy(),
         }
 
     def evaluate(self, message: Evaluate) -> GradReply:
@@ -562,6 +561,7 @@ class TrackingWorker(AbstractWorker[TrackingData]):
     # ------------------------------------------------------------------
 
     def handle_command(self, command: Command) -> Ack | LossReply:
+        """Answer a validation, diagnose, knob or start-coordinate command."""
         match command:
             case Validate(knobs):
                 return LossReply(self.worker_id, self.compute_validation_loss(knobs))
@@ -639,7 +639,12 @@ class TrackingWorker(AbstractWorker[TrackingData]):
         coordinate by ``Σ_n w J ∂m/∂c0``. :func:`merge_uncertainty_parts` adds these
         over every worker using the same reading. Only rows that can carry noise are
         built: observations with a non-zero weight and starts with a finite variance.
+
+        With ``fit_start_coords`` each particle's start is a fit parameter: its direction is
+        projected out (``J → J − A_ks A_ss⁻¹ ∂m/∂c0`` per particle, ``A`` its Schur complement)
+        and the measured start variances do not enter.
         """
+        fit_starts = self.simulation_config.fit_start_coords
         normal = np.zeros((n_knobs, n_knobs))
         ids, sensitivities, variances = [], [], []
         for batch in range(self.num_batches):
@@ -647,21 +652,31 @@ class TrackingWorker(AbstractWorker[TrackingData]):
                 self.engine.track(batch, start_derivatives=True), gain_columns=True
             )
             weights = self._batch_weights(batch)
-            start = np.zeros((len(self.init_reading_ids[batch]), 4, n_knobs))
+            n_particles = len(self.init_reading_ids[batch])
+            start = np.zeros((n_particles, 4, n_knobs))
+            start_start = np.zeros((n_particles, 4, 4))
+            terms = []
             for observable in self.observables:
                 jacobian = results[self._gradient_key(observable)]  # (particles, knobs, points)
+                d_dc0 = results[f"d{observable}_dc0"]  # (particles, 4, points)
                 weight = weights[observable] * self.weight_scale  # (particles, points)
+                start += np.einsum("pkn,pcn->pck", jacobian * weight[:, None, :], d_dc0)
+                start_start += np.einsum("pcn,pdn->pcd", d_dc0 * weight[:, None, :], d_dc0)
+                terms.append((observable, jacobian, d_dc0, weight))
+            if fit_starts:
+                # (particles, knobs, 4): A_ks A_ss⁻¹ of each particle
+                projection = np.linalg.solve(start_start, start).transpose(0, 2, 1)
+            for observable, jacobian, d_dc0, weight in terms:
+                if fit_starts:
+                    jacobian = jacobian - np.einsum("pkc,pcn->pkn", projection, d_dc0)
                 weighted = jacobian * weight[:, None, :]
                 normal += np.einsum("pkn,pjn->kj", weighted, jacobian)
                 noisy = weight != 0.0
                 ids.append(self.reading_ids[batch][noisy] * 4 + READING_CODES[observable])
                 sensitivities.append(-weighted.transpose(0, 2, 1)[noisy])
                 variances.append(self.variances[observable][batch][noisy])
-                start += np.einsum(
-                    "pkn,pcn->pck",
-                    weighted,
-                    results[f"d{observable}_dc0"],
-                )
+            if fit_starts:
+                continue
             noisy_start = np.isfinite(self.init_variances[batch])  # (particles, 4)
             ids.append((self.init_reading_ids[batch][:, None] * 4 + START_CODES)[noisy_start])
             sensitivities.append(start[noisy_start])

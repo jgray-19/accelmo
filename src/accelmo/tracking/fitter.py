@@ -19,9 +19,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 import numpy as np
-from scipy import sparse
 from scipy.sparse import block_diag
-from scipy.sparse.linalg import lsqr
 
 from accelmo.fitting.bpm_gains import (
     ZERO_MEAN_SIGMA,
@@ -94,6 +92,7 @@ class StartGainMap:
     gains: np.ndarray
 
     def at(self, gains: np.ndarray) -> np.ndarray:
+        """Starts at ``gains``."""
         return self.starts + self.jacobian @ (gains - self.gains)
 
 
@@ -283,6 +282,8 @@ class TrackingFitter:
         self.lm_hessian = np.zeros((0, 0))
         #: Chi-square per unit of LM loss, set by the last LM run.
         self._lm_prior_hessian = np.zeros((0, 0))
+        #: Prior as a chi-square Hessian/2 (1/σ²), in the units of the uncertainty ``A``.
+        self._prior_chi2 = np.zeros((0, 0))
         #: The workers of the current or last run.
         self.session: TrackingSession | None = None
 
@@ -375,6 +376,7 @@ class TrackingFitter:
             ridge, zero_mean, session.chi2_to_loss / ZERO_MEAN_SIGMA**2 / per_particle
         )
         self._lm_prior_hessian = 2.0 * prior_matrix
+        self._prior_chi2 = prior_matrix * per_particle / session.chi2_to_loss
         fit_starts = self.machine.simulation_config.fit_start_coords
         if fit_starts and session.validation:
             raise ValueError("fit_start_coords needs a fit without validation workers")
@@ -417,22 +419,15 @@ class TrackingFitter:
         initial = np.array([initial_knobs[name] for name in names], dtype=float)
         knobs0 = dict(zip(names, initial.tolist(), strict=True))
         slots: list[list[slice]] = []
-        basis = None
         if fit_starts:
             *_, per_batch = gather(knobs0)
             slots = start_slots(per_batch)
             n_particles = sum(session.training.particle_counts)
-            starts0, ids = np.zeros((n_particles, 4)), np.zeros(n_particles, dtype=np.int64)
+            starts0 = np.zeros((n_particles, 4))
             for replies, row in zip(per_batch, slots, strict=True):
                 for reply, rows in zip(replies, row, strict=True):
                     starts0[rows] = reply.extra["start"]
-                    ids[rows] = reply.extra["ids"]
-            basis = self._start_basis(ids, starts0)
-            free0 = starts0.ravel() if basis is None else basis[1]
-            initial = np.concatenate([initial, free0])
-
-        def particle_starts(free: np.ndarray) -> np.ndarray:
-            return (free if basis is None else basis[0] @ free).reshape(-1, 4)
+            initial = np.concatenate([initial, starts0.ravel()])
 
         def start_blocks(per_batch: list) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
             """Training particles' dL/ds (4P), d2L/dk ds (knobs, 4P) and d2L/ds2 (P, 4, 4)."""
@@ -451,7 +446,7 @@ class TrackingFitter:
             del iteration
             knobs = dict(zip(names, (float(v) for v in params[:n_knobs]), strict=True))
             if fit_starts:
-                session.send_init_condition_updates(particle_starts(params[n_knobs:]))
+                session.send_init_condition_updates(params[n_knobs:].reshape(-1, 4))
             if start_map:
                 session.send_init_condition_updates(start_map[0].at(params[gains]))
             loss, grad, hessian, lost, per_batch = gather(knobs)
@@ -474,19 +469,11 @@ class TrackingFitter:
             full_grad = np.concatenate([grad, np.zeros(n - n_knobs)])
             full_hess = np.zeros((n, n))
             full_hess[:n_knobs, :n_knobs] = hessian
-            if basis is None:
-                full_grad[n_knobs:] = start_grad
-                full_hess[:n_knobs, n_knobs:] = knob_start
-                for particle in range(n_particles):
-                    cols = slice(n_knobs + 4 * particle, n_knobs + 4 * particle + 4)
-                    full_hess[cols, cols] = blocks[particle]
-            else:
-                t = basis[0]
-                full_grad[n_knobs:] = t.T @ start_grad
-                full_hess[:n_knobs, n_knobs:] = (t.T @ knob_start.T).T
-                full_hess[n_knobs:, n_knobs:] = (
-                    t.T @ (block_diag(blocks, format="csr") @ t)
-                ).toarray()
+            full_grad[n_knobs:] = start_grad
+            full_hess[:n_knobs, n_knobs:] = knob_start
+            for particle in range(n_particles):
+                cols = slice(n_knobs + 4 * particle, n_knobs + 4 * particle + 4)
+                full_hess[cols, cols] = blocks[particle]
             full_hess[n_knobs:, :n_knobs] = full_hess[:n_knobs, n_knobs:].T
             return LMPoint(loss, full_grad, full_hess, lost)
 
@@ -527,22 +514,11 @@ class TrackingFitter:
         best = optimiser.best.value
         self._lm_best = dict(zip(names, (float(v) for v in best[:n_knobs]), strict=True))
         self.start_params = best[n_knobs:]
-        self.fitted_starts = particle_starts(self.start_params) if fit_starts else np.zeros((0, 4))
+        self.fitted_starts = self.start_params.reshape(-1, 4) if fit_starts else np.zeros((0, 4))
         self.lm_hessian = optimiser.best_hessian
         if fit_starts:
             session.send_init_condition_updates(self.fitted_starts)
         return self._lm_best
-
-    def _start_basis(
-        self, ids: np.ndarray, starts: np.ndarray
-    ) -> tuple[sparse.csr_matrix, np.ndarray] | None:
-        """Linear map from free parameters to the particles' starts, and its initial value.
-
-        ``ids`` are the particles' start reading ids, ``starts`` their measured starts (both
-        in session particle order). ``None``: every particle's start is free.
-        """
-        del ids, starts
-        return None
 
     def _knob_sigma(self, knob_sigmas: dict[str, float]) -> np.ndarray:
         """Width of each of :attr:`knob_names` by name, else by terminal attribute (lower case)."""
@@ -681,6 +657,11 @@ class TrackingFitter:
                 self._lm_prior_hessian,
                 *normal_and_noise,
                 np.arange(len(final_knobs) - n_gains),
+            )
+        elif self._prior_chi2.any():  # a prior is one more measurement of the knobs
+            normal, noise = normal_and_noise
+            uncertainties = sandwich_uncertainties(
+                normal + self._prior_chi2, noise + self._prior_chi2
             )
         else:
             uncertainties = sandwich_uncertainties(*normal_and_noise)
@@ -912,105 +893,3 @@ class ACDSinusoidFitter(TrackingFitter):
             measurement_config=measurement_config,
             options=options,
         )
-
-
-class ACDTurnSinusoidFitter(TrackingFitter):
-    """AC-dipole data, one turn per state, no AC dipole in the model.
-
-    Every turn has one fitted state at the ``before`` marker; it is tracked backward from
-    ``before`` and forward from ``after`` = ``before`` + the kick: a full turn each way,
-    so every reading is fitted by two states. The kick is a sinusoid
-    per file and plane, ``a cos(2 pi Q_d row) + b sin(2 pi Q_d row)`` (``drive_tunes`` per file),
-    linear in (a, b). Needs ``fit_start_coords`` and the LM optimiser.
-    """
-
-    def __init__(
-        self,
-        accelerator: Accelerator,
-        optimiser_config: OptimiserConfig,
-        simulation_config: SimulationConfig,
-        sequence_config: SequenceConfig,
-        measurement_config: MeasurementConfig,
-        drive_tunes: tuple[tuple[float, float], ...],
-        options: FitterOptions | None = None,
-    ):
-        if not simulation_config.fit_start_coords:
-            raise ValueError("ACDTurnSinusoidFitter fits the turn states: needs fit_start_coords")
-        setup = acd_marker_setup(accelerator, simulation_config)
-        super().__init__(
-            setup,
-            accelerator=accelerator,
-            optimiser_config=optimiser_config,
-            sequence_config=sequence_config,
-            measurement_config=measurement_config,
-            options=options,
-        )
-        plan = setup.plan
-        self.drive_tunes = drive_tunes
-        self._grid = {}
-        for file_idx, tracks in self.data_manager.tracks.items():
-            cols = {name.upper(): col for name, col in tracks.marker_col.items()}
-            self._grid[file_idx] = (
-                len(tracks.markers),
-                cols[plan.acd_before.upper()],
-                cols[plan.acd_after.upper()],
-            )
-        if len(drive_tunes) != len(self._grid):
-            raise ValueError(f"{len(drive_tunes)} drive tunes for {len(self._grid)} files")
-        #: Fitted (a_x, b_x, a_y, b_y) kick per file, and the fitted turn states.
-        self.kicks = np.zeros((len(self._grid), 4))
-        self.turn_states = np.zeros((0, 4))
-
-    def _start_basis(
-        self, ids: np.ndarray, starts: np.ndarray
-    ) -> tuple[sparse.csr_matrix, np.ndarray]:
-        files = ids >> 32
-        cells = ids & 0xFFFFFFFF
-        keys, is_after = [], []
-        for file_idx, cell in zip(files.tolist(), cells.tolist(), strict=True):
-            n_markers, before, after = self._grid[file_idx]
-            row, col = divmod(cell, n_markers)
-            if col not in (before, after):
-                raise ValueError(f"Start at marker column {col} is not an AC-dipole marker")
-            keys.append((file_idx, row))
-            is_after.append(col == after)
-        states = sorted(set(keys))
-        index = {key: i for i, key in enumerate(states)}
-        n_states, n_files = len(states), len(self._grid)
-        kick0 = 4 * n_states
-        rows, cols, vals = [], [], []
-        for p, (key, after) in enumerate(zip(keys, is_after, strict=True)):
-            for c in range(4):
-                rows.append(4 * p + c)
-                cols.append(4 * index[key] + c)
-                vals.append(1.0)
-            if after:
-                file_idx, row = key
-                for plane, coord in ((0, 1), (1, 3)):
-                    phase = 2 * np.pi * self.drive_tunes[file_idx][plane] * row
-                    for k, v in enumerate((np.cos(phase), np.sin(phase))):
-                        rows.append(4 * p + coord)
-                        cols.append(kick0 + 4 * file_idx + 2 * plane + k)
-                        vals.append(v)
-        basis = sparse.csr_matrix((vals, (rows, cols)), shape=(4 * len(keys), kick0 + 4 * n_files))
-        # Initial states: measured before markers (after markers where a turn has no before);
-        # initial kick: least squares of the measured after - before momenta.
-        free0 = np.zeros(kick0 + 4 * n_files)
-        have = np.zeros(n_states, dtype=bool)
-        for p in np.argsort(is_after, kind="stable"):
-            i = index[keys[p]]
-            if not have[i]:
-                free0[4 * i : 4 * i + 4] = starts[p]
-                have[i] = True
-        residual = starts.ravel() - basis[:, :kick0] @ free0[:kick0]
-        kick_cols = basis[:, kick0:]
-        free0[kick0:] = lsqr(kick_cols, residual)[0]
-        self._n_states = n_states
-        return basis, free0
-
-    def _solve_lm(self, session, run_log):
-        knobs = super()._solve_lm(session, run_log)
-        n = 4 * self._n_states
-        self.turn_states = self.start_params[:n].reshape(-1, 4)
-        self.kicks = self.start_params[n:].reshape(-1, 4)
-        return knobs

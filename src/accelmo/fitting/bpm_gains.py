@@ -17,6 +17,7 @@ ZERO_MEAN_SIGMA = 1e-5
 
 
 def bpm_gain_name(plane: str, bpm: str) -> str:
+    """Fit-parameter name of the gain of ``bpm`` in ``plane``."""
     return f"{PREFIX}.{plane}.{bpm}"
 
 
@@ -26,14 +27,17 @@ def bpm_gain_names(bpms: list[str] | tuple[str, ...]) -> list[str]:
 
 
 def is_bpm_gain(name: str) -> bool:
+    """True if ``name`` is a BPM gain parameter."""
     return name.startswith(f"{PREFIX}.")
 
 
 def without_bpm_gains(knobs: dict[str, float]) -> dict[str, float]:
+    """``knobs`` without the BPM gains."""
     return {k: v for k, v in knobs.items() if not is_bpm_gain(k)}
 
 
 def only_bpm_gains(knobs: dict[str, float]) -> dict[str, float]:
+    """Only the BPM gains of ``knobs``."""
     return {k: v for k, v in knobs.items() if is_bpm_gain(k)}
 
 

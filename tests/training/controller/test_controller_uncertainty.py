@@ -469,7 +469,7 @@ def test_single_direction_sigma_is_the_inverse_finite_difference_normal_matrix(
     terminated = False
     try:
         ctrl.start_session(ctrl.machine.initial_knobs)
-        assert [meta.sdir for meta in ctrl.session.training.metadata] == [sdir]
+        assert [plan.range_spec.sdir for plan in ctrl.session.training.metadata] == [sdir]
         weight_normaliser = _compute_training_weight_normaliser(ctrl)
         base_knobs = ctrl.machine.true_strengths.copy()
         fd_normal = (

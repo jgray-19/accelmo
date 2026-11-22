@@ -89,12 +89,14 @@ class ReferenceReader:
         self._block: shared_memory.SharedMemory | None = None
 
     def view(self, reference: SharedReference) -> np.ndarray:
+        """Array view of the shared block named by ``reference``."""
         if self._block is None or self._block.name != reference.name:
             self.close()
             self._block = _attach(reference.name)
         return np.ndarray(reference.shape, dtype=np.float64, buffer=self._block.buf)
 
     def close(self) -> None:
+        """Detach from the shared block."""
         if self._block is not None:
             self._block.close()
             self._block = None

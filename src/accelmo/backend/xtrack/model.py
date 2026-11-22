@@ -186,10 +186,12 @@ class XtrackModel:
             refs.k0 = self._strength(element, "k0") + env.vars[knob] / float(element.length)
 
     def set_knob_values(self, values: Mapping[str, float]) -> None:
+        """Set knob variables of the environment by name."""
         for name, value in values.items():
             self.env.vars[name] = float(value)
 
     def knob_values(self) -> np.ndarray:
+        """Current values of ``knob_names``, in that order."""
         return np.array([float(self.env.vars[name]._value) for name in self.knob_names])
 
     def apply_initial_model_values(self, values: Mapping[str, float]) -> None:
@@ -214,6 +216,7 @@ class XtrackModel:
         )
 
     def get_vars(self, names: Sequence[str]) -> dict[str, float]:
+        """Current values of variables or ``<element>.<attribute>`` names."""
         values = {}
         for name in names:
             element, attribute = self._target(name)
@@ -236,6 +239,7 @@ class XtrackModel:
         )
 
     def set_vars(self, state: Mapping[str, float]) -> None:
+        """Set variables or ``<element>.<attribute>`` names (a machine state)."""
         for name, value in state.items():
             element, attribute = self._target(name)
             if element is None:

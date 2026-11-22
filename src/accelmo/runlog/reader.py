@@ -44,18 +44,22 @@ class StageLog:
 
     @property
     def name(self) -> str:
+        """Stage name."""
         return self.info["name"]
 
     @property
     def started(self) -> float:
+        """Start time, seconds since the epoch."""
         return float(self.info["started"])
 
     @property
     def knob_names(self) -> list[str]:
+        """Fitted knob names."""
         return list(self.info["knob_names"])
 
     @property
     def metadata(self) -> dict[str, Any]:
+        """Stage metadata given by the fitter."""
         return dict(self.info.get("metadata", {}))
 
     @property

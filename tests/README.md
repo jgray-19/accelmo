@@ -28,5 +28,3 @@ pytest --cov=accelmo
 | `measurements/`, `model_creator/` | Measurement preparation and model construction |
 | `optimisers/`, `analysis/` | Optimisers and degeneracy analysis |
 | `data/` | Input data and model files |
-
-Unit tests for BPM phase utilities are in the `tmom-recon` repository.

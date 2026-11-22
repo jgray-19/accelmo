@@ -291,25 +291,31 @@ class KickerTrackingPlan(TrackingPlan):
 
     @property
     def init_marker(self) -> str:
+        """The kicker marker."""
         return self.kicker_name
 
     @property
     def extra_markers(self) -> tuple[str, ...]:
+        """The kicker marker."""
         return (self.kicker_name,)
 
     @property
     def tracking_anchor_markers(self) -> tuple[str, ...]:
+        """Empty: the kicker marker is not tracked from as a BPM."""
         return ()
 
     @property
     def tracking_anchor_sources(self) -> tuple[str, ...]:
+        """The kicker marker."""
         return (self.kicker_name,)
 
     @property
     def cycle_marker(self) -> str:
+        """Marker at the kicker centre."""
         return f"{self.kicker_name}_centre"
 
     def observed_bpms(self, bpms_in_range: list[str], all_bpms: list[str]) -> list[str]:
+        """Every BPM."""
         return all_bpms
 
     def select_available_turns(
@@ -323,6 +329,7 @@ class KickerTrackingPlan(TrackingPlan):
         return _first_turn_per_bunch(bunch_turns_by_file)
 
     def build_range_specs(self, ctx: RangeContext) -> list[WorkerRangeSpec]:
+        """One forward range from the first BPM round the ring."""
         start = ctx.all_bpms[0]
         return [WorkerRangeSpec(start, _bpm_behind(ctx.all_bpms, start), sdir=1)]
 
@@ -335,6 +342,7 @@ class KickerTrackingPlan(TrackingPlan):
         sdir: int,
         bad_bpms: list[str] | None,
     ) -> list[str]:
+        """BPMs in ring order from ``start_bpm``, without ``bad_bpms``."""
         excluded = set(bad_bpms or [])
         if start_bpm not in all_bpms:
             raise ValueError(f"Kicker tracking start BPM '{start_bpm}' not found in model BPM list")
@@ -369,16 +377,20 @@ class ACDTrackingPlan(_AcdPlan):
 
     @property
     def extra_markers(self) -> tuple[str, ...]:
+        """The ``before`` and ``after`` markers."""
         return (self.acd_after, self.acd_before)
 
     @property
     def observed_tracking_anchor_markers(self) -> tuple[str, ...]:
+        """Empty: the markers supply start coordinates only."""
         return ()
 
     def observed_bpms(self, bpms_in_range: list[str], all_bpms: list[str]) -> list[str]:
+        """Every BPM."""
         return all_bpms
 
     def build_range_specs(self, ctx: RangeContext) -> list[WorkerRangeSpec]:
+        """Forward from ``after`` and backward from ``before``."""
         return [
             WorkerRangeSpec(start_bpm=self.acd_after, end_bpm=self.acd_before, sdir=sdir)
             for sdir in (1, -1)
@@ -427,17 +439,21 @@ class ACDSinusoidTrackingPlan(_AcdPlan):
 
     @property
     def init_marker(self) -> str:
+        """The ``before`` marker."""
         return self.acd_before
 
     @property
     def extra_markers(self) -> tuple[str, ...]:
+        """The ``before`` and ``after`` markers."""
         return (self.acd_after, self.acd_before)
 
     @property
     def observed_tracking_anchor_markers(self) -> tuple[str, ...]:
+        """Empty: the markers supply start coordinates only."""
         return ()
 
     def observed_bpms(self, bpms_in_range: list[str], all_bpms: list[str]) -> list[str]:
+        """BPMs in the range."""
         return bpms_in_range
 
     def select_available_turns(
@@ -447,9 +463,11 @@ class ACDSinusoidTrackingPlan(_AcdPlan):
         simulation_config: SimulationConfig,
         available_turns: list[int],
     ) -> tuple[dict[int, set[int]], list[int]]:
+        """Start turns every ``n_run_turns`` turns of each file."""
         return _window_starts(bunch_turns_by_file, simulation_config.n_run_turns)
 
     def build_range_specs(self, ctx: RangeContext) -> list[WorkerRangeSpec]:
+        """One forward range from ``before`` round the ring."""
         return [WorkerRangeSpec(self.acd_before, _bpm_behind(ctx.all_bpms, self.acd_before), 1)]
 
     def get_range_bpm_names(
@@ -489,6 +507,7 @@ class ACDArcByArcTrackingPlan(_AcdPlan):
     """
 
     def observed_bpms(self, bpms_in_range: list[str], all_bpms: list[str]) -> list[str]:
+        """BPMs in the range, without the AC-dipole markers."""
         # Keep the exciter markers out of the measurement comparison; they exist only
         # to locate the AC dipole for the crossing test.
         markers = {self.acd_after, self.acd_before}
@@ -518,6 +537,7 @@ class ACDArcByArcTrackingPlan(_AcdPlan):
         return start_bpm, end_bpm
 
     def build_range_specs(self, ctx: RangeContext) -> list[WorkerRangeSpec]:
+        """Arc ranges, rerouted round the ring when they contain the AC dipole."""
         specs = super().build_range_specs(ctx)
         rerouted: list[WorkerRangeSpec] = []
         seen: set[tuple[str, str, int]] = set()

@@ -90,27 +90,33 @@ class TrackingEngine(Protocol):
         *,
         worker_id: int,
         logfile: Path | None = None,
-    ) -> None: ...
+    ) -> None:
+        """Load the model for ``config`` and prepare to track ``plan`` from ``init_knobs``."""
 
-    def set_knobs(self, knobs: Mapping[str, float]) -> None: ...
+    def set_knobs(self, knobs: Mapping[str, float]) -> None:
+        """Set the fitted knobs (and ``pt`` when the energy is fitted) to ``knobs``."""
 
     def load_particles(
         self, init_coords: list[list[list[float]]], init_pts: list[list[float]]
-    ) -> None: ...
+    ) -> None:
+        """Set the start coordinates and ``pt`` offsets, both indexed ``[batch][particle]``."""
 
     def set_pts(self, pt: float, first_batch: int, last_batch: int) -> None:
         """Set ``pt`` of every particle in batches ``first..last`` (0-based) to ``pt`` plus its own offset."""
 
     def set_start_coords(
         self, x: np.ndarray, px: np.ndarray, y: np.ndarray, py: np.ndarray
-    ) -> None: ...
+    ) -> None:
+        """Replace the start ``x, px, y, py`` of every particle, in batch order; ``pt`` is kept."""
 
     def preflight(self) -> dict[str, int | bool]:
         """One-particle dry run: ``{"observed", "expected", "lost"}``."""
 
-    def track(self, batch: int, *, start_derivatives: bool) -> TrackResult: ...
+    def track(self, batch: int, *, start_derivatives: bool) -> TrackResult:
+        """Track batch ``batch`` (0-based); ``start_derivatives`` also fills ``d_dc0``."""
 
-    def close(self) -> None: ...
+    def close(self) -> None:
+        """Release the model."""
 
 
 class ClosedOrbitEngine(Protocol):
@@ -129,16 +135,20 @@ class ClosedOrbitEngine(Protocol):
         orbit_coords: Sequence[str],
         worker_id: int,
         logfile: Path | None = None,
-    ) -> None: ...
+    ) -> None:
+        """Load the model; ``solve`` returns ``optics_names`` and ``orbit_coords`` rows."""
 
-    def set_knobs(self, knobs: Mapping[str, float]) -> None: ...
+    def set_knobs(self, knobs: Mapping[str, float]) -> None:
+        """Set the fitted knobs to ``knobs``."""
 
     def get_vars(self, names: Sequence[str]) -> dict[str, float]:
         """Current values of the global variables ``names`` (machine state, e.g. corrector kicks)."""
 
-    def set_vars(self, values: Mapping[str, float]) -> None: ...
+    def set_vars(self, values: Mapping[str, float]) -> None:
+        """Set global variables or element attributes (a machine state)."""
 
-    def set_pt(self, pt: float) -> None: ...
+    def set_pt(self, pt: float) -> None:
+        """Set the momentum offset ``pt`` of the closed-orbit search."""
 
     def set_warm_start(self, key: str) -> None:
         """Start the next closed-orbit search from the last orbit solved under ``key``."""
@@ -150,7 +160,8 @@ class ClosedOrbitEngine(Protocol):
         ``ClosedSolution.jacobian`` ``None`` and may skip the derivatives entirely.
         """
 
-    def close(self) -> None: ...
+    def close(self) -> None:
+        """Release the model."""
 
 
 class Model(Protocol):
@@ -160,16 +171,20 @@ class Model(Protocol):
     all_bpms: list[str]
     bpms_in_range: list[str]
 
-    def cycle_to_start(self, marker: str) -> None: ...
+    def cycle_to_start(self, marker: str) -> None:
+        """Make ``marker`` the first element of the sequence."""
 
     def recount_bpms(self) -> None:
         """Refresh ``all_bpms`` and ``bpms_in_range`` after a cycle."""
 
-    def apply_initial_model_values(self, values: Mapping[str, float]) -> None: ...
+    def apply_initial_model_values(self, values: Mapping[str, float]) -> None:
+        """Set knobs and fixed strengths to ``values`` before the fit starts."""
 
-    def knob_values(self) -> np.ndarray: ...
+    def knob_values(self) -> np.ndarray:
+        """Current values of ``knob_names``, in that order."""
 
-    def close(self) -> None: ...
+    def close(self) -> None:
+        """Release the model."""
 
 
 class Backend(Protocol):
@@ -194,7 +209,8 @@ class Backend(Protocol):
         mad_logfile: Path | None = None,
         anchor_mode: str | None = None,
         anchor_markers: Sequence[str] = (),
-    ) -> Model: ...
+    ) -> Model:
+        """Load ``accelerator``, create its knobs over ``magnet_range`` and return the model."""
 
     def closed_orbit_table(
         self,
@@ -203,4 +219,5 @@ class Backend(Protocol):
         pt: float,
         machine_state: object,
         columns: Sequence[str],
-    ) -> pd.DataFrame: ...
+    ) -> pd.DataFrame:
+        """Closed-orbit ``columns`` at the BPMs for these strengths, ``pt`` and state."""

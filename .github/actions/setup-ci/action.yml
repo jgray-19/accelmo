@@ -17,13 +17,6 @@ runs:
         path: pymadng-utils
         persist-credentials: false
 
-    - name: Checkout tmom-recon
-      uses: actions/checkout@v5
-      with:
-        repository: jgray-19/tmom-recon
-        path: tmom-recon
-        persist-credentials: false
-
     - name: Checkout xtrack-tools
       uses: actions/checkout@v5
       with:
@@ -40,7 +33,6 @@ runs:
         cache-dependency-glob: |
           accelmo/pyproject.toml
           pymadng-utils/pyproject.toml
-          tmom-recon/pyproject.toml
           xtrack-tools/pyproject.toml
 
     - name: Install package and local dependencies
@@ -50,6 +42,5 @@ runs:
         uv pip install --upgrade pip setuptools wheel
         uv pip install \
           -e ../pymadng-utils \
-          -e ../tmom-recon \
           -e ../xtrack-tools \
           -e '.[test,tracking]'

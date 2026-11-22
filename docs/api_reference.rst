@@ -21,6 +21,7 @@ Primary Entry Points
    accelmo.tracking.fitter.ArcByArcFitter
    accelmo.tracking.fitter.ACDMarkerFitter
    accelmo.tracking.fitter.KickerFitter
+   accelmo.tracking.fitter.ACDSinusoidFitter
    accelmo.tracking.fitter.FitterOptions
    accelmo.tracking.config.models.MeasurementConfig
    accelmo.fitting.config.SequenceConfig
@@ -48,20 +49,31 @@ Accelerators And Configuration
    accelmo.machine.accelerators.fcc
    accelmo.machine.accelerators.magnet_grouping
    accelmo.machine.accelerators.selection
+   accelmo.machine.patterns
+   accelmo.machine.machine_state
+   accelmo.machine.knob_names
    accelmo.config
 
 
-MAD Interface Layer
--------------------
+Backends
+--------
+
+The engine protocols are specified in :doc:`backends`.
 
 .. autosummary::
    :toctree: _autosummary
 
+   accelmo.backend
+   accelmo.backend.protocol
    accelmo.backend.madng
    accelmo.backend.madng.interface
-   accelmo.backend.madng.interface
+   accelmo.backend.madng.engines
+   accelmo.backend.madng.accelerator_hooks
    accelmo.backend.madng.machine_state
    accelmo.backend.madng.scripts
+   accelmo.backend.xtrack
+   accelmo.backend.xtrack.engines
+   accelmo.backend.xtrack.model
 
 
 Closed-Orbit Fitting (POCO)
@@ -100,6 +112,7 @@ Tracking Fits
    accelmo.tracking.dispatch.setup
    accelmo.tracking.dispatch.turn_planner
    accelmo.tracking.uncertainty
+   accelmo.tracking.ic_iteration
    accelmo.tracking.sgd
    accelmo.tracking.sgd.loop
    accelmo.tracking.sgd.scheduler

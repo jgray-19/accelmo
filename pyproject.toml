@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "accelmo"
-version = "0.0.1"
+version = "0.0.1a0"
 description = "Accelerator Effective Lattice Modelling and Optimisation"
 authors = [
     { name = "Joshua Gray" },
@@ -40,7 +40,7 @@ docs = [
     "sphinx>=7.0",
     "sphinx-autodoc-typehints>=2.0",
     "myst-parser>=2.0",
-    "shibuya>=2026.1.9",
+    "furo>=2025.12.19",
 ]
 tracking = [
     "omc3 > 0.26.0",
@@ -72,6 +72,9 @@ package-dir = {"" = "src"}
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["accelmo*"]
+
+[tool.setuptools.package-data]
+"accelmo.backend.madng" = ["mad_scripts/*.mad"]
 
 [tool.coverage.run]
 # Use the importable package name so coverage can map executed files correctly
@@ -148,10 +151,17 @@ extend-select = [
     "TC",       # Enforce importing certain types in a TYPE_CHECKING block
     "PTH",      # Use pathlib instead of os.path
     "NPY",      # Some numpy-specific things
+    "D101",     # public class without docstring
+    "D102",     # public method without docstring
+    "D103",     # public function without docstring
 ]
 # Allow fix for all enabled rules (when `--fix`) is provided.
 fixable = ["ALL"]
 unfixable = []
+
+[tool.ruff.lint.per-file-ignores]
+# Docstrings are required in the package only.
+"!src/**" = ["D101", "D102", "D103"]
 
 
 [tool.ty.src]

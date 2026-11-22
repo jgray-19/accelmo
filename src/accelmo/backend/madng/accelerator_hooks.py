@@ -43,6 +43,7 @@ _PSB_GROUP_SUFFIXES = {
 
 
 def track_methods(accelerator: Accelerator) -> dict[str, int]:
+    """Per-element-kind MAD-NG track ``method`` overrides for ``accelerator``."""
     for kind, methods in _TRACK_METHODS.items():
         if isinstance(accelerator, kind):
             return methods

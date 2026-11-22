@@ -94,8 +94,16 @@ and ``fcc_loco``) and are not documented here.
 
    user_guide
    fit_families
+   measurement_data
+   loss_and_uncertainty
    tracking_tour
    architecture
    backends
    start_gain_chain_rule
    api_reference
+
+.. toctree::
+   :maxdepth: 1
+   :caption: Background
+
+   adamw_madng_2025

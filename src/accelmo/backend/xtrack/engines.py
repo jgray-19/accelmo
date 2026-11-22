@@ -128,22 +128,26 @@ class TrackingEngine:
         self.monomials = _monomials(len(self.params.names))
 
     def set_knobs(self, knobs: Mapping[str, float]) -> None:
+        """See :meth:`accelmo.backend.protocol.TrackingEngine.set_knobs`."""
         self.params.set(knobs)
 
     def load_particles(
         self, init_coords: list[list[list[float]]], init_pts: list[list[float]]
     ) -> None:
+        """See :meth:`accelmo.backend.protocol.TrackingEngine.load_particles`."""
         self.coords = [np.asarray(batch, dtype=float) for batch in init_coords]
         self.offsets = [np.asarray(batch, dtype=float) for batch in init_pts]
         self.pts = [np.array(batch) for batch in self.offsets]
 
     def set_pts(self, pt: float, first_batch: int, last_batch: int) -> None:
+        """See :meth:`accelmo.backend.protocol.TrackingEngine.set_pts`."""
         for batch in range(first_batch, last_batch + 1):
             self.pts[batch] = pt + self.offsets[batch]
 
     def set_start_coords(
         self, x: np.ndarray, px: np.ndarray, y: np.ndarray, py: np.ndarray
     ) -> None:
+        """See :meth:`accelmo.backend.protocol.TrackingEngine.set_start_coords`."""
         flat = np.column_stack([np.ravel(v) for v in (x, px, y, py)])
         first = 0
         for batch in self.coords:
@@ -184,6 +188,7 @@ class TrackingEngine:
         return turns.reshape(-1, len(COORDS), n)
 
     def preflight(self) -> dict[str, int | bool]:
+        """See :meth:`accelmo.backend.protocol.TrackingEngine.preflight`."""
         record = self._track_one(self.coords[0][0], float(self.pts[0][0]))
         expected = self.nbpms * self.plan.n_run_turns
         if record is None:
@@ -191,6 +196,7 @@ class TrackingEngine:
         return {"observed": len(record), "expected": expected, "lost": False}
 
     def track(self, batch: int, *, start_derivatives: bool) -> TrackResult:
+        """See :meth:`accelmo.backend.protocol.TrackingEngine.track`."""
         coords, pts = self.coords[batch], self.pts[batch]
         n_points = self.nbpms * self.plan.n_run_turns
         n_knobs = len(self.params.names)
@@ -215,6 +221,7 @@ class TrackingEngine:
         return TrackResult(obs, d_dk, d_dc0, n_lost, len(coords))
 
     def close(self) -> None:
+        """Release the line."""
         self.model.close()
 
 
@@ -243,15 +250,19 @@ class ClosedOrbitEngine:
         self.pt = 0.0
 
     def set_knobs(self, knobs: Mapping[str, float]) -> None:
+        """See :meth:`accelmo.backend.protocol.ClosedOrbitEngine.set_knobs`."""
         self.params.set(knobs)
 
     def get_vars(self, names: Sequence[str]) -> dict[str, float]:
+        """See :meth:`accelmo.backend.protocol.ClosedOrbitEngine.get_vars`."""
         return self.model.get_vars(names)
 
     def set_vars(self, values: Mapping[str, float]) -> None:
+        """See :meth:`accelmo.backend.protocol.ClosedOrbitEngine.set_vars`."""
         self.model.set_vars(values)
 
     def set_pt(self, pt: float) -> None:
+        """See :meth:`accelmo.backend.protocol.ClosedOrbitEngine.set_pt`."""
         self.pt = float(pt)
 
     def set_warm_start(self, key: str) -> None:
@@ -271,6 +282,7 @@ class ClosedOrbitEngine:
             return None
 
     def solve(self, observables: Sequence[str], *, jacobian: bool = True) -> ClosedSolution | None:
+        """See :meth:`accelmo.backend.protocol.ClosedOrbitEngine.solve`."""
         twiss = self._twiss(only_orbit=True)
         if twiss is None:
             return None
@@ -316,6 +328,7 @@ class ClosedOrbitEngine:
         return ClosedSolution(list(self.model.all_bpms), values, jacobian)
 
     def close(self) -> None:
+        """Release the line."""
         self.model.close()
 
 
@@ -331,6 +344,7 @@ def open_model(
     anchor_mode: str | None = None,
     anchor_markers: Sequence[str] = (),
 ) -> XtrackModel:
+    """See :meth:`accelmo.backend.protocol.Backend.open_model`."""
     del debug, mad_logfile
     if b2_errors is not None or anchor_mode is not None or anchor_markers:
         raise NotImplementedError(
@@ -342,4 +356,5 @@ def open_model(
 
 
 def closed_orbit_table(accelerator, magnet_strengths, pt, machine_state, columns):
+    """Not implemented for xtrack."""
     raise NotImplementedError("xtrack backend: the momentum reference table is not implemented")

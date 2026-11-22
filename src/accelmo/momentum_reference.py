@@ -43,9 +43,7 @@ offset degrades the reconstructed ``px`` from 4.741e-4 to 7.702e-2, against
 1.162e-3 for the offset. First order cancels either way; the error enters through
 the second-order dispersion term and is therefore absent on a linear lattice.
 
-The subtraction is not performed here. Pass the measured positions as
-``closed_orbit_at_zero`` with ``orbit_mode="dynamic"`` to ``tmom_recon``, together
-with the measurement momentum offset only.
+The subtraction is not performed here.
 """
 
 from __future__ import annotations
@@ -114,8 +112,7 @@ class MomentumReference:
         reference_pt: MAD-NG ``pt`` at which the reference was evaluated. This is
             the momentum origin of :attr:`closed_orbit`; momenta handed to a
             reconstruction against this reference are offsets from it, not
-            absolute ``pt`` values; see the module docstring for how to hand
-            both to ``tmom_recon`` without doing the subtraction by hand.
+            absolute ``pt`` values.
         observables: Observables the fit actually used.
         prior_strength: Tikhonov prior used.
     """
@@ -190,7 +187,7 @@ def fit_momentum_reference(
         accelerator: Configured accelerator. Enable the knob families you intend
             to fit (bend ``k0`` and, if the observables can constrain them,
             quadrupole ``k1``) via its ``errors`` selection.
-        measurements: Measured optics keyed by the *known MAD-NG ``pt``* the
+        measurements: Measured optics keyed by the known MAD-NG ``pt`` the
             measurement was taken at. At least two momenta are required: at one
             momentum the per-magnet Jacobians are degenerate.
         observables: What to fit. Defaults to closed orbit plus phase advance.

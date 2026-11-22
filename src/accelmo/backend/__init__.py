@@ -15,4 +15,12 @@ def get_backend(name: str) -> Backend:
     """The backend module ``accelmo.backend.<name>.engines``."""
     if name not in BACKENDS:
         raise ValueError(f"Unknown backend {name!r}; valid: {BACKENDS}")
-    return import_module(f"accelmo.backend.{name}.engines")
+    try:
+        return import_module(f"accelmo.backend.{name}.engines")
+    except ModuleNotFoundError as err:
+        if name == "xtrack" and err.name in {"xtrack", "xtrack_tools"}:
+            raise ImportError(
+                "The xtrack backend needs xtrack (with tpsa) and xtrack_tools, which are not "
+                "installed by accelmo."
+            ) from err
+        raise

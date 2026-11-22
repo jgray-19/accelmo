@@ -21,6 +21,7 @@ def load_spec(reference: str) -> MonitorSpec:
 
 
 def main() -> None:
+    """Command-line entry point ``accelmo-monitor``."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("root", type=Path, help="Directory searched for run logs (recursively).")
     parser.add_argument(

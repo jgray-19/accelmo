@@ -27,6 +27,7 @@ class AdamOptimiser(BaseOptimiser):
 
     @classmethod
     def config_kwargs(cls, config: OptimiserConfig, n_params: int) -> dict[str, Any]:
+        """Constructor arguments from ``config``."""
         eps = {} if config.adam_eps is None else {"eps": config.adam_eps}
         return {
             "shape": (n_params,),

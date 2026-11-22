@@ -64,8 +64,7 @@ Fitter input
 ------------
 
 The fitter reads one :term:`parquet` file per measurement with the columns
-``name, turn, bunch_number, x, px, y, py, var_x, var_y, var_px, var_py``. Cleaning and
-momentum reconstruction are done in ``tmom-recon`` (its ``measurement_pipeline`` page).
+``name, turn, bunch_number, x, px, y, py, var_x, var_y, var_px, var_py``.
 
 Arc-by-arc vs ACD marker
 ------------------------

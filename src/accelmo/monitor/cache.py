@@ -124,6 +124,7 @@ class OpticsCache:
         return False
 
     def references(self, metadata: Mapping[str, Any]) -> dict[str, pd.DataFrame] | None:
+        """Reference optics of the run, or None until computed."""
         if not self.has_references(metadata):
             return None
         return self._load(self._path(self.model_key(metadata), "references.pkl"))
@@ -155,11 +156,13 @@ class OpticsCache:
         return json.loads(path.read_text()) if path.exists() else None
 
     def error(self, metadata: Mapping[str, Any], knobs: pd.Series | None = None) -> str | None:
+        """Error message of a failed model or knobs computation, if any."""
         key = self.model_key(metadata) if knobs is None else self.knobs_key(knobs)
         return self.errors.get(key)
 
     @property
     def pending(self) -> int:
+        """Number of queued and running computations."""
         return len(self._queued) + self.busy
 
     def _load(self, path: Path) -> Any:

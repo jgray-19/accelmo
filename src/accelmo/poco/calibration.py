@@ -23,6 +23,7 @@ from accelmo.fitting.uncertainty import covariance
 #: Corrector gain names: ``corrgain.<CORRECTOR>`` (upper-case, as MAD-NG names them); BPM gains are
 #: named by :mod:`accelmo.fitting.bpm_gains`.
 def corrector_gain_name(corrector: str) -> str:
+    """Fit-parameter name of the gain of ``corrector``."""
     return f"corrgain.{corrector}"
 
 
@@ -70,6 +71,7 @@ class CalibrationBlocks:
 
     @classmethod
     def shapes(cls, n_q: int, n_g: int, n_b: int) -> dict[str, tuple[int, ...]]:
+        """Array shape of each block."""
         n_u = n_q + n_g
         return {
             "grad_u": (n_u,),
@@ -81,9 +83,11 @@ class CalibrationBlocks:
 
     @classmethod
     def nbytes(cls, n_q: int, n_g: int, n_b: int) -> int:
+        """Size in bytes of all blocks."""
         return 8 * sum(int(np.prod(shape)) for shape in cls.shapes(n_q, n_g, n_b).values())
 
     def add(self, other: CalibrationBlocks) -> None:
+        """Add ``other`` to these blocks."""
         self.loss += other.loss
         self.grad_u += other.grad_u
         self.hess_uu += other.hess_uu
@@ -92,6 +96,7 @@ class CalibrationBlocks:
         self.grad_b += other.grad_b
 
     def scale(self, factor: float) -> None:
+        """Multiply every block by ``factor``."""
         self.loss *= factor
         self.grad_u *= factor
         self.hess_uu *= factor

@@ -75,6 +75,7 @@ class CalibratedClosedOrbitWorker(ClosedOrbitWorker):
         return [corrector_gain_knob_name(corrector) for corrector in correctors]
 
     def on_start(self, knobs: dict[str, float]) -> None:
+        """Start the engine and count the magnet knobs."""
         super().on_start(knobs)
         #: Number of magnet knobs; ``n_knobs`` also counts the gain knobs.
         self.n_q = self.n_knobs - len(self._correctors)
@@ -99,6 +100,7 @@ class CalibratedClosedOrbitWorker(ClosedOrbitWorker):
         return 1.0 / (self.weight_scale * self.normalisation_points)
 
     def evaluate(self, message: Evaluate) -> GradReply:
+        """Loss, gradient and calibration blocks at ``message.knobs``."""
         if message.loss_only:
             return self._loss_only(message.knobs)
         knob_updates = message.knobs
@@ -128,6 +130,7 @@ class CalibratedClosedOrbitWorker(ClosedOrbitWorker):
         return self._shared.buf
 
     def close(self) -> None:
+        """Close the engine."""
         super().close()
         if self._shared is not None:
             self._shared.close()

@@ -30,6 +30,7 @@ class LBFGSOptimiser(BaseOptimiser):
 
     @classmethod
     def config_kwargs(cls, config: OptimiserConfig, n_params: int) -> dict[str, Any]:
+        """Constructor arguments from ``config``."""
         del n_params
         return {
             "history_size": config.lbfgs_history_size,

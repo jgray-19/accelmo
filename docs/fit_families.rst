@@ -82,11 +82,6 @@ readings are compared.
      - Measured, at the first flattop turn of each bunch
      - ``n_run_turns`` turns forward through the model AC kickers
      - All BPMs, every turn
-   * - :class:`~accelmo.tracking.fitter.ACDTurnSinusoidFitter`
-     - Fitted: one state per turn at the ``before`` marker
-     - One turn backward from ``before`` and forward from ``after`` (``before`` plus the
-       kick)
-     - All BPMs
 
 Each fitter builds a tracking plan (``tracking/config/tracking.py``) that fixes the ranges
 and the markers. The step-by-step run of one fit is in :doc:`tracking_tour`.
@@ -98,9 +93,10 @@ One parquet file per measurement, with the columns
 ``name, turn, bunch_number, x, px, y, py, var_x, var_y, var_px, var_py``.
 :class:`~accelmo.tracking.config.models.MeasurementConfig` maps each file to a
 :class:`~accelmo.tracking.config.models.MeasurementDetails` (MAD interface options,
-momentum offset ``machine_deltap``, ``first_bpm``).
+momentum offset ``machine_deltap``, ``first_bpm``). Columns, units and the machine state are
+described in :doc:`measurement_data`.
 
-* ``ACDMarkerFitter`` and both sinusoid fitters need ``<acd>_before`` and ``<acd>_after``
+* ``ACDMarkerFitter`` and ``ACDSinusoidFitter`` need ``<acd>_before`` and ``<acd>_after``
   rows.
 * ``KickerFitter`` needs ``x``, ``px``, ``y``, ``py`` at the kicker marker.
 

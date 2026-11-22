@@ -197,6 +197,7 @@ class ClosedOrbitWorker(ClosedTwissWorker):
         return self._reply(np.zeros(n), float("nan"), np.zeros((n, n)), np.zeros((n, n)))
 
     def prepare_data(self, data: list[ClosedOrbitSeriesData]) -> None:
+        """Store the measured series of this worker."""
         if not data:
             raise ValueError("A closed-orbit worker needs at least one series")
         self.series: list[SeriesState] = []
@@ -437,6 +438,7 @@ class ClosedOrbitWorker(ClosedTwissWorker):
         return self._reply(np.zeros(n), 0.0, np.zeros((n, n)), np.zeros((n, n)), extra=published)
 
     def close(self) -> None:
+        """Close the engine."""
         if self._publisher is not None:
             self._publisher.close()
         if self._reference_reader is not None:

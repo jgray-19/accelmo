@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 from typing import TYPE_CHECKING
 
+import numpy as np
 import pytest
 
 from accelmo.fitting.config import OutputConfig, SequenceConfig
@@ -36,6 +38,7 @@ def _build_kicker_controller(
     seq_psb: Path,
     loaded_psb_interface: MadInterface,
     flattop_turns: int = 10,
+    **simulation_overrides: object,
 ) -> tuple[KickerFitter, dict[str, float]]:
     magnet_range = "$start/$end"
     off_magnet_path = tmp_path / "track_kicker_off_magnet.parquet"
@@ -57,7 +60,7 @@ def _build_kicker_controller(
             errors={"quad": {"k1"}},
         ),
         optimiser_config,
-        _make_simulation_config_quad(),
+        dataclasses.replace(_make_simulation_config_quad(), **simulation_overrides),
         SequenceConfig(magnet_range=magnet_range),
         create_arc_measurement_config(
             off_magnet_path, machine_state=merge_machine_states(corrector_file, tune_knobs)
@@ -137,6 +140,88 @@ def test_check_degeneracy_finds_the_quad_behind_the_last_bpm(
     assert not report.is_degenerate
     assert report.zero_sensitivity_knobs == []
     assert report.condition_number < 1e6
+
+
+def test_fitted_start_uncertainty_is_the_marginal_of_the_joint_fit(
+    tmp_path: Path,
+    seq_psb: Path,
+    loaded_psb_interface: MadInterface,
+) -> None:
+    """With ``fit_start_coords`` the start is a fit parameter, not a measured input.
+
+    One noise-free kicker track: every reading is used once, so the knob covariance is the knob
+    block of the inverse joint (knobs + start) normal matrix. The measured start variances
+    must not enter.
+    """
+    ctrl, _truth = _build_kicker_controller(
+        tmp_path=tmp_path,
+        seq_psb=seq_psb,
+        loaded_psb_interface=loaded_psb_interface,
+        flattop_turns=4,
+        fit_start_coords=True,
+    )
+    result = ctrl.run()
+    assert result.diagnostics.converged
+    names = ctrl.knob_names
+    n_knobs = len(names)
+    joint = ctrl.lm_hessian  # loss units, knobs then the 4 start coordinates
+    assert joint.shape == (n_knobs + 4, n_knobs + 4)
+
+    # The uncertainty normal matrix is the joint one with the start projected out (Schur).
+    k, s = slice(0, n_knobs), slice(n_knobs, None)
+    schur = joint[k, k] - joint[k, s] @ np.linalg.solve(joint[s, s], joint[s, k])
+    normal, _ = ctrl.build_initial_normal_matrix(start_knobs=result.knobs)
+    scale = np.trace(normal) / np.trace(schur)
+    np.testing.assert_allclose(scale * schur, normal, rtol=1e-9, atol=0)
+
+    marginal = np.sqrt(np.diag(np.linalg.inv(scale * joint))[:n_knobs])
+    reported = np.array([result.uncertainties[name] for name in names])
+    np.testing.assert_allclose(reported, marginal, rtol=1e-9)
+
+
+def test_knob_prior_bounds_the_reported_uncertainty(
+    tmp_path: Path,
+    seq_psb: Path,
+    loaded_psb_interface: MadInterface,
+) -> None:
+    """A Gaussian knob prior is information: the posterior sigma cannot exceed its width.
+
+    Fitted starts: every reading is used once and none carries start noise, so the
+    covariance is ``(A + P)⁻¹`` with ``P = 1/width²``.
+    """
+    free, _ = _build_kicker_controller(
+        tmp_path=tmp_path,
+        seq_psb=seq_psb,
+        loaded_psb_interface=loaded_psb_interface,
+        flattop_turns=4,
+        fit_start_coords=True,
+    )
+    free_result = free.run()
+    data_sigma = np.array([free_result.uncertainties[name] for name in free.knob_names])
+    normal, _ = free.build_initial_normal_matrix(start_knobs=free_result.knobs)
+    np.testing.assert_allclose(np.sqrt(np.diag(np.linalg.inv(normal))), data_sigma, rtol=1e-9)
+    width = 0.01 * data_sigma.min()
+
+    ctrl, _ = _build_kicker_controller(
+        tmp_path=tmp_path,
+        seq_psb=seq_psb,
+        loaded_psb_interface=loaded_psb_interface,
+        flattop_turns=4,
+        fit_start_coords=True,
+        knob_sigmas={"dk1l": width},
+    )
+    result = ctrl.run()
+    assert result.diagnostics.converged
+    reported = np.array([result.uncertainties[name] for name in ctrl.knob_names])
+    # A + P from the LM Hessian at the best point (starts projected out), scaled so P = 1/width²
+    joint = ctrl.lm_hessian
+    n_knobs = len(ctrl.knob_names)
+    k, s = slice(0, n_knobs), slice(n_knobs, None)
+    schur = joint[k, k] - joint[k, s] @ np.linalg.solve(joint[s, s], joint[s, k])
+    scale = 1.0 / (width**2 * ctrl._lm_prior_hessian[0, 0])
+    posterior = np.sqrt(np.diag(np.linalg.inv(scale * schur)))
+    assert np.all(reported < width)
+    np.testing.assert_allclose(reported, posterior, rtol=1e-10)
 
 
 def test_controller_quad_opt_with_kicker(

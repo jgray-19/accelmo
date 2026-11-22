@@ -26,6 +26,8 @@ LOGGER = logging.getLogger(__name__)
 
 
 class CheckpointState(TypedDict):
+    """Contents of a checkpoint file."""
+
     saved_epoch: int
     next_epoch: int
     current_knobs: dict[str, float]

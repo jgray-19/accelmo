@@ -197,6 +197,7 @@ end
             )
 
     def set_knobs(self, knobs: Mapping[str, float]) -> None:
+        """See :meth:`accelmo.backend.protocol.TrackingEngine.set_knobs`."""
         self.session.set_knobs(knobs, plain=self.plan.validation)
 
     def load_particles(
@@ -222,6 +223,7 @@ end
         mad.send(self._init_script)
 
     def set_pts(self, pt: float, first_batch: int, last_batch: int) -> None:
+        """See :meth:`accelmo.backend.protocol.TrackingEngine.set_pts`."""
         self.session.mad.send(f"""
 for b = {first_batch + 1}, {last_batch + 1} do
     for i = 1, batch_size do
@@ -257,6 +259,7 @@ end
             mad.send(np.asarray(values, dtype=np.float64).reshape(-1, 1))
 
     def preflight(self) -> dict[str, int | bool]:
+        """See :meth:`accelmo.backend.protocol.TrackingEngine.preflight`."""
         mad = self.session.mad
         mad.send(build_tracking_preflight_script())
         return mad.recv()
@@ -267,6 +270,7 @@ end
             self._save_start = enabled
 
     def track(self, batch: int, *, start_derivatives: bool) -> TrackResult:
+        """See :meth:`accelmo.backend.protocol.TrackingEngine.track`."""
         mad = self.session.mad
         observables = self.plan.observables
         mad.send(f"batch = {batch + 1}")
@@ -285,6 +289,7 @@ end
         return TrackResult(obs, d_dk, d_dc0, int(loss_info["n_lost"]), int(loss_info["n_total"]))
 
     def close(self) -> None:
+        """Close the MAD-NG process."""
         self.session.close()
 
 
@@ -367,18 +372,23 @@ class ClosedOrbitEngine:
         """Hook for zero-valued knobs after the magnet knobs (:class:`CalibratedClosedOrbitEngine`)."""
 
     def set_knobs(self, knobs: Mapping[str, float]) -> None:
+        """See :meth:`accelmo.backend.protocol.ClosedOrbitEngine.set_knobs`."""
         self.session.set_knobs(knobs, plain=self._plain)
 
     def get_vars(self, names: Sequence[str]) -> dict[str, float]:
+        """See :meth:`accelmo.backend.protocol.ClosedOrbitEngine.get_vars`."""
         return get_vars(self.session.mad, PYTHON_IN_MAD, list(names))
 
     def set_vars(self, values: Mapping[str, float]) -> None:
+        """See :meth:`accelmo.backend.protocol.ClosedOrbitEngine.set_vars`."""
         set_vars(self.session.mad, values)
 
     def set_pt(self, pt: float) -> None:
+        """See :meth:`accelmo.backend.protocol.ClosedOrbitEngine.set_pt`."""
         self.session.mad.send(f"x0map.pt:set0({pt:.15e})")
 
     def set_warm_start(self, key: str) -> None:
+        """See :meth:`accelmo.backend.protocol.ClosedOrbitEngine.set_warm_start`."""
         self.session.mad.send(f"co_key = '{key}'")
 
     def _found(self, command: str, what: str) -> bool:
@@ -398,6 +408,7 @@ class ClosedOrbitEngine:
             self._plain = plain
 
     def solve(self, observables: Sequence[str], *, jacobian: bool = True) -> ClosedSolution | None:
+        """See :meth:`accelmo.backend.protocol.ClosedOrbitEngine.solve`."""
         if not jacobian:
             return self._solve_plain(observables)
         self._set_plain(plain=False)
@@ -448,6 +459,7 @@ class ClosedOrbitEngine:
         return ClosedSolution(self._names, np.array([rows[name] for name in observables]), None)
 
     def close(self) -> None:
+        """Close the MAD-NG process."""
         self.session.close()
 
 

@@ -93,6 +93,7 @@ class Monitor:
     # -- layout ------------------------------------------------------------------------
 
     def layout(self) -> pn.template.BaseTemplate:
+        """The Panel page of the monitor."""
         template = pn.template.FastListTemplate(
             title="accelmo monitor",
             sidebar=[

@@ -12,8 +12,7 @@ the main process sums their replies and updates the knobs.
 There are two fitting engines, built the same way:
 
 - **Tracking** (``tracking``): ``TrackingFitter`` and its subclasses
-  ``ArcByArcFitter``, ``KickerFitter``, ``ACDMarkerFitter``, ``ACDSinusoidFitter`` and
-  ``ACDTurnSinusoidFitter`` fit
+  ``ArcByArcFitter``, ``KickerFitter``, ``ACDMarkerFitter`` and ``ACDSinusoidFitter`` fit
   turn-by-turn data with mini-batch gradient descent (Adam or L-BFGS, ``tracking.sgd``) or
   Levenberg-Marquardt (``fitting.lm_loop``), optionally with the start coordinates.
 - **POCO** (``poco``): ``ClosedOrbitFitter``, ``ClosedTwissFitter`` and
