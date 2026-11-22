@@ -20,7 +20,7 @@ jobs:
     name: Fast contracts
     uses: ./.github/workflows/_pytest.yml
     with:
-      markers: "not serial and not slow and not regression and not convergence and not e2e"
+      markers: "not serial and not slow and not regression and not convergence"
       coverage-flag: fast
       parallel: true
     secrets: inherit
@@ -30,7 +30,7 @@ jobs:
     needs: fast
     uses: ./.github/workflows/_pytest.yml
     with:
-      markers: "serial and not slow and not regression and not convergence and not e2e"
+      markers: "serial and not slow and not regression and not convergence"
       coverage-flag: serial
     secrets: inherit
 
@@ -48,7 +48,7 @@ jobs:
     needs: fast
     uses: ./.github/workflows/_pytest.yml
     with:
-      markers: "slow and not regression and not convergence and not e2e"
+      markers: "slow and not regression and not convergence"
       coverage-flag: integration
     secrets: inherit
 
@@ -56,17 +56,4 @@ jobs:
     name: Convergence
     needs: regression
     uses: ./.github/workflows/_convergence.yml
-    secrets: inherit
-
-  e2e:
-    name: E2E
-    needs: [integration, convergence]
-    if: >-
-      (github.event_name == 'workflow_dispatch' ||
-       github.event_name == 'schedule') &&
-      vars.E2E_RUNNER != ''
-    uses: ./.github/workflows/_pytest.yml
-    with:
-      markers: e2e
-      runner: ${{ vars.E2E_RUNNER }}
     secrets: inherit

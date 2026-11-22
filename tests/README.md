@@ -14,7 +14,6 @@ pytest --cov=accelmo
 | `regression` | Fast behavioural regression contracts |
 | `integration` | Multi-component integration |
 | `convergence` | Full optimiser convergence |
-| `e2e` | Full machine-to-optimisation end to end |
 | `lhc`, `sps`, `psb` | Machine-specific |
 | `serial` | Must not run in parallel (do not combine with `-n`) |
 

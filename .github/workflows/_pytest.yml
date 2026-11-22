@@ -17,14 +17,9 @@ on:
         required: false
         default: false
 
-      runner:
-        type: string
-        required: false
-        default: ubuntu-latest
-
 jobs:
   test:
-    runs-on: ${{ inputs.runner }}
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout

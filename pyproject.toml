@@ -90,7 +90,6 @@ markers = [
     "regression: fast behavioural regression contracts",
     "integration: multi-component integration tests",
     "convergence: full optimiser convergence tests",
-    "e2e: full machine-to-optimisation end-to-end tests",
     "lhc: LHC-specific tests",
     "sps: SPS-specific tests",
     "psb: PSB-specific tests",
