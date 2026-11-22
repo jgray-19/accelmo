@@ -28,7 +28,18 @@ if TYPE_CHECKING:
 LOGGER = logging.getLogger(__name__)
 
 #: MAD-X base element kinds the knob families select.
-_KINDS = {"quadrupole", "sbend", "rbend", "hkicker", "vkicker", "kicker", "multipole", "sextupole", "monitor", "marker"}
+_KINDS = {
+    "quadrupole",
+    "sbend",
+    "rbend",
+    "hkicker",
+    "vkicker",
+    "kicker",
+    "multipole",
+    "sextupole",
+    "monitor",
+    "marker",
+}
 _DECLARATION = re.compile(r"^\s*([A-Za-z_][\w.$]*)\s*:\s*([A-Za-z_][\w.$]*)", re.MULTILINE)
 #: (kind, attribute) -> knob suffix; the only knob types this backend builds. xsuite thin
 #: ``Multipole`` correctors have no TPSA fields, so corrector kicks are machine state only.
@@ -42,11 +53,12 @@ _SUPPORTED = {
 def madx_element_kinds(sequence_file: Path) -> dict[str, str]:
     """Base MAD-X kind of every element declared in a sequence file (upper-case names)."""
     parents = {
-        name.upper(): parent.lower() for name, parent in _DECLARATION.findall(sequence_file.read_text())
+        name.upper(): parent.lower()
+        for name, parent in _DECLARATION.findall(sequence_file.read_text())
     }
     kinds = {}
-    for name in parents:
-        parent, seen = parents[name], {name}
+    for name, first in parents.items():
+        parent, seen = first, {name}
         while parent not in _KINDS and parent.upper() in parents and parent.upper() not in seen:
             seen.add(parent.upper())
             parent = parents[parent.upper()]
@@ -77,7 +89,9 @@ class XtrackModel:
         initial_model_values: Mapping[str, float] | None = None,
     ) -> None:
         if accelerator.seq_dir != 1:
-            raise NotImplementedError("xtrack backend: backward sequences (LHC beam 2) are not supported")
+            raise NotImplementedError(
+                "xtrack backend: backward sequences (LHC beam 2) are not supported"
+            )
         if accelerator.optimise_energy or accelerator.misalignments:
             raise NotImplementedError("xtrack backend: pt and misalignment knobs are not supported")
         self.accelerator = accelerator
@@ -121,7 +135,9 @@ class XtrackModel:
         if getattr(accelerator, "group_quadrupoles_by_cell", False) or (
             getattr(accelerator, "normalise_bends", False) and accelerator.optimises("bend", "k0")
         ):
-            raise NotImplementedError("xtrack backend: grouped or normalised knobs are not supported")
+            raise NotImplementedError(
+                "xtrack backend: grouped or normalised knobs are not supported"
+            )
         start, stop = _range_indices(self.names, self.magnet_range)
         selected = self.names[start : stop + 1]
         for spec in accelerator.get_knob_specs():
@@ -134,7 +150,10 @@ class XtrackModel:
                 if self.kinds.get(upper) != spec.kind or not regex.search(upper):
                     continue
                 element = self.line[name]
-                if spec.nonzero_attr is not None and self._strength(element, spec.nonzero_attr) == 0:
+                if (
+                    spec.nonzero_attr is not None
+                    and self._strength(element, spec.nonzero_attr) == 0
+                ):
                     continue
                 knob = f"{upper}.{suffix}"
                 if knob in self.knob_names:
@@ -170,7 +189,9 @@ class XtrackModel:
         """Knob values; ``pt`` is not a model value here."""
         unknown = [name for name in values if name != "pt" and name not in self.knob_names]
         if unknown:
-            raise NotImplementedError(f"xtrack backend: fixed model values {unknown[:5]} are not supported")
+            raise NotImplementedError(
+                f"xtrack backend: fixed model values {unknown[:5]} are not supported"
+            )
         self.set_knob_values({k: v for k, v in values.items() if k != "pt"})
 
     # ------------------------------------------------------------------ state
@@ -181,7 +202,9 @@ class XtrackModel:
             return None, name.lower()
         if element and element.lower() in self.env.element_dict:
             return element.lower(), attribute
-        raise ValueError(f"machine_state names {name!r}, which is neither a variable nor an element attribute")
+        raise ValueError(
+            f"machine_state names {name!r}, which is neither a variable nor an element attribute"
+        )
 
     def read_state(self, names: Sequence[str]) -> dict[str, float]:
         values = {}
@@ -190,14 +213,20 @@ class XtrackModel:
             if element is None:
                 values[name] = float(self.env.vars[attribute]._value)
             else:
-                values[name] = self._kick(element) if attribute == "kick" else float(
-                    getattr(self.env[element], attribute)
+                values[name] = (
+                    self._kick(element)
+                    if attribute == "kick"
+                    else float(getattr(self.env[element], attribute))
                 )
         return values
 
     def _kick(self, element: str) -> float:
         kind = self.kinds[element.upper()]
-        return -float(self.env[element].knl[0]) if kind == "hkicker" else float(self.env[element].ksl[0])
+        return (
+            -float(self.env[element].knl[0])
+            if kind == "hkicker"
+            else float(self.env[element].ksl[0])
+        )
 
     def assign_state(self, state: Mapping[str, float]) -> None:
         for name, value in state.items():
@@ -233,8 +262,19 @@ class XtrackModel:
         self.nbpms = len(self.bpms_in_range)
 
     def cycle_to_start(self, marker: str) -> None:
+        """Start the line at ``marker``; a thick element becomes drift, marker, drift (as MAD-NG)."""
         names = list(self.line.element_names)
         index = [name.upper() for name in names].index(marker.upper())
+        name = names[index]
+        length = float(getattr(self.line[name], "length", 0.0) or 0.0)
+        if length > 0.0:
+            half = f"{name}_half_drift"
+            centre = f"{name}_centre_marker"
+            if half not in self.env.element_dict:
+                self.env.new(half, "Drift", length=length / 2)
+                self.env.new(centre, "Marker")
+            names[index : index + 1] = [half, centre, half]
+            index += 1
         self.line = self._make_line(names[index:] + names[:index])
 
     def close(self) -> None:

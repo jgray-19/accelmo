@@ -2,8 +2,8 @@
 
 A tilted quadrupole is a skew source: it couples the horizontal orbit and
 dispersion into the vertical plane. The rotation is driven through the element's
-own ``tilt``, the only route MAD-NG differentiates - see ``_TILT_SEED`` in
-``accelerators/base.py``. The failure mode these tests guard is silence: a tilt
+own ``tilt``, the only route MAD-NG differentiates - see ``TILT_SEED`` in
+``backend/madng/accelerator_hooks.py``. The failure mode these tests guard is silence: a tilt
 that never reaches the map raises nothing.
 """
 
@@ -15,12 +15,12 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pytest
 
-from accelmo.machine.accelerators import PSB
 from accelmo.backend.madng.accelerator_hooks import TILT_SEED as _TILT_SEED
 from accelmo.backend.madng.optimising_mad_interface import (
     GenericMadInterface,
     GradientDescentMadInterface,
 )
+from accelmo.machine.accelerators import PSB
 
 if TYPE_CHECKING:
     from pathlib import Path

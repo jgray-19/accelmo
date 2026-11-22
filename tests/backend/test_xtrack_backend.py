@@ -34,7 +34,9 @@ def _accelerator(seq_psb: Path, backend: str) -> PSB:
 
 
 def _knob_names(seq_psb: Path, backend: str) -> tuple[list[str], list[str]]:
-    model = get_backend(backend).open_model(_accelerator(seq_psb, backend), magnet_range="$start/$end")
+    model = get_backend(backend).open_model(
+        _accelerator(seq_psb, backend), magnet_range="$start/$end"
+    )
     names, bpms = list(model.knob_names), list(model.all_bpms)
     model.close()
     return names, bpms
@@ -84,7 +86,17 @@ def _tracking(seq_psb: Path, backend: str, knobs: dict[str, float]):
         tracking_end_bpm=bpms[-1],
         magnet_range="$start/$end",
     )
-    plan = TrackingPlan(("x", "px", "y", "py"), 2, 1, config.tracking_range, 1, False, False, 0, 0)
+    plan = TrackingPlan(
+        observables=("x", "px", "y", "py"),
+        batch_size=2,
+        num_batches=1,
+        tracking_range=config.tracking_range,
+        n_run_turns=1,
+        start_on_first_turn=False,
+        validation=False,
+        file_index=0,
+        turn_offset=0,
+    )
     engine = get_backend(backend).TrackingEngine(config, plan, knobs, worker_id=0)
     engine.load_particles(
         [[[1e-3, 1e-4, -1e-3, 5e-5, 0, 0], [-5e-4, 0, 2e-4, -1e-4, 0, 0]]], [[0.0, 1e-3]]
@@ -102,7 +114,9 @@ def test_horizontal_tracking_matches_madng(seq_psb: Path) -> None:
     rng = np.random.default_rng(1)
     names = _knob_names(seq_psb, "madng")[0]
     knobs = {name: float(rng.uniform(-2e-3, 2e-3)) for name in names}
-    (madng, m_order), (xtrack, x_order) = (_tracking(seq_psb, b, knobs) for b in ("madng", "xtrack"))
+    (madng, m_order), (xtrack, x_order) = (
+        _tracking(seq_psb, b, knobs) for b in ("madng", "xtrack")
+    )
     for o in ("x", "px"):
         np.testing.assert_allclose(xtrack.obs[o], madng.obs[o], rtol=0, atol=2e-9)
         np.testing.assert_allclose(
@@ -123,7 +137,9 @@ def test_vertical_tracking_matches_madng(seq_psb: Path) -> None:
     rng = np.random.default_rng(1)
     names = _knob_names(seq_psb, "madng")[0]
     knobs = {name: float(rng.uniform(-2e-3, 2e-3)) for name in names}
-    (madng, m_order), (xtrack, x_order) = (_tracking(seq_psb, b, knobs) for b in ("madng", "xtrack"))
+    (madng, m_order), (xtrack, x_order) = (
+        _tracking(seq_psb, b, knobs) for b in ("madng", "xtrack")
+    )
     for o in ("y", "py"):
         np.testing.assert_allclose(xtrack.obs[o], madng.obs[o], rtol=0, atol=2e-9)
         np.testing.assert_allclose(
@@ -144,3 +160,41 @@ def test_tpsa_derivatives_equal_plain_xsuite_differences(seq_psb: Path) -> None:
     fd = (shifted[0] - shifted[1]) / (2 * step)
     np.testing.assert_allclose(result.d_dk["x"][:, order[3]], fd, rtol=0, atol=1e-8)
     assert np.abs(fd).max() > 1e-3
+
+
+def test_kicker_start_matches_madng(seq_psb: Path) -> None:
+    """Multi-turn from the thick kicker BE3.KFA14L1: both codes start at its centre.
+
+    Measured 2.4e-11 m after 5 turns; starting xsuite at the kicker entrance gave 8.8e-5 m.
+    """
+    knobs = dict.fromkeys(_knob_names(seq_psb, "madng")[0], 0.0)
+    results = {}
+    for backend in ("madng", "xtrack"):
+        config = WorkerConfig(
+            accelerator=_accelerator(seq_psb, backend),
+            tracking_start_bpm="$start",
+            tracking_end_bpm="$end",
+            magnet_range="$start/$end",
+            initial_condition_marker="BE3.KFA14L1",
+        )
+        plan = TrackingPlan(
+            observables=("x", "y"),
+            batch_size=1,
+            num_batches=1,
+            tracking_range=config.tracking_range,
+            n_run_turns=5,
+            start_on_first_turn=True,
+            validation=True,
+            file_index=0,
+            turn_offset=0,
+        )
+        engine = get_backend(backend).TrackingEngine(config, plan, knobs, worker_id=0)
+        engine.load_particles([[[5e-4, 5e-5, -5e-4, 2e-5, 0, 0]]], [[0.0]])
+        engine.set_pts(0.0, 0, 0)
+        results[backend] = engine.track(0, start_derivatives=False)
+        engine.close()
+    for o in ("x", "y"):
+        assert np.abs(results["madng"].obs[o]).max() > 1e-4
+        np.testing.assert_allclose(
+            results["xtrack"].obs[o], results["madng"].obs[o], rtol=0, atol=1e-9
+        )
