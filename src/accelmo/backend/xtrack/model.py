@@ -27,6 +27,10 @@ if TYPE_CHECKING:
 
 LOGGER = logging.getLogger(__name__)
 
+QUAD_MODEL = "mat-kick-mat-exact"
+QUAD_INTEGRATOR = "yoshida-6"
+QUAD_KICKS = 1  # yoshida-6 rounds up to a full 7-kick slice
+
 #: MAD-X base element kinds the knob families select.
 _KINDS = {
     "quadrupole",
@@ -124,6 +128,9 @@ class XtrackModel:
     def _make_line(self, names: list[str]) -> xt.Line:
         line = self.env.new_line(components=names)
         line.particle_ref = self.particle_ref.copy()
+        line.configure_quadrupole_model(
+            model=QUAD_MODEL, integrator=QUAD_INTEGRATOR, num_multipole_kicks=QUAD_KICKS
+        )
         line.config.XTRACK_MULTIPOLE_NO_SYNRAD = True
         line.build_tracker()
         return line

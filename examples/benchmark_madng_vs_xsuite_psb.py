@@ -1,8 +1,9 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["accelmo"]
+# dependencies = ["accelmo[tracking]", "xtrack>=0.118.6", "xtrack-tools"]
 # [tool.uv.sources]
 # accelmo = { path = "..", editable = true }
+# xtrack-tools = { git = "https://github.com/jgray-19/xtrack_tools", rev = "0e6779d35546db12182a99d25c1cba60d395c90e" }
 # ///
 """Speed of MAD-NG and xsuite (xtrack TPSA) for the PSB fits: POCO and the DLMN methods.
 
@@ -24,17 +25,27 @@ The script also reports the largest difference between the two codes' results.
 Run from the repository root (needs ``tests/data/acc-models-psb``):
 
 ```bash
-uv run examples/benchmark_madng_vs_xsuite_psb.py --output-dir benchmark_madng_vs_xsuite
+uv run examples/benchmark_madng_vs_xsuite_psb.py
+uv run examples/benchmark_madng_vs_xsuite_psb.py --methods poco --profile
+uv run --with-editable /path/to/xtrack examples/benchmark_madng_vs_xsuite_psb.py
 ```
 
 Writes ``timings.csv`` and ``timings.json`` to the output directory and prints a table.
+``--profile`` also prints the cProfile of one xtrack evaluation per method, sorted by
+cumulative time. ``--with-editable`` benchmarks a local xtrack checkout.
 """
 
 from __future__ import annotations
 
+import os
+
+os.environ.setdefault("OMP_NUM_THREADS", "1")  # single-threaded timings
+
 import argparse
+import cProfile
 import json
 import logging
+import pstats
 import time
 from pathlib import Path
 
@@ -51,6 +62,7 @@ from accelmo.machine.accelerators import PSB
 REPO = Path(__file__).resolve().parents[1]
 ACC_MODELS = REPO / "tests" / "data" / "acc-models-psb"
 BACKENDS = ("madng", "xtrack")
+METHODS = ("poco", "dlmn_single_turn", "dlmn_kicker_multi_turn")
 ERRORS = {"quad": {"k1"}}
 KNOB_SPREAD = 2e-3  # integrated dk1l [1/m], uniform +-
 CORRECTOR_STATE = {"kbr3dhz2l4": 2e-4, "kbr3dvt3l4": -1.5e-4}  # a non-zero closed orbit
@@ -61,6 +73,7 @@ KICKER = "BE3.KFA14L1"  # PSB ring-3 injection/extraction kicker; tracking start
 START_AMPLITUDE = 1e-3  # m, transverse start coordinates
 REPEATS = 5
 SEED = 1
+PROFILE_LINES = 30
 
 LOGGER = logging.getLogger(__name__)
 
@@ -114,18 +127,27 @@ def start_coordinates(n: int) -> list[list[list[float]]]:
     return [coords.tolist()]
 
 
-def timed(function, repeats: int = REPEATS) -> tuple[np.ndarray, object]:
-    """Wall times of ``repeats`` calls after one warm-up call, and the last result."""
+def timed(
+    function, backend: str, profile: bool, repeats: int = REPEATS
+) -> tuple[np.ndarray, object]:
+    """Wall times of ``repeats`` calls after one warm-up call, and the last result.
+
+    With ``profile`` the xtrack backend gets one extra profiled call (cumulative time).
+    """
     result = function()
     times = []
     for _ in range(repeats):
         start = time.perf_counter()
         result = function()
         times.append(time.perf_counter() - start)
+    if profile and backend == "xtrack":
+        profiler = cProfile.Profile()
+        profiler.runcall(function)
+        pstats.Stats(profiler).sort_stats("cumulative").print_stats(PROFILE_LINES)
     return np.array(times), result
 
 
-def poco(sequence: Path, backend: str, knobs: dict[str, float]):
+def poco(sequence: Path, backend: str, knobs: dict[str, float], profile: bool):
     config = WorkerConfig(
         accelerator=accelerator(sequence, backend),
         tracking_start_bpm="$start",
@@ -141,14 +163,20 @@ def poco(sequence: Path, backend: str, knobs: dict[str, float]):
     engine.set_pt(0.0)
     engine.set_knobs(knobs)
     setup = time.perf_counter() - start
-    times, solution = timed(lambda: engine.solve(["x", "y"]))
+    times, solution = timed(lambda: engine.solve(["x", "y"]), backend, profile)
     order = [engine.knob_names.index(name) for name in sorted(knobs)]
     engine.close()
     return setup, times, solution.values, solution.jacobian[:, :, order]
 
 
 def dlmn(
-    sequence: Path, backend: str, knobs: dict[str, float], bpms: list[str], *, multi_turn: bool
+    sequence: Path,
+    backend: str,
+    knobs: dict[str, float],
+    bpms: list[str],
+    profile: bool,
+    *,
+    multi_turn: bool,
 ):
     n_particles = MULTI_TURN_PARTICLES if multi_turn else SINGLE_TURN_PARTICLES
     config = WorkerConfig(
@@ -175,7 +203,7 @@ def dlmn(
     engine.set_knobs(knobs)
     engine.set_pts(0.0, 0, 0)
     setup = time.perf_counter() - start
-    times, result = timed(lambda: engine.track(0, start_derivatives=False))
+    times, result = timed(lambda: engine.track(0, start_derivatives=False), backend, profile)
     order = [engine.knob_names.index(name) for name in sorted(knobs)]
     engine.close()
     values = np.stack([result.obs[o] for o in ("x", "y")])
@@ -185,7 +213,9 @@ def dlmn(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--output-dir", type=Path, default=Path("benchmark_madng_vs_xsuite"))
+    parser.add_argument("--methods", nargs="+", choices=METHODS, default=list(METHODS))
+    parser.add_argument("--profile", action="store_true", help="cProfile one xtrack evaluation")
     args = parser.parse_args()
     logging.basicConfig(level=logging.WARNING)
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -193,14 +223,17 @@ def main() -> None:
     knobs, bpms = knob_values(sequence)
 
     methods = {
-        "poco": lambda backend: poco(sequence, backend, knobs),
-        "dlmn_single_turn": lambda backend: dlmn(sequence, backend, knobs, bpms, multi_turn=False),
+        "poco": lambda backend: poco(sequence, backend, knobs, args.profile),
+        "dlmn_single_turn": lambda backend: dlmn(
+            sequence, backend, knobs, bpms, args.profile, multi_turn=False
+        ),
         "dlmn_kicker_multi_turn": lambda backend: dlmn(
-            sequence, backend, knobs, bpms, multi_turn=True
+            sequence, backend, knobs, bpms, args.profile, multi_turn=True
         ),
     }
     rows = []
-    for method, run in methods.items():
+    for method in args.methods:
+        run = methods[method]
         results = {backend: run(backend) for backend in BACKENDS}
         (_, _, v_mad, j_mad), (_, _, v_xs, j_xs) = results["madng"], results["xtrack"]
         for backend, (setup, times, _, _) in results.items():
