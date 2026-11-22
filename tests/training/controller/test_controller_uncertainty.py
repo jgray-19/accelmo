@@ -19,7 +19,9 @@ from accelmo.tracking.uncertainty import (
 )
 
 
-def test_sandwich_uncertainties_are_finite_and_non_negative_for_an_indefinite_normal_matrix() -> None:
+def test_sandwich_uncertainties_are_finite_and_non_negative_for_an_indefinite_normal_matrix() -> (
+    None
+):
     uncertainties = sandwich_uncertainties(
         np.array([[4.0, 0.0], [0.0, -1e-12]], dtype=np.float64),
         np.diag([4.0, HESSIAN_MIN_EIGENVALUE]),
@@ -36,7 +38,9 @@ def test_shared_reading_noise_is_summed_before_squaring() -> None:
     g_a, g_b, g_start = np.array([1.0, 2.0]), np.array([3.0, -1.0]), np.array([0.5, 0.5])
     part_a = UncertaintyPart(np.eye(2), np.array([7]), g_a[None, :], np.array([0.1]))
     part_b = UncertaintyPart(
-        2.0 * np.eye(2), np.array([7, 9, 11]), np.stack([g_b, g_start, g_start]),
+        2.0 * np.eye(2),
+        np.array([7, 9, 11]),
+        np.stack([g_b, g_start, g_start]),
         np.array([0.1, 0.2, np.inf]),
     )
 
@@ -98,15 +102,16 @@ def _collect_epoch_gradient(ctrl: TrackingFitter, knob_updates: dict[str, float]
     ranges; multiplying it back makes the sum comparable with the Hessian parts.
     """
     gradient = np.zeros(len(ctrl.machine.knob_names), dtype=np.float64)
-    points = {
-        meta.worker_id: len(meta.bpm_names) * meta.n_run_turns
-        for meta in ctrl.session.training.metadata
-    }
+    n_run_turns = ctrl.machine.simulation_config.n_run_turns
+    # Training workers are numbered from 0 in pool order.
+    points = [len(plan.bpm_names) * n_run_turns for plan in ctrl.session.training.metadata]
     channels = ctrl.session.training.channels
     for batch in range(ctrl.machine.simulation_config.num_batches):
         channels.send_all(Evaluate(knob_updates, batch))
         for result in channels.recv_all():
-            gradient += points[result.worker_id] * np.asarray(result.grad, dtype=np.float64).reshape(-1)
+            gradient += points[result.worker_id] * np.asarray(
+                result.grad, dtype=np.float64
+            ).reshape(-1)
     return gradient
 
 
@@ -423,9 +428,7 @@ def test_controller_worker_hessian_matches_finite_difference_for_psb_100um_varia
     # No range crosses s = 0, so the quadrupoles outside BPM1L3..BPM16L3 (QFO11 before
     # the first BPM, QDE16 and QFO162 after the last) are never observed.
     row_norms = np.linalg.norm(sym_hessian, axis=1)
-    zero_row_knobs = {
-        ctrl.machine.knob_names[idx] for idx in np.where(row_norms == 0.0)[0]
-    }
+    zero_row_knobs = {ctrl.machine.knob_names[idx] for idx in np.where(row_norms == 0.0)[0]}
     assert zero_row_knobs == {
         "BR.QFO11.dk1l",
         "BR.QDE16.dk1l",
@@ -469,8 +472,10 @@ def test_single_direction_sigma_is_the_inverse_finite_difference_normal_matrix(
         assert [meta.sdir for meta in ctrl.session.training.metadata] == [sdir]
         weight_normaliser = _compute_training_weight_normaliser(ctrl)
         base_knobs = ctrl.machine.true_strengths.copy()
-        fd_normal = 0.5 * weight_normaliser * _finite_difference_hessian(
-            ctrl, base_knobs, np.arange(n_knobs)
+        fd_normal = (
+            0.5
+            * weight_normaliser
+            * _finite_difference_hessian(ctrl, base_knobs, np.arange(n_knobs))
         )
         ctrl.session.set_training_knobs(base_knobs)
         normal, noise = ctrl.session.stop_and_collect_uncertainty(
@@ -495,19 +500,19 @@ def test_single_direction_sigma_is_the_inverse_finite_difference_normal_matrix(
 
 
 PROBE_TURNS = 4
-#: Probe shift as a fraction of the reading's sigma: small enough for linear response.
-PROBE_SHIFT_SIGMA = float(__import__("os").environ.get("PROBE_SHIFT", "1e-3"))
-#: Exact starts measured 2e-12 (alone and with shared readings).
-PROBE_NOISE_REL_TOL = 1e-10
+#: Probe shift as a fraction of the reading's sigma. The one-sided probe truncates as the
+#: shift and float noise takes over below about 1e-6, so 1e-5 sits at the minimum.
+PROBE_SHIFT_SIGMA = 1e-5
+#: Measured at that shift: exact starts 5e-10, noisy starts 4e-6 to 8e-6 (probe truncation).
+PROBE_EXACT_REL_TOL = 1e-8
+PROBE_NOISY_REL_TOL = 1e-4
 
 
 def _truth_gradient(ctrl, track_file, knobs: dict[str, float]) -> np.ndarray:
     """The raw training gradient at ``knobs`` for the data in ``track_file``."""
     from accelmo.tracking.config.models import MeasurementConfig
 
-    ctrl.measurement_config = MeasurementConfig(
-        {track_file: ctrl.measurement_config.details[0]}
-    )
+    ctrl.measurement_config = MeasurementConfig({track_file: ctrl.measurement_config.details[0]})
     ctrl.data_manager = None
     ctrl.start_session(ctrl.machine.initial_knobs)
     try:
@@ -579,5 +584,6 @@ def test_reported_noise_matrix_matches_single_reading_probes(
             sensitivity = 0.5 * weight_normaliser * (gradient - base_gradient) / shift
             expected += variances[row] * np.outer(sensitivity, sensitivity)
 
-    print(f"PROBE_ERR {np.linalg.norm(noise - expected) / np.linalg.norm(expected):.3e}")
-    _assert_matrices_close(noise, expected, PROBE_NOISE_REL_TOL)
+    _assert_matrices_close(
+        noise, expected, PROBE_EXACT_REL_TOL if exact_start else PROBE_NOISY_REL_TOL
+    )

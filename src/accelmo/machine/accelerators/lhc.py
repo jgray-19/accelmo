@@ -92,6 +92,7 @@ class LHC(BaseLHC, Accelerator):
         normalise_bends: bool | None = None,
         custom_knobs_to_optimise: list[str] | None = None,
         backend: str = "madng",
+        seq_dir: int | None = None,
     ):
         """Initialise LHC accelerator for a specific beam.
 
@@ -105,6 +106,8 @@ class LHC(BaseLHC, Accelerator):
             misalignments: Alignment errors to fit (``quad``: dy, ``other_quad``: dx/dy)
             optimise_energy: Whether to optimise beam energy
             normalise_bends: Whether to normalise bend strengths (default: when fitting bend k0)
+            seq_dir: Sequence direction, required for beam 2: -1 for the MAD-X beam-2 sequence,
+                1 for the beam-4 sequence (also named ``lhcb2``)
 
         Raises:
             ValueError: If an invalid beam number is provided
@@ -123,6 +126,7 @@ class LHC(BaseLHC, Accelerator):
             optimise_energy=optimise_energy,
             custom_knobs_to_optimise=custom_knobs_to_optimise,
             backend=backend,
+            seq_dir=seq_dir,
         )
         if normalise_bends is None:
             normalise_bends = self.optimises("bend", "k0")
@@ -138,6 +142,7 @@ class LHC(BaseLHC, Accelerator):
             "particle": self.particle,
             "bpm_pattern": self.bpm_pattern,
             "normalise_bends": self.normalise_bends,
+            "seq_dir": self.seq_dir,
             **self.selection_kwargs(),
         }
         return LHC(**{**kwargs, **overrides})

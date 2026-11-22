@@ -11,9 +11,9 @@ from accelmo.fitting.pool import WorkerPool
 from accelmo.fitting.protocol import STOP, Ack
 from accelmo.fitting.worker import KickPlane, WorkerConfig
 from accelmo.machine.accelerators import PSB
-from accelmo.tracking.config.tracking import TrackingPlan
+from accelmo.tracking.config.tracking import TrackingPlan, WorkerRangeSpec
 from accelmo.tracking.data_manager import FileTracks
-from accelmo.tracking.dispatch.setup import WorkerRuntimeMetadata, WorkerSetupHelper
+from accelmo.tracking.dispatch.setup import WorkerObservationPlan, WorkerSetupHelper
 from accelmo.tracking.session import TrackingSession
 from accelmo.tracking.uncertainty import UncertaintyPart, drain_uncertainty
 from accelmo.tracking.worker import PrecomputedTrackingWeights, TrackingData, TrackingWorker
@@ -65,13 +65,16 @@ class _ConnThatMustNotPoll:
         pass
 
 
-def _start_pipe_worker(child_conn: multiprocessing.connection.Connection, responses: list[object]) -> threading.Thread:
+def _start_pipe_worker(
+    child_conn: multiprocessing.connection.Connection, responses: list[object]
+) -> threading.Thread:
     """Start a daemon thread that acts as a fake worker over a real pipe.
 
     The thread receives one binary message per response (via recv_bytes), then sends
     the corresponding response back via send(). This matches the WorkerChannels
     protocol where the parent sends via send_bytes and receives via recv.
     """
+
     def _run() -> None:
         for response in responses:
             child_conn.recv_bytes()
@@ -130,27 +133,27 @@ def _make_tracks(all_bpms: list[str], turns: list[int]) -> FileTracks:
         "var_y": np.ones_like(grid),
         "var_py": np.ones_like(grid),
     }
-    return FileTracks(
-        turns=np.array(turns), markers=list(all_bpms), values=values, kick_plane="xy"
-    )
+    return FileTracks(turns=np.array(turns), markers=list(all_bpms), values=values, kick_plane="xy")
 
 
 def test_session_payloads_take_per_file_artifacts_from_the_file_turn_map(tmp_path: Path) -> None:
+    helper = _make_setup_helper(
+        tmp_path,
+        all_bpms=BPMS[:3],
+        interface_options_per_file=[
+            {"machine_state": tmp_path / "corr0_state.txt"},
+            {"machine_state": tmp_path / "corr1_state.txt"},
+        ],
+    )
     session = TrackingSession(
-        _make_setup_helper(
-            tmp_path,
-            all_bpms=BPMS[:3],
-            interface_options_per_file=[
-                {"machine_state": tmp_path / "corr0_state.txt"},
-                {"machine_state": tmp_path / "corr1_state.txt"},
-            ],
-        ),
+        helper,
         SimulationConfig(num_workers=2, num_batches=1, optimise_momenta=False),
         turn_batches=[[2], [202]],
         validation_turn_batches=[],
         file_turn_map={2: 0, 202: 1},
-        start_bpms=[BPMS[0]],
-        end_bpms=[BPMS[1]],
+        worker_plans={
+            f: helper.plan_workers([BPMS[0]], [BPMS[1]], f, set(BPMS[:3])) for f in (0, 1)
+        },
         machine_deltaps=[0.0, 1e-3],
     )
 
@@ -162,18 +165,18 @@ def test_session_payloads_take_per_file_artifacts_from_the_file_turn_map(tmp_pat
         turn_batches=[[2], [202]],
     )
 
-    assert [file_idx for _, _, file_idx in payloads] == [0, 1, 0, 1]
+    assert [plan.file_idx for _, _, plan in payloads] == [0, 0, 1, 1]
     assert [config.interface_options for _, config, _ in payloads] == [
         {"machine_state": tmp_path / "corr0_state.txt"},
-        {"machine_state": tmp_path / "corr1_state.txt"},
         {"machine_state": tmp_path / "corr0_state.txt"},
+        {"machine_state": tmp_path / "corr1_state.txt"},
         {"machine_state": tmp_path / "corr1_state.txt"},
     ]
 
     init_pts = [float(data.init_pts[0]) for data, _, _ in payloads]
-    assert init_pts[0] == init_pts[2]
-    assert init_pts[1] == init_pts[3]
-    assert init_pts[0] != init_pts[1]
+    assert init_pts[0] == init_pts[1]
+    assert init_pts[2] == init_pts[3]
+    assert init_pts[0] != init_pts[2]
 
 
 def test_validation_worker_keeps_all_held_out_turns_with_nondividing_batch_count(
@@ -193,7 +196,6 @@ def test_validation_worker_keeps_all_held_out_turns_with_nondividing_batch_count
         reading_ids=np.zeros(shape, dtype=np.int64),
         init_reading_ids=np.zeros((n_tracks,), dtype=np.int64),
         init_variances=np.ones((n_tracks, 4), dtype=np.float64),
-
         start_turn_offsets=np.zeros(n_tracks, dtype=np.int64),
         precomputed_weights=PrecomputedTrackingWeights(
             x=np.ones(shape, dtype=np.float64),
@@ -236,17 +238,14 @@ def _uncertainty_pool(file_indices: list[int], responses: list[list[object]]) ->
         pool.conns.append(parent)
     pool.workers = [_FakeWorker() for _ in file_indices]  # type: ignore[misc]
     pool.metadata = [
-        WorkerRuntimeMetadata(
-            worker_id=idx,
+        WorkerObservationPlan(
+            range_spec=WorkerRangeSpec(BPMS[0], BPMS[-1], 1),
             file_idx=file_idx,
-            start_bpm=BPMS[0],
-            end_bpm=BPMS[-1],
-            sdir=1,
             kick_plane=KickPlane.XY,
-            n_run_turns=1,
             bpm_names=BPMS,
+            bad_bpms=None,
         )
-        for idx, file_idx in enumerate(file_indices)
+        for file_idx in file_indices
     ]
     pool.particle_counts = [1 for _ in file_indices]
     return pool
@@ -262,7 +261,7 @@ def test_drain_uncertainty_merges_shared_readings_per_file() -> None:
     ]
     pool = _uncertainty_pool([0, 1, 0], [[part] for part in parts])
 
-    normal, noise = drain_uncertainty(pool, 2, propagate_uncertainty=True)
+    normal, noise = drain_uncertainty(pool, 2, propagate_uncertainty=True, n_run_turns=1)
 
     shared = g_a + g_b
     np.testing.assert_allclose(normal, 6.0 * np.eye(2))
@@ -277,8 +276,7 @@ def test_terminate_kills_training_and_validation_workers(tmp_path: Path) -> None
         turn_batches=[],
         validation_turn_batches=[],
         file_turn_map={},
-        start_bpms=[],
-        end_bpms=[],
+        worker_plans={},
         machine_deltaps=[],
     )
     training = [_FakeWorker(), _FakeWorker()]
@@ -308,7 +306,7 @@ def test_drain_uncertainty_disables_the_hessian_before_shutdown() -> None:
     # Two messages: ack for set_uncertainty_mode, then the empty part on termination
     pool = _uncertainty_pool([0], [[Ack(0), UncertaintyPart.empty(2)]])
 
-    total, _ = drain_uncertainty(pool, 2, propagate_uncertainty=False)
+    total, _ = drain_uncertainty(pool, 2, propagate_uncertainty=False, n_run_turns=1)
 
     np.testing.assert_allclose(total, np.zeros((2, 2), dtype=np.float64))
     assert pool.workers[0].join_calls == 1

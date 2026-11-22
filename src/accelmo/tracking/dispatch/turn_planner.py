@@ -11,7 +11,6 @@ from a single measurement file.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -73,15 +72,6 @@ def _split_even(turns: list[int], num_chunks: int) -> list[list[int]]:
     return chunks
 
 
-@dataclass(frozen=True)
-class WorkerTurnBatchPlan:
-    """Concrete turn-batch plan plus logging metadata."""
-
-    turn_batches: list[list[int]]
-    range_specs_per_batch: int
-    range_specs_desc: str
-
-
 class WorkerTurnPlanner:
     """Compute worker turn batches from the training turns and tracking mode."""
 
@@ -109,23 +99,18 @@ class WorkerTurnPlanner:
         available_turns: list[int],
         file_map: dict[int, int],
         num_files: int,
-        num_starts: int,
-        num_ends: int,
-    ) -> WorkerTurnBatchPlan:
-        """Plan batches from the (already sampled) training turns and log the result."""
+        workers_per_batch: int,
+    ) -> list[list[int]]:
+        """Plan batches from the (already sampled) training turns and log the result.
+
+        ``workers_per_batch`` is the largest number of workers one file's turn batch
+        fans out to, so the batches never spawn more than ``num_workers`` workers.
+        """
         turns_by_file = group_turns_by_file(available_turns, file_map)
         num_workers = self.simulation_config.num_workers
-        range_specs_per_batch, range_specs_desc = self.tracking_plan.range_specs_per_batch(
-            use_fixed_bpm=self.simulation_config.use_fixed_bpm,
-            num_starts=num_starts,
-            num_ends=num_ends,
-        )
-
-        # One turn batch is fanned out over ``range_specs_per_batch`` workers, so the
-        # number of turn batches that realises ``num_workers`` workers is the ratio.
         # A batch must hold at least one turn, so the number of batches cannot
         # exceed the number of available training turns.
-        worker_turn_batches = max(1, num_workers // max(1, range_specs_per_batch))
+        worker_turn_batches = max(1, num_workers // max(1, workers_per_batch))
         total_turns = sum(len(turns) for turns in turns_by_file.values())
         if self.tracking_plan.one_start_per_worker:
             worker_turn_batches = total_turns
@@ -141,17 +126,14 @@ class WorkerTurnPlanner:
                 num_turn_batches,
                 len(turns_by_file),
                 len(turns_by_file),
-                len(turns_by_file) * range_specs_per_batch,
+                len(turns_by_file) * workers_per_batch,
             )
             num_turn_batches = len(turns_by_file)
 
         LOGGER.info(
-            "Worker planning: requested=%d workers, range_specs_per_batch=%d (%s), starts=%d, ends=%d",
+            "Worker planning: requested=%d workers, %d workers per turn batch",
             num_workers,
-            range_specs_per_batch,
-            range_specs_desc,
-            num_starts,
-            num_ends,
+            workers_per_batch,
         )
         limiting_factor = (
             "training-turn count" if total_turns < worker_turn_batches else "num_workers cap"
@@ -166,21 +148,15 @@ class WorkerTurnPlanner:
             limiting_factor,
         )
         LOGGER.info(
-            "Planned workers: %d turn batches x %d range specs = %d workers "
+            "Planned workers: %d turn batches x up to %d workers = up to %d workers "
             "(num_batches=%d is MAD-internal sub-batching, does not affect worker count)",
             num_turn_batches,
-            range_specs_per_batch,
-            num_turn_batches * range_specs_per_batch,
+            workers_per_batch,
+            num_turn_batches * workers_per_batch,
             self.simulation_config.num_batches,
         )
 
-        turn_batches = self._materialise_turn_batches(turns_by_file, num_turn_batches)
-
-        return WorkerTurnBatchPlan(
-            turn_batches=turn_batches,
-            range_specs_per_batch=range_specs_per_batch,
-            range_specs_desc=range_specs_desc,
-        )
+        return self._materialise_turn_batches(turns_by_file, num_turn_batches)
 
     def _materialise_turn_batches(
         self,

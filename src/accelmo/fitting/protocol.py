@@ -168,7 +168,7 @@ class ErrorReply:
 class WorkerChannels:
     """Reusable worker communication state for fast send/receive rounds."""
 
-    __slots__ = ("parent_conns", "workers", "_count")
+    __slots__ = ("_count", "parent_conns", "workers")
 
     def __init__(self, parent_conns: list[Connection], workers: list[Process]) -> None:
         if len(parent_conns) != len(workers):
@@ -216,7 +216,9 @@ class WorkerChannels:
             wait([conn])
             return [self._recv(conn, self.workers[indices[0]])]
 
-        position = {self.parent_conns[i]: k for k, i in enumerate(indices)}  # connection -> slot in results
+        position = {
+            self.parent_conns[i]: k for k, i in enumerate(indices)
+        }  # connection -> slot in results
         results: list[object] = [None] * len(indices)
         seen = bytearray(len(indices))
         remaining = len(indices)

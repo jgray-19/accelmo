@@ -19,7 +19,9 @@ def make_series(n):
         out.append(
             {
                 "model": rng.normal(size=(N_OBS, N_BPM)),
-                "quad": rng.normal(size=(N_OBS, N_BPM)),  # second order in the kick: the orbit is nonlinear in it
+                "quad": rng.normal(
+                    size=(N_OBS, N_BPM)
+                ),  # second order in the kick: the orbit is nonlinear in it
                 "jac": rng.normal(size=(N_OBS, N_BPM, N_Q)),
                 "delta": 0.7 + 0.1 * k,
                 "targets": rng.normal(size=(N_OBS, N_BPM)),
@@ -42,7 +44,11 @@ def orbit(s, q, g):
     """Orbit change at the kick K = (1 + g) * delta: linear in q, nonlinear in K. Returns (orbit, d/dq, d/dg)."""
     kick = (1 + g[s["corr"]]) * s["delta"]
     base = s["model"] + s["jac"] @ q
-    return base * kick + s["quad"] * kick**2, s["jac"] * kick, s["delta"] * (base + 2 * s["quad"] * kick)
+    return (
+        base * kick + s["quad"] * kick**2,
+        s["jac"] * kick,
+        s["delta"] * (base + 2 * s["quad"] * kick),
+    )
 
 
 def residual_vector(q, g, b):
@@ -57,13 +63,27 @@ def blocks_at(q, g, b):
     blocks = CalibrationBlocks(N_Q, N_G, N_OBS * N_BPM)
     for s in SERIES:
         m, jac, d_gain = orbit(s, q, g)
-        add_series(blocks, m, jac, d_gain[..., None], s["targets"], s["weights"], b[COLS], COLS, [s["corr"]])
+        add_series(
+            blocks,
+            m,
+            jac,
+            d_gain[..., None],
+            s["targets"],
+            s["weights"],
+            b[COLS],
+            COLS,
+            [s["corr"]],
+        )
     blocks.symmetrise()
     return blocks
 
 
 def test_blocks_match_finite_difference():
-    q, g, b = rng.normal(size=N_Q) * 0.1, rng.normal(size=N_G) * 0.1, rng.normal(size=N_OBS * N_BPM) * 0.1
+    q, g, b = (
+        rng.normal(size=N_Q) * 0.1,
+        rng.normal(size=N_G) * 0.1,
+        rng.normal(size=N_OBS * N_BPM) * 0.1,
+    )
     blocks = blocks_at(q, g, b)
     p0 = full_params(q, g, b)
 
@@ -78,10 +98,23 @@ def test_blocks_match_finite_difference():
 
 
 def test_gauss_newton_hessian_matches_jacobian():
-    q, g, b = rng.normal(size=N_Q) * 0.1, rng.normal(size=N_G) * 0.1, rng.normal(size=N_OBS * N_BPM) * 0.1
+    q, g, b = (
+        rng.normal(size=N_Q) * 0.1,
+        rng.normal(size=N_G) * 0.1,
+        rng.normal(size=N_OBS * N_BPM) * 0.1,
+    )
     blocks = blocks_at(q, g, b)
     p0 = full_params(q, g, b)
-    jac = np.array([(residual_vector(*np.split(p0 + e, [N_Q, N_Q + N_G])) - residual_vector(*np.split(p0 - e, [N_Q, N_Q + N_G]))) / 2e-6 for e in np.eye(len(p0)) * 1e-6]).T
+    jac = np.array(
+        [
+            (
+                residual_vector(*np.split(p0 + e, [N_Q, N_Q + N_G]))
+                - residual_vector(*np.split(p0 - e, [N_Q, N_Q + N_G]))
+            )
+            / 2e-6
+            for e in np.eye(len(p0)) * 1e-6
+        ]
+    ).T
     hess = 2.0 * jac.T @ jac
     n_u = N_Q + N_G
     assert np.allclose(blocks.hess_uu, hess[:n_u, :n_u], rtol=1e-5, atol=1e-7)
@@ -91,9 +124,15 @@ def test_gauss_newton_hessian_matches_jacobian():
 
 
 def test_schur_step_equals_dense_step():
-    q, g, b = rng.normal(size=N_Q) * 0.1, rng.normal(size=N_G) * 0.1, rng.normal(size=N_OBS * N_BPM) * 0.1
+    q, g, b = (
+        rng.normal(size=N_Q) * 0.1,
+        rng.normal(size=N_G) * 0.1,
+        rng.normal(size=N_OBS * N_BPM) * 0.1,
+    )
     blocks = blocks_at(q, g, b)
-    apply_prior(blocks, np.concatenate([q, g]), b, 0.01, 0.01, 1.0)  # the g/b scale degeneracy needs the prior
+    apply_prior(
+        blocks, np.concatenate([q, g]), b, 0.01, 0.01, 1.0
+    )  # the g/b scale degeneracy needs the prior
     n_u = N_Q + N_G
     hess = np.block([[blocks.hess_uu, blocks.hess_ub], [blocks.hess_ub.T, np.diag(blocks.hess_bb)]])
     grad = np.concatenate([blocks.grad_u, blocks.grad_b])
@@ -106,7 +145,11 @@ def test_schur_step_equals_dense_step():
 
 
 def test_quad_prior_matches_finite_difference_and_leaves_zero_sigma_free():
-    q, g, b = rng.normal(size=N_Q) * 0.1, rng.normal(size=N_G) * 0.1, rng.normal(size=N_OBS * N_BPM) * 0.1
+    q, g, b = (
+        rng.normal(size=N_Q) * 0.1,
+        rng.normal(size=N_G) * 0.1,
+        rng.normal(size=N_OBS * N_BPM) * 0.1,
+    )
     sigma_q = np.array([0.5, 0.0, 2.0, 0.1, 0.0])
     c = 1.7
     base = blocks_at(q, g, b)

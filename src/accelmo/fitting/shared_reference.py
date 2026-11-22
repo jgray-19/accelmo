@@ -78,7 +78,7 @@ def _attach(name: str) -> shared_memory.SharedMemory:
     if sys.version_info >= (3, 13):
         return shared_memory.SharedMemory(name=name, track=False)
     block = shared_memory.SharedMemory(name=name)
-    resource_tracker.unregister(block._name, "shared_memory")  # noqa: SLF001
+    resource_tracker.unregister(block._name, "shared_memory")
     return block
 
 

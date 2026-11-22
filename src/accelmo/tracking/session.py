@@ -31,12 +31,10 @@ from accelmo.tracking.worker import TrackingWorker
 
 if TYPE_CHECKING:
     from accelmo.config import SimulationConfig
-    from accelmo.tracking.config.tracking import WorkerRangeSpec
     from accelmo.tracking.data_manager import FileTracks
     from accelmo.tracking.dispatch.payloads import WorkerPayload
     from accelmo.tracking.dispatch.setup import (
         WorkerObservationPlan,
-        WorkerRuntimeMetadata,
         WorkerSetupHelper,
     )
 
@@ -48,8 +46,9 @@ class TrackingSession:
 
     ``turn_batches`` and ``validation_turn_batches`` are the training and held-out
     turns, one list per worker batch; ``file_turn_map`` maps each turn to its
-    measurement file. Pass an empty ``validation_turn_batches`` to run without
-    validation workers.
+    measurement file and ``worker_plans`` each file to the workers one of its batches
+    fans out to (:meth:`WorkerSetupHelper.plan_workers`). Pass an empty
+    ``validation_turn_batches`` to run without validation workers.
     """
 
     def __init__(
@@ -60,8 +59,7 @@ class TrackingSession:
         turn_batches: list[list[int]],
         validation_turn_batches: list[list[int]],
         file_turn_map: dict[int, int],
-        start_bpms: list[str],
-        end_bpms: list[str],
+        worker_plans: dict[int, list[WorkerObservationPlan]],
         machine_deltaps: list[float],
         gain_bpms: tuple[str, ...] = (),
     ) -> None:
@@ -70,12 +68,11 @@ class TrackingSession:
         self.turn_batches = turn_batches
         self.validation_turn_batches = validation_turn_batches
         self.file_turn_map = file_turn_map
-        self.start_bpms = start_bpms
-        self.end_bpms = end_bpms
+        self.worker_plans = worker_plans
         self.machine_deltaps = machine_deltaps
         self.payload_builder = WorkerPayloadBuilder(setup_helper.accelerator, gain_bpms)
-        self.training: WorkerPool[WorkerRuntimeMetadata] = WorkerPool()
-        self.validation: WorkerPool[WorkerRuntimeMetadata] = WorkerPool()
+        self.training: WorkerPool[WorkerObservationPlan] = WorkerPool()
+        self.validation: WorkerPool[WorkerObservationPlan] = WorkerPool()
 
     def start(self, tracks: dict[int, FileTracks], initial_knobs: dict[str, float]) -> None:
         """Spawn the training and validation workers, each starting from ``initial_knobs``."""
@@ -93,7 +90,7 @@ class TrackingSession:
             validation_payloads, len(training_payloads), initial_knobs, validation=True
         )
         if validation_payloads:
-            covered = {(m.file_idx, m.start_bpm, m.end_bpm) for m in self.validation.metadata}
+            covered = {(m.file_idx, m.range_spec) for m in self.validation.metadata}
             LOGGER.info(
                 "Validation setup: payloads=%d, covered_ranges=%d, tracks=%d",
                 len(validation_payloads),
@@ -123,44 +120,32 @@ class TrackingSession:
     def create_worker_payloads(
         self, tracks: dict[int, FileTracks], turn_batches: list[list[int]]
     ) -> list[WorkerPayload]:
-        """One payload per (range, worker plane, turn batch); each batch belongs to one file."""
+        """One payload per (worker plan, turn batch); each batch belongs to one file."""
         payloads: list[WorkerPayload] = []
-        plans: dict[tuple[WorkerRangeSpec, int], list[WorkerObservationPlan]] = {}
-        range_specs = self.setup_helper.build_range_specs(self.start_bpms, self.end_bpms)
-        LOGGER.info("Creating %d range specs x %d batches", len(range_specs), len(turn_batches))
-
-        for range_spec in range_specs:
-            for batch_idx, turn_batch in enumerate(turn_batches):
-                if not turn_batch:
-                    raise ValueError(
-                        f"Empty batch {batch_idx} for {range_spec.start_bpm}/{range_spec.end_bpm}"
-                    )
-                file_idx = self.file_turn_map[turn_batch[0]]
-                key = (range_spec, file_idx)
-                if key not in plans:
-                    plans[key] = self.setup_helper.build_observation_plans(
-                        range_spec, file_idx, available_bpms=set(tracks[file_idx].marker_col)
-                    )
-                for plan in plans[key]:
-                    data = self.payload_builder.make_tracking_data(
-                        turn_batch=turn_batch,
-                        file_turn_map=self.file_turn_map,
-                        plan=plan,
-                        machine_deltaps=self.machine_deltaps,
-                        tracks=tracks,
-                        n_run_turns=self.simulation_config.n_run_turns,
-                    )
-                    payloads.append((data, self.setup_helper.make_worker_config(plan), file_idx))
+        for batch_idx, turn_batch in enumerate(turn_batches):
+            if not turn_batch:
+                raise ValueError(f"Empty turn batch {batch_idx}")
+            for plan in self.worker_plans[self.file_turn_map[turn_batch[0]]]:
+                data = self.payload_builder.make_tracking_data(
+                    turn_batch=turn_batch,
+                    file_turn_map=self.file_turn_map,
+                    plan=plan,
+                    machine_deltaps=self.machine_deltaps,
+                    tracks=tracks,
+                    n_run_turns=self.simulation_config.n_run_turns,
+                )
+                payloads.append((data, self.setup_helper.make_worker_config(plan), plan))
 
         self._log_file_usage(
-            payloads, frozenset(self.file_turn_map[turn] for batch in turn_batches for turn in batch)
+            payloads,
+            frozenset(self.file_turn_map[turn] for batch in turn_batches for turn in batch),
         )
         return payloads
 
     def _log_file_usage(self, payloads: list[WorkerPayload], files_covered: frozenset[int]) -> None:
         """Log measurement-file usage and check that at least one worker exists."""
         num_files = len(self.setup_helper.interface_options_per_file)
-        file_usage = Counter(file_idx for _, _, file_idx in payloads)
+        file_usage = Counter(plan.file_idx for _, _, plan in payloads)
         LOGGER.info(
             "Created %d workers using files: %s",
             len(payloads),
@@ -185,38 +170,25 @@ class TrackingSession:
         initial_knobs: dict[str, float],
         *,
         validation: bool,
-    ) -> WorkerPool[WorkerRuntimeMetadata]:
+    ) -> WorkerPool[WorkerObservationPlan]:
         """Start one worker per payload, send it the initial knobs and record its metadata."""
-        pool: WorkerPool[WorkerRuntimeMetadata] = WorkerPool()
-        n_run_turns = self.simulation_config.n_run_turns
-        for worker_id, (data, config, file_idx) in enumerate(payloads, start=first_id):
+        pool: WorkerPool[WorkerObservationPlan] = WorkerPool()
+        for worker_id, (data, config, plan) in enumerate(payloads, start=first_id):
             pool.spawn(
                 TrackingWorker, worker_id, data, config, self.simulation_config, validation
             ).send(Start(initial_knobs))
-            # The config's bad BPMs already exclude every BPM blind to its plane.
-            bpm_names = self.setup_helper.get_range_bpm_names(
-                config.tracking_start_bpm, config.tracking_end_bpm, config.sdir, config.bad_bpms
-            )
-            pool.metadata.append(
-                self.setup_helper.make_runtime_metadata(
-                    worker_id=worker_id,
-                    file_idx=file_idx,
-                    config=config,
-                    bpm_names=bpm_names,
-                    n_run_turns=n_run_turns,
-                )
-            )
+            pool.metadata.append(plan)
             pool.particle_counts.append(len(data.init_coords))
             LOGGER.debug(
                 "%s worker %d: file=%d, range=%s/%s, sdir=%d, kick_plane=%s, observed_bpms=%d, tracks=%d",
                 "Val" if validation else "Trn",
                 worker_id,
-                file_idx,
+                plan.file_idx,
                 config.tracking_start_bpm,
                 config.tracking_end_bpm,
                 config.sdir,
                 config.kick_plane,
-                len(bpm_names),
+                len(plan.bpm_names),
                 len(data.init_coords),
             )
         return pool
@@ -308,7 +280,9 @@ class TrackingSession:
     ) -> tuple[np.ndarray, np.ndarray]:
         """Stop every worker and return the normal matrix ``A`` and noise ``B`` of the training workers."""
         LOGGER.info("Terminating workers...")
-        normal, noise = drain_uncertainty(self.training, n_knobs, propagate_uncertainty)
+        normal, noise = drain_uncertainty(
+            self.training, n_knobs, propagate_uncertainty, self.simulation_config.n_run_turns
+        )
         self.validation.stop()
         return normal, noise
 

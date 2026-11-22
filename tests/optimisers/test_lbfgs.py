@@ -157,8 +157,7 @@ def _quadratic_run(scale: float, steps: int = 300, lr: float = 0.5) -> float:
     q, _ = np.linalg.qr(rng.normal(size=(8, 8)))
     hess = scale * q @ np.diag(np.geomspace(1.0, 1e2, 8)) @ q.T
     target = rng.normal(scale=0.05, size=8)
-    optim = LBFGSOptimiser(history_size=10, eps=1e-12, max_step_norm=1.0,
-                           powell_damping=0.2)
+    optim = LBFGSOptimiser(history_size=10, eps=1e-12, max_step_norm=1.0, powell_damping=0.2)
     x = np.zeros(8)
     for _ in range(steps):
         x = optim.step(x, hess @ (x - target), lr)

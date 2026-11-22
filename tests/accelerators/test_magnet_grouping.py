@@ -68,9 +68,7 @@ def test_lhc_sbends_are_grouped_with_length_weighted_average() -> None:
         "MB.B12L1.B1.dk0l": 3.0,
     }
 
-    assert normalise_lhcbend_magnets(strengths, lengths) == {
-        "MB.12L1.B1.dk0l": pytest.approx(2.5)
-    }
+    assert normalise_lhcbend_magnets(strengths, lengths) == {"MB.12L1.B1.dk0l": pytest.approx(2.5)}
 
 
 def test_lhc_rbends_are_separated_by_strength_sign() -> None:

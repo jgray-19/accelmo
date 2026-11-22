@@ -35,7 +35,10 @@ FORBIDDEN = {
 }
 
 #: Libraries owned by one backend subpackage.
-BACKEND_LIBRARIES = {"madng": ("pymadng", "pymadng_utils.mad"), "xtrack": ("xtrack", "xobjects", "xpart")}
+BACKEND_LIBRARIES = {
+    "madng": ("pymadng", "pymadng_utils.mad"),
+    "xtrack": ("xtrack", "xobjects", "xpart"),
+}
 #: Name-table imports of backend libraries allowed anywhere (constants, no model code).
 SHARED_NAME_TABLES = {
     ("pymadng_utils.mad.accelerator_mad_interface", "MAGNET_STRENGTH_SUFFIXES"),
@@ -96,7 +99,10 @@ def test_backend_libraries_stay_in_their_backend() -> None:
                 if names and all((module, name) in SHARED_NAME_TABLES for name in names):
                     continue
                 violations.append(f"{path.relative_to(PACKAGE_ROOT)}: {module}")
-            if module.startswith("accelmo.backend.") and parts[0] != "backend":
-                if module.split(".")[2] not in ("protocol",):
-                    violations.append(f"{path.relative_to(PACKAGE_ROOT)}: {module}")
+            if (
+                module.startswith("accelmo.backend.")
+                and parts[0] != "backend"
+                and module.split(".")[2] != "protocol"
+            ):
+                violations.append(f"{path.relative_to(PACKAGE_ROOT)}: {module}")
     assert violations == []

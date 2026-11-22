@@ -71,7 +71,13 @@ class CalibrationBlocks:
     @classmethod
     def shapes(cls, n_q: int, n_g: int, n_b: int) -> dict[str, tuple[int, ...]]:
         n_u = n_q + n_g
-        return {"grad_u": (n_u,), "hess_uu": (n_u, n_u), "hess_ub": (n_u, n_b), "hess_bb": (n_b,), "grad_b": (n_b,)}
+        return {
+            "grad_u": (n_u,),
+            "hess_uu": (n_u, n_u),
+            "hess_ub": (n_u, n_b),
+            "hess_bb": (n_b,),
+            "grad_b": (n_b,),
+        }
 
     @classmethod
     def nbytes(cls, n_q: int, n_g: int, n_b: int) -> int:
@@ -127,7 +133,9 @@ def add_series(
     for o in range(model.shape[0]):
         scale = 1.0 + bpm_gain[o]
         mp = scale * model[o]
-        jac = jacobian[o]  # not scaled: the BPM gain scale is folded into the weights below, so no copy of the Jacobian
+        jac = jacobian[
+            o
+        ]  # not scaled: the BPM gain scale is folded into the weights below, so no copy of the Jacobian
         d_g = scale[:, None] * d_gain[o]
         w = np.asarray(weights[o], dtype=float)
         w_scaled = w * scale**2
@@ -138,8 +146,12 @@ def add_series(
 
         blocks.loss += float(np.sum(w * r * r))
         blocks.grad_u[:n_q] += 2.0 * (scale * wr) @ jac
-        root = np.sqrt(2.0 * w_scaled)[:, None] * jac  # sqrt(2 w scale^2) J: its Gram matrix is 2 J^T w scale^2 J
-        blocks.hess_uu[:n_q, :n_q] += dsyrk(1.0, root.T, trans=0, lower=1).T  # one triangle only (half the flops of a product)
+        root = (
+            np.sqrt(2.0 * w_scaled)[:, None] * jac
+        )  # sqrt(2 w scale^2) J: its Gram matrix is 2 J^T w scale^2 J
+        blocks.hess_uu[:n_q, :n_q] += dsyrk(
+            1.0, root.T, trans=0, lower=1
+        ).T  # one triangle only (half the flops of a product)
         del root
         cross = (jac.T * (2.0 * w_scaled)) @ d_gain[o]
         blocks.grad_u[g_rows] += 2.0 * wr @ d_g

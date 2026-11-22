@@ -6,7 +6,12 @@ from accelmo.machine.accelerators import FCC
 def test_quad_k1_knob_spec(tmp_path):
     acc = FCC(sequence_file=tmp_path / "fccee_z.madx", errors={"quad": {"k1"}})
     (spec,) = acc.get_knob_specs()
-    assert (spec.kind, spec.attribute, spec.pattern, spec.nonzero_attr) == ("quadrupole", "k1", "^Q[DF][123]AM?%.%d+$", "k1")
+    assert (spec.kind, spec.attribute, spec.pattern, spec.nonzero_attr) == (
+        "quadrupole",
+        "k1",
+        "^Q[DF][123]AM?%.%d+$",
+        "k1",
+    )
     assert acc.seq_name == "fccee_p_ring"
     assert acc.infer_monitor_plane("bpm_qd0ar.0") == "HV"
 

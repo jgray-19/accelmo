@@ -52,13 +52,14 @@ class RecordingEngine:
 # Shared helper
 # ---------------------------------------------------------------------------
 
+
 def _make_worker_with_init_coords(n_particles: int = 6, num_batches: int = 2) -> TrackingWorker:
     """Return a prepared TrackingWorker (its process is never started)."""
     init_coords = np.zeros((n_particles, 6), dtype=np.float64)
-    init_coords[:, 0] = np.arange(n_particles, dtype=float)        # x
+    init_coords[:, 0] = np.arange(n_particles, dtype=float)  # x
     init_coords[:, 1] = np.arange(n_particles, dtype=float) * 0.1  # px
-    init_coords[:, 3] = np.arange(n_particles, dtype=float) * 0.01 # py
-    init_coords[:, 5] = 1e-3                                       # pt
+    init_coords[:, 3] = np.arange(n_particles, dtype=float) * 0.01  # py
+    init_coords[:, 5] = 1e-3  # pt
     shape = (n_particles, 2)
     data = TrackingData(
         position_comparisons=np.zeros((*shape, 2)),
@@ -70,7 +71,6 @@ def _make_worker_with_init_coords(n_particles: int = 6, num_batches: int = 2) ->
         reading_ids=np.zeros(shape, dtype=np.int64),
         init_reading_ids=np.zeros(n_particles, dtype=np.int64),
         init_variances=np.ones((n_particles, 4)),
-
         start_turn_offsets=np.zeros(n_particles, dtype=np.int64),
         precomputed_weights=PrecomputedTrackingWeights(
             x=np.ones(shape), y=np.ones(shape), px=np.ones(shape), py=np.ones(shape), scale=1.0
@@ -97,6 +97,7 @@ def _make_worker_with_init_coords(n_particles: int = 6, num_batches: int = 2) ->
 # ---------------------------------------------------------------------------
 # _send_init_condition_update updates _init_coords_np in Python
 # ---------------------------------------------------------------------------
+
 
 def test_send_init_condition_update_patches_all_four_transverse_coords_in_python() -> None:
     n = 6
@@ -141,6 +142,7 @@ def test_madng_start_coords_are_sent_as_column_matrices() -> None:
 # handle_command dispatches UpdateInitCoords
 # ---------------------------------------------------------------------------
 
+
 def test_handle_command_update_init_coords_updates_arrays_and_acks() -> None:
     n = 4
     worker = _make_worker_with_init_coords(n_particles=n, num_batches=2)
@@ -163,6 +165,7 @@ def test_handle_command_update_init_coords_updates_arrays_and_acks() -> None:
 # ---------------------------------------------------------------------------
 # TrackingSession.send_init_condition_updates — real pipes + threads
 # ---------------------------------------------------------------------------
+
 
 def _recv_and_ack(child_conn, received_store: list, idx: int) -> None:
     """Thread target: receive one message from the child end and send ack back."""
@@ -190,9 +193,7 @@ def _make_real_channels(counts: list[int]):
     return _make_real_channels_with_validation(counts, [])[:2]
 
 
-def _make_real_channels_with_validation(
-    training_counts: list[int], validation_counts: list[int]
-):
+def _make_real_channels_with_validation(training_counts: list[int], validation_counts: list[int]):
     """Build a session with both training and validation pipe connections.
 
     Only its pools are set: pushing coordinates touches nothing else.
@@ -215,12 +216,14 @@ def test_send_init_condition_updates_slices_correctly() -> None:
     wm, child_conns = _make_real_channels(counts)
 
     total = sum(counts)
-    new_coords = np.column_stack([
-        np.arange(total, dtype=float) + 0.5,
-        np.arange(total, dtype=float),
-        np.arange(total, dtype=float) + 0.25,
-        -np.arange(total, dtype=float),
-    ])
+    new_coords = np.column_stack(
+        [
+            np.arange(total, dtype=float) + 0.5,
+            np.arange(total, dtype=float),
+            np.arange(total, dtype=float) + 0.25,
+            -np.arange(total, dtype=float),
+        ]
+    )
 
     received: list = [None] * len(counts)
     threads = [
@@ -259,12 +262,14 @@ def test_send_init_condition_updates_also_updates_validation_workers() -> None:
     wm, trn_children, val_children = _make_real_channels_with_validation(trn_counts, val_counts)
 
     total = sum(trn_counts) + sum(val_counts)
-    new_coords = np.column_stack([
-        np.arange(total, dtype=float) + 0.5,
-        np.arange(total, dtype=float),
-        np.arange(total, dtype=float) + 0.25,
-        -np.arange(total, dtype=float),
-    ])
+    new_coords = np.column_stack(
+        [
+            np.arange(total, dtype=float) + 0.5,
+            np.arange(total, dtype=float),
+            np.arange(total, dtype=float) + 0.25,
+            -np.arange(total, dtype=float),
+        ]
+    )
 
     all_children = trn_children + val_children
     all_counts = trn_counts + val_counts

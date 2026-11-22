@@ -36,7 +36,9 @@ class WorkerPool(Generic[MetadataT]):
     def __len__(self) -> int:
         return len(self.workers)
 
-    def spawn(self, worker_class: Callable[..., mp.Process], worker_id: int, *args: object) -> Connection:
+    def spawn(
+        self, worker_class: Callable[..., mp.Process], worker_id: int, *args: object
+    ) -> Connection:
         """Start ``worker_class(child_conn, worker_id, *args)`` and return the parent pipe end."""
         parent, child = mp.Pipe()
         worker = worker_class(child, worker_id, *args)

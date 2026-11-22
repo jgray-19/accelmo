@@ -14,11 +14,8 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pytest
 
+from accelmo.backend.madng.interface import MadInterface
 from accelmo.machine.accelerators import PSB
-from accelmo.backend.madng.optimising_mad_interface import (
-    GenericMadInterface,
-    GradientDescentMadInterface,
-)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -32,12 +29,12 @@ DS = 5e-2
 TWISS_COLUMNS = ("name", "x", "y", "beta11", "beta22", "mu1", "mu2")
 
 
-def _twiss(iface: GenericMadInterface) -> pd.DataFrame:
+def _twiss(iface: MadInterface) -> pd.DataFrame:
     iface.mad.send("dstws = twiss{sequence=loaded_sequence, observe=1}")
     return iface.mad.dstws.to_df(columns=list(TWISS_COLUMNS)).set_index("name")
 
 
-def _ds_knobs(iface: GradientDescentMadInterface) -> list[str]:
+def _ds_knobs(iface: MadInterface) -> list[str]:
     return [k for k in iface.knob_names if k.endswith(".ds")]
 
 
@@ -50,7 +47,7 @@ def test_ds_knobs_are_created(seq_psb: Path, grouped: bool) -> None:
         misalignments={"quad": {"ds"}},
         group_quadrupoles_by_cell=grouped,
     )
-    iface = GradientDescentMadInterface(accelerator=accelerator, discard_mad_output=True)
+    iface = MadInterface(accelerator=accelerator, discard_mad_output=True, create_knobs=True)
     try:
         knobs = _ds_knobs(iface)
         assert knobs == list(iface.knob_names), "only ds knobs should be created"
@@ -68,7 +65,7 @@ def test_ds_knobs_are_created(seq_psb: Path, grouped: bool) -> None:
 def test_nonzero_ds_changes_optics_like_a_static_misalignment(seq_psb: Path) -> None:
     """A nonzero ``ds`` knob moves the optics exactly as ``misalign = {ds = ...}`` does."""
     accelerator = PSB(ring=3, sequence_file=seq_psb, misalignments={"quad": {"ds"}})
-    iface = GradientDescentMadInterface(accelerator=accelerator, discard_mad_output=True)
+    iface = MadInterface(accelerator=accelerator, discard_mad_output=True, create_knobs=True)
     try:
         knob = "BR.QFO11.ds"
         assert knob in iface.knob_names
@@ -85,7 +82,7 @@ def test_nonzero_ds_changes_optics_like_a_static_misalignment(seq_psb: Path) -> 
         "the deferred misalign table is not picking up ds"
     )
 
-    reference_iface = GenericMadInterface(
+    reference_iface = MadInterface(
         accelerator=PSB(ring=3, sequence_file=seq_psb), discard_mad_output=True
     )
     try:

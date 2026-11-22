@@ -15,7 +15,12 @@ SCALE = 5e13
 def _reference(model, jacobian, targets, weights, raw_weights):
     """Straightforward four-product implementation (the pre-optimisation code)."""
     n_knobs = jacobian.shape[-1]
-    grad, hessian, normal, loss = np.zeros(n_knobs), np.zeros((n_knobs,) * 2), np.zeros((n_knobs,) * 2), 0.0
+    grad, hessian, normal, loss = (
+        np.zeros(n_knobs),
+        np.zeros((n_knobs,) * 2),
+        np.zeros((n_knobs,) * 2),
+        0.0,
+    )
     for i in range(len(model)):
         residual = np.where(weights[i] > 0.0, model[i] - targets[i], 0.0)
         grad += 2.0 * (weights[i] * residual) @ jacobian[i]
@@ -45,4 +50,6 @@ def test_matches_direct_formulas() -> None:
 def test_inconsistent_weight_scale_is_rejected() -> None:
     observables, model, jacobian, targets, weights, raw = _data(np.random.default_rng(2))
     with pytest.raises(ValueError, match="raw_weights / weight_scale"):
-        weighted_loss_gradient_hessian(model, jacobian, observables, targets, weights, raw, 2 * SCALE)
+        weighted_loss_gradient_hessian(
+            model, jacobian, observables, targets, weights, raw, 2 * SCALE
+        )

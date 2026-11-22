@@ -30,7 +30,9 @@ def run_with_workers(
     try:
         return body()
     except KeyboardInterrupt:
-        LOGGER.warning("KeyboardInterrupt: stopping the optimisation early with the best result so far.")
+        LOGGER.warning(
+            "KeyboardInterrupt: stopping the optimisation early with the best result so far."
+        )
         return fallback()
     finally:
         stop_workers()

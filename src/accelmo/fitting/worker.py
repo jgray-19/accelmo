@@ -12,7 +12,7 @@ import logging
 import traceback
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from multiprocessing import Process
 from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
@@ -35,7 +35,7 @@ LOGGER = logging.getLogger(__name__)
 WorkerDataType = TypeVar("WorkerDataType")
 
 
-class KickPlane(str, Enum):
+class KickPlane(StrEnum):
     """Kick-plane options for worker routing and payload selection."""
 
     X = "x"
@@ -76,8 +76,6 @@ class WorkerConfig:
     tracking_anchor_sources: list[str] | None = None
     observed_tracking_anchor_markers: list[str] | None = None
     cycle_marker: str | None = None
-    # Track the named start/end range even when a marker supplies the start.
-    named_marker_range: bool = False
 
     @property
     def bpm_range(self) -> str:
@@ -92,7 +90,7 @@ class WorkerConfig:
         Kicker mode (a marker supplies the start) tracks the whole ring for every turn,
         since a named range would treat elements outside it as drifts.
         """
-        if self.initial_condition_marker is not None and not self.named_marker_range:
+        if self.initial_condition_marker is not None:
             return None
         if self.sdir < 0:
             return f"{self.tracking_end_bpm}/{self.tracking_start_bpm}"
@@ -166,7 +164,6 @@ class AbstractWorker(Process, ABC, Generic[WorkerDataType]):
         Args:
             data: Worker-specific data structure
         """
-        pass
 
     @abstractmethod
     def on_start(self, knobs: dict[str, float]) -> None:

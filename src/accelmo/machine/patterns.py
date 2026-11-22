@@ -55,9 +55,13 @@ def lua_to_regex(pattern: str) -> re.Pattern[str]:
                 first = False
                 if pattern[j] == "%":
                     letter = pattern[j + 1]
-                    body.append(_class(letter)[1:-1] if letter.isalpha() and letter.islower()
-                                else re.escape(letter) if not letter.isalpha()
-                                else _unsupported(pattern))
+                    body.append(
+                        _class(letter)[1:-1]
+                        if letter.isalpha() and letter.islower()
+                        else re.escape(letter)
+                        if not letter.isalpha()
+                        else _unsupported(pattern)
+                    )
                     j += 2
                     continue
                 body.append("\\" + pattern[j] if pattern[j] in "\\[]" else pattern[j])

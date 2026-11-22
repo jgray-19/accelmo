@@ -82,19 +82,25 @@ class SPS(Accelerator):
 
     def get_perturbation_families(self) -> dict[str, dict[str, str | float | dict]]:
         """Return perturbation-family metadata for SPS main families."""
-        #https://cds.cern.ch/record/66887/files/LABII-MA-Int-75-2.pdf?version=1
+        # https://cds.cern.ch/record/66887/files/LABII-MA-Int-75-2.pdf?version=1
         return {
             "d": {
                 "default_rel_std": 2e-5,
-                "pattern": self.PATTERN_SEXTUPOLE.replace("%", "\\"),  # Change from lua to regex pattern
+                "pattern": self.PATTERN_SEXTUPOLE.replace(
+                    "%", "\\"
+                ),  # Change from lua to regex pattern
             },
             "q": {
                 "default_rel_std": 2e-4,
-                "pattern": self.PATTERN_QUADRUPOLE.replace("%", "\\"),  # Change from lua to regex pattern
+                "pattern": self.PATTERN_QUADRUPOLE.replace(
+                    "%", "\\"
+                ),  # Change from lua to regex pattern
             },
             "s": {
                 "default_rel_std": 10e-4,
-                "pattern": self.PATTERN_SEXTUPOLE.replace("%", "\\"),  # Change from lua to regex pattern
+                "pattern": self.PATTERN_SEXTUPOLE.replace(
+                    "%", "\\"
+                ),  # Change from lua to regex pattern
             },
         }
 

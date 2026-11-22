@@ -26,7 +26,6 @@ def _worker(tmp_path, conn) -> TrackingWorker:
         reading_ids=np.zeros(shape, dtype=np.int64),
         init_reading_ids=np.zeros(2, dtype=np.int64),
         init_variances=np.ones((2, 4)),
-
         start_turn_offsets=np.zeros(2, dtype=np.int64),
         precomputed_weights=PrecomputedTrackingWeights(
             x=np.ones(shape), y=np.ones(shape), px=np.ones(shape), py=np.ones(shape), scale=1.0

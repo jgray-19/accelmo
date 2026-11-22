@@ -118,7 +118,7 @@ class XtrackModel:
         ]
         self.line = self._make_line(self.names)
         if machine_state is not None:
-            self.assign_state(resolve_machine_state(machine_state))
+            self.set_vars(resolve_machine_state(machine_state))
         self.knob_names: list[str] = []
         self._create_knobs()
         if initial_model_values:
@@ -213,7 +213,7 @@ class XtrackModel:
             f"machine_state names {name!r}, which is neither a variable nor an element attribute"
         )
 
-    def read_state(self, names: Sequence[str]) -> dict[str, float]:
+    def get_vars(self, names: Sequence[str]) -> dict[str, float]:
         values = {}
         for name in names:
             element, attribute = self._target(name)
@@ -235,7 +235,7 @@ class XtrackModel:
             else float(self.env[element].ksl[0])
         )
 
-    def assign_state(self, state: Mapping[str, float]) -> None:
+    def set_vars(self, state: Mapping[str, float]) -> None:
         for name, value in state.items():
             element, attribute = self._target(name)
             if element is None:

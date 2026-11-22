@@ -4,6 +4,8 @@ A backend module (``accelmo.backend.<name>``) provides :class:`TrackingEngine` a
 :class:`ClosedOrbitEngine` implementations plus the parent-side :func:`open_model` and
 :func:`closed_orbit_table`; :func:`accelmo.backend.get_backend` picks it from
 ``Accelerator.backend``. Only automatic differentiation computes derivatives.
+MAD-NG is the production backend, xtrack the reference for other codes; the contract
+and the acceptance tests are in ``docs/backends.rst``.
 """
 
 from __future__ import annotations
@@ -13,7 +15,6 @@ from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
-    from contextlib import AbstractContextManager
     from pathlib import Path
 
     import numpy as np
@@ -24,7 +25,7 @@ if TYPE_CHECKING:
 
 
 @dataclass(frozen=True)
-class TrackingPlan:
+class TrackRequest:
     """What one tracking worker tracks.
 
     ``tracking_range`` is ``(first, last)`` in tracking order, or ``None`` for the full
@@ -64,12 +65,12 @@ class ClosedSolution:
     """Closed orbit (and optics) at the BPMs in model order.
 
     ``values`` is ``(n_observables, n_bpms)`` and ``jacobian`` ``(n_observables, n_bpms,
-    n_knobs)``, rows in the requested observable order.
+    n_knobs)`` (``None`` from a ``jacobian=False`` solve), rows in the requested observable order.
     """
 
     names: list[str]
     values: np.ndarray
-    jacobian: np.ndarray
+    jacobian: np.ndarray | None
 
 
 class TrackingEngine(Protocol):
@@ -84,7 +85,7 @@ class TrackingEngine(Protocol):
     def __init__(
         self,
         config: WorkerConfig,
-        plan: TrackingPlan,
+        plan: TrackRequest,
         init_knobs: Mapping[str, float],
         *,
         worker_id: int,
@@ -116,7 +117,7 @@ class ClosedOrbitEngine(Protocol):
     """Solves the closed orbit (and twiss) with knob derivatives."""
 
     knob_names: list[str]
-    n_knobs: int
+    #: ``pt`` is fitted too: its derivative is the Jacobian column after the knobs.
     fit_pt: bool
 
     def __init__(
@@ -126,34 +127,28 @@ class ClosedOrbitEngine(Protocol):
         *,
         optics_names: Sequence[str],
         orbit_coords: Sequence[str],
-        extra_knobs: Sequence[str] | None,
         worker_id: int,
         logfile: Path | None = None,
-    ) -> None:
-        """``extra_knobs``: zero-valued knobs after the magnet knobs (calibrated fit, never fits ``pt``)."""
+    ) -> None: ...
 
     def set_knobs(self, knobs: Mapping[str, float]) -> None: ...
 
-    def read_state(self, names: list[str]) -> dict[str, float]: ...
+    def get_vars(self, names: Sequence[str]) -> dict[str, float]:
+        """Current values of the global variables ``names`` (machine state, e.g. corrector kicks)."""
 
-    def assign_state(self, state: Mapping[str, float]) -> None: ...
-
-    def scale_globals(self, scaled: Sequence[tuple[str, float, float, str]]) -> None:
-        """Set each global ``name`` to ``kick * (gain + knob)``, ``knob`` a zero-valued extra knob."""
+    def set_vars(self, values: Mapping[str, float]) -> None: ...
 
     def set_pt(self, pt: float) -> None: ...
 
     def set_warm_start(self, key: str) -> None:
         """Start the next closed-orbit search from the last orbit solved under ``key``."""
 
-    def solve(self, observables: Sequence[str]) -> ClosedSolution | None:
-        """``None`` when the closed orbit is lost."""
+    def solve(self, observables: Sequence[str], *, jacobian: bool = True) -> ClosedSolution | None:
+        """``None`` when the closed orbit is lost.
 
-    def plain_knobs(self) -> AbstractContextManager[None]:
-        """Knobs as plain numbers inside the block (no derivatives)."""
-
-    def solve_orbit_plain(self, n_bpms: int) -> np.ndarray | None:
-        """Orbit values ``(n_coords, n_bpms)`` only; inside :meth:`plain_knobs`."""
+        ``jacobian=False`` (loss-only evaluation, orbit observables only) leaves
+        ``ClosedSolution.jacobian`` ``None`` and may skip the derivatives entirely.
+        """
 
     def close(self) -> None: ...
 
@@ -178,7 +173,11 @@ class Model(Protocol):
 
 
 class Backend(Protocol):
-    """The module ``accelmo.backend.<name>``."""
+    """The module ``accelmo.backend.<name>``.
+
+    Optional: ``CalibratedClosedOrbitEngine`` (BPM gain and corrector calibration fits),
+    only in ``madng``.
+    """
 
     TrackingEngine: type[TrackingEngine]
     ClosedOrbitEngine: type[ClosedOrbitEngine]

@@ -135,6 +135,4 @@ def test_worker_rejects_a_nonsensical_weight_scale(seq_psb: Path) -> None:
     )
     _parent, child = mp.Pipe()
     with pytest.raises(ValueError, match="weight_scale"):
-        ClosedTwissWorker(
-            child, 0, data, config, SimulationConfig(num_workers=1, num_batches=1)
-        )
+        ClosedTwissWorker(child, 0, data, config, SimulationConfig(num_workers=1, num_batches=1))

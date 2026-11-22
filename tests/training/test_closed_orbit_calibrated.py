@@ -62,7 +62,9 @@ def _series(
     state = {**_quad_globals(seq_k, STATES[label]), corrector: TRIM}
     signal = _orbit(seq_k, truth, {**state, corrector: (1.0 + gain) * TRIM})
     reference = _orbit(seq_k, truth, {})
-    return ClosedOrbitSeries((ClosedOrbitMeasurement(signal, reference=reference),), machine_state=state, label=label)
+    return ClosedOrbitSeries(
+        (ClosedOrbitMeasurement(signal, reference=reference),), machine_state=state, label=label
+    )
 
 
 def _fitter(seq_k: Path, series: list[ClosedOrbitSeries], **kwargs) -> CalibratedClosedOrbitFitter:
@@ -80,7 +82,11 @@ def test_unit_gains_are_recovered_as_zero(seq_k: Path) -> None:
     truth = _truth(seq_k, seed=7)
     series = [
         _series(seq_k, truth, label, corrector)
-        for label, corrector in (("nominal", "k_dhz2l4"), ("both", "k_dhz8l1"), ("opposite", "k_dhz2l4"))
+        for label, corrector in (
+            ("nominal", "k_dhz2l4"),
+            ("both", "k_dhz8l1"),
+            ("opposite", "k_dhz2l4"),
+        )
     ]
 
     fitter = _fitter(seq_k, series)
@@ -111,7 +117,9 @@ def test_corrector_kick_gain_is_recovered(seq_k: Path) -> None:
     series = [_series(seq_k, truth, label, "k_dhz2l4", gain=0.1) for label in labels]
     series += [_series(seq_k, truth, label, "k_dhz8l1") for label in labels]
 
-    fitter = _fitter(seq_k, series, sigma_corrector=0.5)  # the default 1e-2 prior would pull a true 0.1 to ~0
+    fitter = _fitter(
+        seq_k, series, sigma_corrector=0.5
+    )  # the default 1e-2 prior would pull a true 0.1 to ~0
     try:
         fitter.run()
     finally:
@@ -139,13 +147,20 @@ def test_corrector_gain_pattern_fits_only_matching_correctors(seq_k: Path) -> No
     assert "corrgain.DHZ8L1" not in gains
     assert gains["corrgain.DHZ2L4"] == pytest.approx(0.1, abs=0.01)
 
+
 def test_zero_mean_gain_pattern_moves_the_common_scale_to_the_bpms(seq_k: Path) -> None:
     """Both correctors kick 10% high: with their mean gain held at 0, the x BPM gains take the common +10%."""
     truth = _truth(seq_k, seed=8)
     labels = ("nominal", "both", "opposite", "focusing-up", "defocusing-down")
-    series = [_series(seq_k, truth, label, corrector, gain=0.1) for label in labels for corrector in ("k_dhz2l4", "k_dhz8l1")]
+    series = [
+        _series(seq_k, truth, label, corrector, gain=0.1)
+        for label in labels
+        for corrector in ("k_dhz2l4", "k_dhz8l1")
+    ]
 
-    fitter = _fitter(seq_k, series, sigma_corrector=0.5, sigma_bpm=0.5, zero_mean_gain_pattern="DHZ.*")
+    fitter = _fitter(
+        seq_k, series, sigma_corrector=0.5, sigma_bpm=0.5, zero_mean_gain_pattern="DHZ.*"
+    )
     try:
         fitter.run()
     finally:
@@ -156,6 +171,7 @@ def test_zero_mean_gain_pattern_moves_the_common_scale_to_the_bpms(seq_k: Path) 
     assert gains["corrgain.DHZ2L4"] == pytest.approx(0.0, abs=0.01)
     bpm_x = [value for name, value in gains.items() if name.startswith("bpmgain.x.")]
     assert np.mean(bpm_x) == pytest.approx(0.1, abs=0.01)
+
 
 def test_off_momentum_series_without_a_kick_joins_a_gain_fit(seq_k: Path) -> None:
     """The dispersion orbit has no corrector in its state; it constrains the magnets and leaves the gain fit working.
@@ -168,15 +184,23 @@ def test_off_momentum_series_without_a_kick_joins_a_gain_fit(seq_k: Path) -> Non
     series = [_series(seq_k, truth, label, "k_dhz2l4", gain=0.1) for label in labels]
     series += [_series(seq_k, truth, label, "k_dhz8l1") for label in labels]
     both = {"k_dhz2l4": TRIM, "k_dhz8l1": -TRIM}
-    signal = _orbit(seq_k, truth, {k: (1.0 + (0.1 if k == "k_dhz2l4" else 0.0)) * v for k, v in both.items()})
+    signal = _orbit(
+        seq_k, truth, {k: (1.0 + (0.1 if k == "k_dhz2l4" else 0.0)) * v for k, v in both.items()}
+    )
     reference = _orbit(seq_k, truth, {})
     series.append(
-        ClosedOrbitSeries((ClosedOrbitMeasurement(signal, reference=reference),), machine_state=both, label="two kicks")
+        ClosedOrbitSeries(
+            (ClosedOrbitMeasurement(signal, reference=reference),),
+            machine_state=both,
+            label="two kicks",
+        )
     )
     dispersion = _orbit(seq_k, truth, {}, pt=delta)
     series.append(
         ClosedOrbitSeries(
-            (ClosedOrbitMeasurement(dispersion, pt=delta, reference=reference),), machine_state={}, label="off momentum"
+            (ClosedOrbitMeasurement(dispersion, pt=delta, reference=reference),),
+            machine_state={},
+            label="off momentum",
         )
     )
 
@@ -199,7 +223,13 @@ def test_kick_prefix_names_the_corrector_globals(seq_psb: Path) -> None:
     series = [_series(seq_psb, truth, label, "kbr3dhz2l4", gain=0.1) for label in labels]
     series += [_series(seq_psb, truth, label, "kbr3dhz8l1") for label in labels]
 
-    fitter = _fitter(seq_psb, series, sigma_corrector=0.5, kick_prefix="kbr3", knob_sigmas={"dx": 1e-3, "dy": 1e-3})
+    fitter = _fitter(
+        seq_psb,
+        series,
+        sigma_corrector=0.5,
+        kick_prefix="kbr3",
+        knob_sigmas={"dx": 1e-3, "dy": 1e-3},
+    )
     try:
         fitter.run()
     finally:
@@ -216,29 +246,44 @@ def test_bpm_gains_alone_are_recovered_from_absolute_orbits(seq_psb: Path) -> No
     Absolute orbits keep every corrector's standing kick, so a series sets three kicks (``fit_corrector_gains=False`` takes any
     number) and the quadrupole state differs from series to series. The machine is perfect, so the BPM gains are the only unknowns.
     """
-    corrector_knobs = ("kbr3dhz2l4", "kbr3dhz8l1", "kbr3dvt2l4")  # the vertical kick makes the vertical gains observable
+    corrector_knobs = (
+        "kbr3dhz2l4",
+        "kbr3dhz8l1",
+        "kbr3dvt2l4",
+    )  # the vertical kick makes the vertical gains observable
     standing_kicks = ((1e-3, -8e-4, 6e-4), (-6e-4, 1e-3, -9e-4))
-    truth = {name: 0.0 for name in _truth(seq_psb)}
+    truth = dict.fromkeys(_truth(seq_psb), 0.0)
     rng = np.random.default_rng(3)
     errors = {plane: rng.uniform(-0.03, 0.03, 16) for plane in ("x", "y")}
 
     series = []
     for label in STATES:
         for kick in standing_kicks:
-            state = {**_quad_globals(seq_psb, STATES[label]), **dict(zip(corrector_knobs, kick, strict=True))}
+            state = {
+                **_quad_globals(seq_psb, STATES[label]),
+                **dict(zip(corrector_knobs, kick, strict=True)),
+            }
             orbit = _orbit(seq_psb, truth, state)
             orbit["X"] *= 1.0 + errors["x"]
             orbit["Y"] *= 1.0 + errors["y"]
             orbit[["ERRX", "ERRY"]] = 1e-6
             series.append(
                 ClosedOrbitSeries(
-                    (ClosedOrbitMeasurement(orbit),), machine_state=state, absolute_planes=("x", "y"), label=f"{label}{kick[0]:+g}"
+                    (ClosedOrbitMeasurement(orbit),),
+                    machine_state=state,
+                    absolute_planes=("x", "y"),
+                    label=f"{label}{kick[0]:+g}",
                 )
             )
     bpms = list(series[0].measurements[0].orbit.index)
 
     fitter = _fitter(
-        seq_psb, series, fit_corrector_gains=False, sigma_bpm=0.1, knob_sigmas={"dx": 1e-9, "dy": 1e-9}, kick_prefix="kbr3"
+        seq_psb,
+        series,
+        fit_corrector_gains=False,
+        sigma_bpm=0.1,
+        knob_sigmas={"dx": 1e-9, "dy": 1e-9},
+        kick_prefix="kbr3",
     )
     try:
         fitter.run()
@@ -258,13 +303,16 @@ def test_bpm_gain_uncertainties_match_the_scatter_over_noise_seeds(seq_psb: Path
     corrector_knobs = ("kbr3dhz2l4", "kbr3dhz8l1", "kbr3dvt2l4")
     standing_kicks = ((1e-3, -8e-4, 6e-4), (-6e-4, 1e-3, -9e-4))
     noise = 3e-5
-    truth = {name: 0.0 for name in _truth(seq_psb)}
+    truth = dict.fromkeys(_truth(seq_psb), 0.0)
     errors = {plane: np.random.default_rng(3).uniform(-0.03, 0.03, 16) for plane in ("x", "y")}
 
     clean = []
     for label in STATES:
         for kick in standing_kicks:
-            state = {**_quad_globals(seq_psb, STATES[label]), **dict(zip(corrector_knobs, kick, strict=True))}
+            state = {
+                **_quad_globals(seq_psb, STATES[label]),
+                **dict(zip(corrector_knobs, kick, strict=True)),
+            }
             orbit = _orbit(seq_psb, truth, state)
             orbit["X"] *= 1.0 + errors["x"]
             orbit["Y"] *= 1.0 + errors["y"]
@@ -278,9 +326,21 @@ def test_bpm_gain_uncertainties_match_the_scatter_over_noise_seeds(seq_psb: Path
             noisy = orbit.copy()
             noisy[["X", "Y"]] += rng.normal(0.0, noise, (len(noisy), 2))
             noisy[["ERRX", "ERRY"]] = noise
-            series.append(ClosedOrbitSeries((ClosedOrbitMeasurement(noisy),), machine_state=state, absolute_planes=("x", "y"), label=label))
+            series.append(
+                ClosedOrbitSeries(
+                    (ClosedOrbitMeasurement(noisy),),
+                    machine_state=state,
+                    absolute_planes=("x", "y"),
+                    label=label,
+                )
+            )
         fitter = _fitter(
-            seq_psb, series, fit_corrector_gains=False, sigma_bpm=0.1, knob_sigmas={"dx": 1e-9, "dy": 1e-9}, kick_prefix="kbr3"
+            seq_psb,
+            series,
+            fit_corrector_gains=False,
+            sigma_bpm=0.1,
+            knob_sigmas={"dx": 1e-9, "dy": 1e-9},
+            kick_prefix="kbr3",
         )
         try:
             result = fitter.run()
@@ -290,7 +350,9 @@ def test_bpm_gain_uncertainties_match_the_scatter_over_noise_seeds(seq_psb: Path
             for index, bpm in enumerate(fitter.calibration_spec.bpms):
                 name = f"bpmgain.{plane}.{bpm}"
                 assert result.extra_uncertainties[name] > 0.0
-                z.append((result.extra[name] - errors[plane][index]) / result.extra_uncertainties[name])
+                z.append(
+                    (result.extra[name] - errors[plane][index]) / result.extra_uncertainties[name]
+                )
 
     assert 0.7 < float(np.std(z)) < 1.3, f"std of z = {np.std(z):.3f} over {len(z)} gains"
     assert abs(float(np.mean(z))) < 0.3, f"mean of z = {np.mean(z):.3f}"
@@ -299,7 +361,7 @@ def test_bpm_gain_uncertainties_match_the_scatter_over_noise_seeds(seq_psb: Path
 def test_corrector_gain_uncertainties_match_the_scatter_over_noise_seeds(seq_k: Path) -> None:
     """Fitted corrector gains minus the truth, in units of the reported sigma, have unit spread over many noisy orbit changes."""
     noise = 2e-5
-    truth = {name: 0.0 for name in _truth(seq_k)}  # a perfect machine: the gains are the only unknowns
+    truth = dict.fromkeys(_truth(seq_k), 0.0)  # a perfect machine: the gains are the only unknowns
     labels = ("nominal", "both", "opposite", "focusing-up", "defocusing-down")
     clean = [_series(seq_k, truth, label, "k_dhz2l4", gain=0.1) for label in labels]
     clean += [_series(seq_k, truth, label, "k_dhz8l1") for label in labels]
@@ -313,12 +375,20 @@ def test_corrector_gain_uncertainties_match_the_scatter_over_noise_seeds(seq_k: 
             noisy = measurement.orbit.copy()
             noisy[["X", "Y"]] += rng.normal(0.0, noise, (len(noisy), 2))
             noisy[["ERRX", "ERRY"]] = noise
-            exact = measurement.reference.assign(ERRX=0.0, ERRY=0.0)  # only the signal carries noise
+            exact = measurement.reference.assign(
+                ERRX=0.0, ERRY=0.0
+            )  # only the signal carries noise
             series.append(
-                ClosedOrbitSeries((ClosedOrbitMeasurement(noisy, reference=exact),), machine_state=item.machine_state, label=item.label)
+                ClosedOrbitSeries(
+                    (ClosedOrbitMeasurement(noisy, reference=exact),),
+                    machine_state=item.machine_state,
+                    label=item.label,
+                )
             )
         # The BPM gains are pinned so no corrector-gain direction is set by a prior (the scatter would then fall below sigma).
-        fitter = _fitter(seq_k, series, sigma_corrector=0.5, sigma_bpm=1e-6, knob_sigmas={"dx": 1e-9, "dy": 1e-9})
+        fitter = _fitter(
+            seq_k, series, sigma_corrector=0.5, sigma_bpm=1e-6, knob_sigmas={"dx": 1e-9, "dy": 1e-9}
+        )
         try:
             result = fitter.run()
         finally:

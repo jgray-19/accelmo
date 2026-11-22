@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-
 from accelmo.tracking.dispatch.turn_planner import allocate_batches_per_file
 
 

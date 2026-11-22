@@ -38,7 +38,7 @@ Python 3.11 or later is required.
 
    git clone https://github.com/jgray-19/accelmo.git
    cd accelmo
-   pip install -e ".[test,docs,tracking]"
+   uv sync --extra test --extra docs --extra tracking
 
 Optional dependency groups:
 
@@ -63,7 +63,7 @@ Build this documentation with:
 
 .. code-block:: bash
 
-   pip install -e ".[docs]"
+   uv sync --extra docs
    cd docs && make html
 
 Companion packages
@@ -81,12 +81,8 @@ Companion packages
    * - `xtrack_tools <https://jgray-19.github.io/xtrack_tools/>`_
      - Tracking helpers and dataframe conversion, used by the tests.
 
-Install them with:
-
-.. code-block:: bash
-
-   pip install pymadng-utils
-   pip install git+https://github.com/jgray-19/xtrack_tools.git
+``pymadng-utils`` is a normal dependency. ``xtrack_tools`` is pinned in the ``dev``
+dependency group, so ``uv sync`` installs both.
 
 The measurement and campaign workflows built on this package are maintained in
 separate repositories (``lhc_measurements``, ``psb_md``, ``psb_loco``, ``lhc_loco``
@@ -100,6 +96,6 @@ and ``fcc_loco``) and are not documented here.
    fit_families
    tracking_tour
    architecture
-   replacing_madng
+   backends
    start_gain_chain_rule
    api_reference

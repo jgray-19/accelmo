@@ -10,13 +10,9 @@ from typing import TYPE_CHECKING
 import tfs
 from xtrack_tools.env import initialise_env
 
+from accelmo.backend.madng import MadInterface
 from accelmo.machine.accelerators import LHC
 from accelmo.machine.machine_state import merge_machine_states
-from accelmo.backend.madng import (
-    AbaMadInterface,
-    GenericMadInterface,
-    GradientDescentMadInterface,
-)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -41,7 +37,7 @@ TRACK_COLUMNS = (
 LOGGER = logging.getLogger(__name__)
 
 
-def convert_rbends_to_true_rbends(mad: AbaMadInterface) -> None:
+def convert_rbends_to_true_rbends(mad: MadInterface) -> None:
     """Convert all rbends in the sequence to true rbends for correct tracking."""
     mad.mad.send("""
 for _, elm in loaded_sequence:iter() do
@@ -53,7 +49,7 @@ end
 
 
 def generate_model_with_errors(
-    loaded_interface: AbaMadInterface,
+    loaded_interface: MadInterface,
     dpp_value: float,
     corrector_file: Path | None,
     perturb_quads: bool = False,
@@ -137,7 +133,7 @@ def generate_model_with_errors(
 
 
 def generate_xsuite_env_with_errors(
-    loaded_interface: AbaMadInterface,
+    loaded_interface: MadInterface,
     dpp_value: float,
     corrector_file: Path | None,
     perturb_quads: bool = False,
@@ -194,6 +190,7 @@ def get_twiss_without_errors(
     sequence_file: Path,
     just_bpms: bool,
     beam: int = 1,
+    seq_dir: int | None = None,
     estimated_magnets: dict[str, float] | None = None,
     tune_knobs: Path | None = None,
     corrector_file: Path | None = None,
@@ -203,16 +200,18 @@ def get_twiss_without_errors(
         beam=beam,
         bpm_pattern="BPM",
         sequence_file=sequence_file,
+        seq_dir=seq_dir,
     )
-    mad = GenericMadInterface(
+    mad = MadInterface(
         accelerator,
         machine_state=merge_machine_states(corrector_file, tune_knobs),
     )
     convert_rbends_to_true_rbends(mad)
     if estimated_magnets is not None:
-        gradient = GradientDescentMadInterface(
+        gradient = MadInterface(
             accelerator,
             machine_state=merge_machine_states(corrector_file, tune_knobs),
+            create_knobs=True,
         )
         gradient.update_knob_values(estimated_magnets)
         mad = gradient

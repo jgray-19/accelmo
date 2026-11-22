@@ -218,9 +218,7 @@ class LevenbergMarquardtOptimiser:
             "damping": float(self.damping),
             "best_loss": float(self.best.loss),
             "best_params": self.best.value.tolist(),
-            "best_hessian": None
-            if self.best_hessian is None
-            else self.best_hessian.tolist(),
+            "best_hessian": None if self.best_hessian is None else self.best_hessian.tolist(),
             "best_grad": None if self.best_grad is None else self.best_grad.tolist(),
             "prev_loss": self.prev_loss,
             "t": int(self.t),
@@ -231,11 +229,11 @@ class LevenbergMarquardtOptimiser:
         if state.get("type") != "levenberg_marquardt":
             raise ValueError("State type does not match levenberg_marquardt")
         self.damping = float(state["damping"])
-        self.best = BestTracker(float(state["best_loss"]), np.array(state["best_params"], dtype=float))
-        best_hessian = state.get("best_hessian")
-        self.best_hessian = (
-            None if best_hessian is None else np.array(best_hessian, dtype=float)
+        self.best = BestTracker(
+            float(state["best_loss"]), np.array(state["best_params"], dtype=float)
         )
+        best_hessian = state.get("best_hessian")
+        self.best_hessian = None if best_hessian is None else np.array(best_hessian, dtype=float)
         best_grad = state.get("best_grad")
         self.best_grad = None if best_grad is None else np.array(best_grad, dtype=float)
         self.prev_loss = state.get("prev_loss")

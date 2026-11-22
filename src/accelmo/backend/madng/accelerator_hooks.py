@@ -11,7 +11,7 @@ from accelmo.machine.accelerators import LHC, PSB
 from accelmo.machine.accelerators.magnet_grouping import normalise_lhcbend_magnets
 
 if TYPE_CHECKING:
-    from accelmo.backend.madng.optimising_mad_interface import GradientDescentMadInterface
+    from accelmo.backend.madng.interface import MadInterface
     from accelmo.machine.accelerators import Accelerator, KnobSpec
 
 TILT_SEED = 1e-9  # Should discuss this with Laurent.
@@ -50,7 +50,7 @@ def track_methods(accelerator: Accelerator) -> dict[str, int]:
 
 
 def prepare_knob_creation(
-    iface: GradientDescentMadInterface, accelerator: Accelerator, specs: list[KnobSpec]
+    iface: MadInterface, accelerator: Accelerator, specs: list[KnobSpec]
 ) -> None:
     """Install PSB AC kickers, run each attribute's ``_KNOB_PREPARATION``, read LHC bend lengths."""
     if isinstance(accelerator, PSB) and accelerator.acd_drive_tunes is not None:
@@ -62,12 +62,16 @@ def prepare_knob_creation(
             grouped.setdefault((spec.kind, body), []).append(spec.pattern)
     for (element_kind, body), patterns in grouped.items():
         _prepare_matching_elements(iface, element_kind, tuple(dict.fromkeys(patterns)), body)
-    if isinstance(accelerator, LHC) and accelerator.optimises("bend", "k0") and accelerator.normalise_bends:
+    if (
+        isinstance(accelerator, LHC)
+        and accelerator.optimises("bend", "k0")
+        and accelerator.normalise_bends
+    ):
         _normalise_lhc_bends(iface, accelerator)
 
 
 def _prepare_matching_elements(
-    iface: GradientDescentMadInterface, element_kind: str, patterns: tuple[str, ...], body: str
+    iface: MadInterface, element_kind: str, patterns: tuple[str, ...], body: str
 ) -> None:
     """Run Lua ``body`` once per element of ``element_kind`` matching ``patterns`` (seen as ``e``)."""
     iface.mad.send(f"""
@@ -87,7 +91,7 @@ def _prepare_matching_elements(
     iface.mad.send(element_kind).send(patterns)
 
 
-def _normalise_lhc_bends(iface: GradientDescentMadInterface, accelerator: LHC) -> None:
+def _normalise_lhc_bends(iface: MadInterface, accelerator: LHC) -> None:
     iface.mad.send(f"""
             bend_dict = {{}}
             bend_lengths = {{}}
@@ -162,8 +166,5 @@ def _psb_attr_spec(accelerator: PSB, kind: str, attribute: str) -> dict[str, str
             "sign_expr": '(e.name:match("^BR%.QDE") and -1 or 1)',
         }
     return {
-        "name_expr": (
-            'string.gsub(e.name, "^(BR%.QFO)(%d+)(%d)$", '
-            f'"%1CELL%2") .. ".{suffix}"'
-        )
+        "name_expr": (f'string.gsub(e.name, "^(BR%.QFO)(%d+)(%d)$", "%1CELL%2") .. ".{suffix}"')
     }

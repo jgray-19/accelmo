@@ -17,8 +17,14 @@ def test_marginal_sigmas_match_the_dense_inverse() -> None:
     h_uu = h_ub @ np.diag(1.0 / d) @ h_ub.T + root.T @ root  # positive definite, diagonal b block
     physical = np.block([[h_uu, h_ub], [h_ub.T, np.diag(d)]])
 
-    blocks = CalibrationBlocks(n_q, n_g, n_b)  # the normalised loss is 2 * unit times the chi-square
-    blocks.hess_uu[:], blocks.hess_ub[:], blocks.hess_bb[:] = 2 * unit * h_uu, 2 * unit * h_ub, 2 * unit * d
+    blocks = CalibrationBlocks(
+        n_q, n_g, n_b
+    )  # the normalised loss is 2 * unit times the chi-square
+    blocks.hess_uu[:], blocks.hess_ub[:], blocks.hess_bb[:] = (
+        2 * unit * h_uu,
+        2 * unit * h_ub,
+        2 * unit * d,
+    )
 
     normal_u, sigma_u, sigma_b = gain_covariance(blocks, unit)
 

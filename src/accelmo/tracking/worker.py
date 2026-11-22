@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from accelmo.backend.protocol import TrackingPlan
+from accelmo.backend.protocol import TrackRequest
 from accelmo.fitting.bpm_gains import PLANES, bpm_gain_names, bpm_reading, without_bpm_gains
 from accelmo.fitting.protocol import (
     Ack,
@@ -304,7 +304,7 @@ class TrackingWorker(AbstractWorker[TrackingData]):
                     "after their file's first turn; one track shares one AC-kicker phase"
                 )
             turn_offset = int(self.turn_offsets[0])
-        plan = TrackingPlan(
+        plan = TrackRequest(
             observables=self.observables,
             batch_size=self.batch_size,
             num_batches=self.num_batches,

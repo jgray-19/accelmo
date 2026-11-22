@@ -25,7 +25,7 @@ from tests.training.controller_test_utils import (
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from accelmo.backend.madng.aba_mad_interface import AbaMadInterface
+    from accelmo.backend.madng.interface import MadInterface
 
 
 PSB_TARGET_QX = 0.17
@@ -40,7 +40,7 @@ def _build_psb_arc_quad_controller(
     *,
     tmp_path: Path,
     seq_psb: Path,
-    loaded_psb_interface: AbaMadInterface,
+    loaded_psb_interface: MadInterface,
     flattop_turns: int = 64,
 ) -> tuple[ArcByArcFitter, dict[str, float]]:
     """Build a PSB ring-3 arc-by-arc quadrupole fitter and its true strengths."""
@@ -99,7 +99,7 @@ def _build_psb_arc_quad_controller(
 def test_controller_quad_psb_validation_loss_is_real_out_of_sample(
     tmp_path: Path,
     seq_psb: Path,
-    loaded_psb_interface: AbaMadInterface,
+    loaded_psb_interface: MadInterface,
 ) -> None:
     """Arc-by-arc PSB fit yields a genuine held-out validation loss (not None).
 
@@ -119,9 +119,7 @@ def test_controller_quad_psb_validation_loss_is_real_out_of_sample(
     # Turns were genuinely held out, disjoint from every training batch.
     assert ctrl.data_manager.validation_turn_batches
     training_turns = {t for batch in ctrl.data_manager.turn_batches for t in batch}
-    validation_turns = {
-        t for batch in ctrl.data_manager.validation_turn_batches for t in batch
-    }
+    validation_turns = {t for batch in ctrl.data_manager.validation_turn_batches for t in batch}
     assert training_turns.isdisjoint(validation_turns)
 
     ctrl.start_session(ctrl.machine.initial_knobs, enable_validation=True)
@@ -144,7 +142,7 @@ def test_controller_quad_psb_validation_loss_is_real_out_of_sample(
 def test_controller_quad_opt_psb_ring3(
     tmp_path: Path,
     seq_psb: Path,
-    loaded_psb_interface: AbaMadInterface,
+    loaded_psb_interface: MadInterface,
     controller_test_mode: str,
 ) -> None:
     """Run a PSB ring-3 quadrupole optimisation scenario."""
@@ -172,7 +170,9 @@ def test_controller_quad_opt_psb_ring3(
     optimiser_config = make_lm_config()
 
     sequence_config = SequenceConfig("$start/$end")
-    measurement_config = create_arc_measurement_config(off_magnet_path, machine_state=merge_machine_states(corrector_file, tune_knobs))
+    measurement_config = create_arc_measurement_config(
+        off_magnet_path, machine_state=merge_machine_states(corrector_file, tune_knobs)
+    )
     accelerator = PSB(
         ring=3,
         kinetic_energy=loaded_psb_interface.accelerator.kinetic_energy,

@@ -40,14 +40,13 @@ from accelmo.fitting.uncertainty import sandwich_uncertainties
 from accelmo.optimisers.levenberg_marquardt import LevenbergMarquardtConfig
 from accelmo.tracking.config.tracking import (
     TrackingModeSetup,
-    acd_half_ring_setup,
     acd_marker_setup,
     acd_sinusoid_setup,
     arc_by_arc_setup,
     kicker_setup,
 )
 from accelmo.tracking.data_manager import DataManager
-from accelmo.tracking.dispatch.setup import WorkerSetupHelper
+from accelmo.tracking.dispatch.setup import WorkerObservationPlan, WorkerSetupHelper
 from accelmo.tracking.ranges import resolve_bpm_ranges
 from accelmo.tracking.session import TrackingSession
 from accelmo.tracking.sgd.loop import SGDLoop
@@ -236,26 +235,13 @@ class TrackingFitter:
         self.ranges = resolve_bpm_ranges(
             self.machine, setup.plan, setup.bpm_start_points, setup.bpm_end_points
         )
+        self.worker_setup: WorkerSetupHelper
+        #: Per file, the workers one of its turn batches fans out to.
+        self.worker_plans: dict[int, list[WorkerObservationPlan]]
         self.data_manager: DataManager | None = self._load_data()
         simulation_config = self.machine.simulation_config
         for worker_module in ("accelmo.fitting.worker", "accelmo.tracking.worker"):
             logging.getLogger(worker_module).setLevel(simulation_config.worker_logging_level)
-        output_config = self.machine.output_config
-        self.worker_setup = WorkerSetupHelper(
-            accelerator=accelerator,
-            all_bpms=self.machine.all_bpms,
-            fixed_start=self.ranges.fixed_start,
-            fixed_end=self.ranges.fixed_end,
-            use_fixed_bpm=simulation_config.use_fixed_bpm,
-            bad_bpms=sequence_config.bad_bpms,
-            file_kick_planes=self.data_manager.file_kick_planes,
-            magnet_range=sequence_config.magnet_range,
-            interface_options_per_file=self.interface_options,
-            debug=options.debug,
-            mad_logfile=output_config.mad_logfile,
-            python_logfile=output_config.python_logfile,
-            tracking_plan=self.tracking_plan,
-        )
         # Every BPM the fit reads gets an x and a y gain; markers are not BPMs.
         self.gain_bpms: tuple[str, ...] = (
             tuple(b for b in self.machine.all_bpms if b not in self.tracking_plan.extra_markers)
@@ -614,8 +600,7 @@ class TrackingFitter:
             turn_batches=data.turn_batches,
             validation_turn_batches=data.validation_turn_batches if enable_validation else [],
             file_turn_map=data.file_map,
-            start_bpms=self.ranges.start_bpms,
-            end_bpms=self.ranges.end_bpms,
+            worker_plans=self.worker_plans,
             machine_deltaps=self.machine_deltaps,
             gain_bpms=self.gain_bpms,
         )
@@ -702,7 +687,7 @@ class TrackingFitter:
         return dict(zip(self.knob_names, uncertainties.tolist(), strict=True))
 
     def _load_data(self) -> DataManager:
-        """Load the measurement files, batch their turns and fix ``num_batches`` to fit them."""
+        """Load the measurement files, plan the workers, batch the turns and fix ``num_batches``."""
         machine = self.machine
         data = DataManager(
             self.tracking_plan.observed_bpms(machine.bpms_in_range, machine.all_bpms),
@@ -714,7 +699,29 @@ class TrackingFitter:
             extra_markers=list(self.tracking_plan.extra_markers),
         )
         data.load_track_data()
-        data.prepare_turn_batches(len(self.ranges.start_bpms), len(self.ranges.end_bpms))
+        output_config = machine.output_config
+        self.worker_setup = WorkerSetupHelper(
+            accelerator=machine.accelerator,
+            all_bpms=machine.all_bpms,
+            fixed_start=self.ranges.fixed_start,
+            fixed_end=self.ranges.fixed_end,
+            use_fixed_bpm=machine.simulation_config.use_fixed_bpm,
+            bad_bpms=machine.sequence_config.bad_bpms,
+            file_kick_planes=data.file_kick_planes,
+            magnet_range=machine.sequence_config.magnet_range,
+            interface_options_per_file=self.interface_options,
+            debug=self.options.debug,
+            mad_logfile=output_config.mad_logfile,
+            python_logfile=output_config.python_logfile,
+            tracking_plan=self.tracking_plan,
+        )
+        self.worker_plans = {
+            idx: self.worker_setup.plan_workers(
+                self.ranges.start_bpms, self.ranges.end_bpms, idx, set(tracks.marker_col)
+            )
+            for idx, tracks in data.tracks.items()
+        }
+        data.prepare_turn_batches(max(len(plans) for plans in self.worker_plans.values()))
 
         # No batch may need more turns than the smallest worker holds.
         min_turns_per_batch = min(len(batch) for batch in data.turn_batches)
@@ -911,9 +918,8 @@ class ACDTurnSinusoidFitter(TrackingFitter):
     """AC-dipole data, one turn per state, no AC dipole in the model.
 
     Every turn has one fitted state at the ``before`` marker; it is tracked backward from
-    ``before`` and forward from ``after`` = ``before`` + the kick: a full turn each way
-    (``half_ring=False``; every reading is fitted by two states) or half a ring each way
-    (each reading once, but nothing links the two halves at the ring midpoint). The kick is a sinusoid
+    ``before`` and forward from ``after`` = ``before`` + the kick: a full turn each way,
+    so every reading is fitted by two states. The kick is a sinusoid
     per file and plane, ``a cos(2 pi Q_d row) + b sin(2 pi Q_d row)`` (``drive_tunes`` per file),
     linear in (a, b). Needs ``fit_start_coords`` and the LM optimiser.
     """
@@ -927,13 +933,10 @@ class ACDTurnSinusoidFitter(TrackingFitter):
         measurement_config: MeasurementConfig,
         drive_tunes: tuple[tuple[float, float], ...],
         options: FitterOptions | None = None,
-        half_ring: bool = False,
     ):
         if not simulation_config.fit_start_coords:
             raise ValueError("ACDTurnSinusoidFitter fits the turn states: needs fit_start_coords")
-        setup = (acd_half_ring_setup if half_ring else acd_marker_setup)(
-            accelerator, simulation_config
-        )
+        setup = acd_marker_setup(accelerator, simulation_config)
         super().__init__(
             setup,
             accelerator=accelerator,

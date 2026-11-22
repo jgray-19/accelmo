@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+import random
+from itertools import product
 from typing import TYPE_CHECKING
 
+import pytest
+
+from accelmo.config import SimulationConfig
 from accelmo.machine.accelerators import PSB, SPS
 from accelmo.tracking.config.tracking import ACDTrackingPlan, TrackingPlan
 from accelmo.tracking.dispatch.setup import WorkerRangeSpec, WorkerSetupHelper
+from accelmo.tracking.dispatch.turn_planner import WorkerTurnPlanner
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -64,7 +70,9 @@ def _sps_helper(tmp_path: Path, **overrides) -> WorkerSetupHelper:
 def test_fixed_bpm_ranges_pair_each_start_with_the_fixed_end(tmp_path: Path) -> None:
     helper = _helper(tmp_path, all_bpms=ARC_BPMS, tracking_plan=TrackingPlan())
 
-    specs = helper.build_range_specs(start_bpms=["BR3.BPM1L3", "BR3.BPM2L3"], end_bpms=["BR3.BPM3L3"])
+    specs = helper.build_range_specs(
+        start_bpms=["BR3.BPM1L3", "BR3.BPM2L3"], end_bpms=["BR3.BPM3L3"]
+    )
 
     assert specs == [
         WorkerRangeSpec("BR3.BPM1L3", "BR3.BPM4L3", 1),
@@ -171,7 +179,9 @@ def test_single_plane_bpms_split_dual_plane_data_into_x_and_y_workers(tmp_path: 
     assert x_worker.bad_bpms == ["BPV.13108", "BPV.13308", "BPV.13508"]
 
 
-def test_single_plane_bpms_plan_acd_marker_ranges_and_split_workers_by_plane(tmp_path: Path) -> None:
+def test_single_plane_bpms_plan_acd_marker_ranges_and_split_workers_by_plane(
+    tmp_path: Path,
+) -> None:
     plan = ACDTrackingPlan(acd_name="ZKHA.21991")
     all_bpms = [*SPS_BPMS[:3], plan.acd_before, plan.acd_after, *SPS_BPMS[3:]]
     seq_file = tmp_path / "sps.seq"
@@ -204,4 +214,32 @@ def test_single_plane_bpms_plan_acd_marker_ranges_and_split_workers_by_plane(tmp
 def test_single_plane_file_drops_workers_starting_on_the_blind_plane(tmp_path: Path) -> None:
     helper = _sps_helper(tmp_path)
 
-    assert helper.build_observation_plans(WorkerRangeSpec("BPV.13108", "BPV.13508", 1), 0, set(SPS_BPMS)) == []
+    assert (
+        helper.build_observation_plans(
+            WorkerRangeSpec("BPV.13108", "BPV.13508", 1), 0, set(SPS_BPMS)
+        )
+        == []
+    )
+
+
+@pytest.mark.parametrize(("use_fixed_bpm", "kick_plane"), list(product((False, True), ("x", "xy"))))
+def test_single_plane_bpms_spawn_the_requested_number_of_workers(
+    tmp_path: Path, use_fixed_bpm: bool, kick_plane: str
+) -> None:
+    """With plenty of turns, the planned turn batches fill ``num_workers`` exactly."""
+    helper = _sps_helper(tmp_path, file_kick_planes={0: kick_plane})
+    helper.use_fixed_bpm = use_fixed_bpm
+    starts, ends = SPS_BPMS[:2], SPS_BPMS[-2:]
+    turns = list(range(100))
+    simulation_config = SimulationConfig(num_workers=16, num_batches=1, use_fixed_bpm=use_fixed_bpm)
+    plans = helper.plan_workers(starts, ends, 0, set(SPS_BPMS))
+    batches = WorkerTurnPlanner(
+        helper.tracking_plan, simulation_config, shuffle_turns=random.Random(0).shuffle
+    ).build_turn_batches(
+        available_turns=turns,
+        file_map=dict.fromkeys(turns, 0),
+        num_files=1,
+        workers_per_batch=len(plans),
+    )
+
+    assert len(batches) * len(plans) == 16

@@ -11,7 +11,6 @@ import numpy as np
 import pandas as pd
 import pytest
 import xtrack as xt
-
 from pymadng_utils.io.utils import save_knobs
 from xtrack_tools.coordinates import create_initial_conditions
 from xtrack_tools.kicker import _insert_exciter_at, _knl_ksl
@@ -88,16 +87,17 @@ def realign_kicker_turns(
     realigned = pd.concat(parts, ignore_index=True)
     return realigned.loc[(realigned["turn"] >= 1) & (realigned["turn"] <= logical_turns)].copy()
 
+
 if TYPE_CHECKING:
     from pathlib import Path
 
     import xtrack as xt
 
-    from accelmo.backend.madng.aba_mad_interface import AbaMadInterface
+    from accelmo.backend.madng.interface import MadInterface
 
 
 def _load_mad_twiss_for_tracking(
-    interface_with_beam: AbaMadInterface,
+    interface_with_beam: MadInterface,
     dpp_value: float,
 ) -> pd.DataFrame:
     """Load MAD-NG twiss data for off-momentum tracking initial conditions."""
@@ -190,7 +190,7 @@ def _run_track_with_model(
 
 
 def _generate_nonoise_track(
-    interface_with_beam: AbaMadInterface,
+    interface_with_beam: MadInterface,
     flattop_turns: int,
     destination: Path,
     dpp_value: float,
@@ -270,7 +270,7 @@ def _generate_nonoise_track(
 
 
 def _generate_kicker_track(
-    interface_with_beam: AbaMadInterface,
+    interface_with_beam: MadInterface,
     flattop_turns: int,
     destination: Path,
     dpp_value: float,
@@ -387,6 +387,8 @@ def _generate_kicker_track(
 
 DPP_VALUE = 1.25e-4
 FLATTOP_TURNS = 256
+
+
 def _make_simulation_config_energy(optimise_momenta: bool = True) -> SimulationConfig:
     return SimulationConfig(
         num_workers=3,
@@ -398,7 +400,7 @@ def _make_simulation_config_energy(optimise_momenta: bool = True) -> SimulationC
 def _build_energy_optimisation_case(
     *,
     tmp_path: Path,
-    loaded_interface: AbaMadInterface,
+    loaded_interface: MadInterface,
     simulation_config: SimulationConfig,
     optimiser_config: OptimiserConfig,
     bpm_start_points: list[str],
@@ -426,7 +428,9 @@ def _build_energy_optimisation_case(
     )
 
     sequence_config = SequenceConfig(magnet_range=magnet_range)
-    measurement_config = create_arc_measurement_config(off_dpp_path, machine_state=merge_machine_states(corrector_file, tune_knobs))
+    measurement_config = create_arc_measurement_config(
+        off_dpp_path, machine_state=merge_machine_states(corrector_file, tune_knobs)
+    )
 
     accel = loaded_interface.accelerator.copy_with(optimise_energy=True)
     output_config = OutputConfig(
@@ -445,16 +449,14 @@ def _build_energy_optimisation_case(
             output_config=output_config,
         ),
     )
-    true_knobs = {
-        "pt": loaded_interface.accelerator.dp2pt(dpp_value)
-    }
+    true_knobs = {"pt": loaded_interface.accelerator.dp2pt(dpp_value)}
     return ctrl, true_knobs
 
 
 def _run_energy_optimisation_case(
     *,
     tmp_path: Path,
-    loaded_interface: AbaMadInterface,
+    loaded_interface: MadInterface,
     simulation_config: SimulationConfig,
     optimiser_config: OptimiserConfig,
     bpm_start_points: list[str],
@@ -563,7 +565,7 @@ def evaluate_controller_worker_losses(
 
 
 def run_madng_tracking(
-    interface: AbaMadInterface,
+    interface: MadInterface,
     flattop_turns: int,
     action_list: list[float],
     angle_list: list[float],

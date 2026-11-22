@@ -26,8 +26,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from accelmo.backend.madng import MadInterface
 from accelmo.machine.accelerators import PSB
-from accelmo.backend.madng import GradientDescentMadInterface
 from accelmo.momentum_reference import (
     ORBIT_AND_PHASE,
     closed_orbit_at,
@@ -82,7 +82,7 @@ def _truth(seq: Path, seed: int = 7) -> dict[str, float]:
     The knobs are *integrated* perturbations while the accelerator reports
     un-integrated k0/k1, so element lengths turn a relative error into a knob.
     """
-    iface = GradientDescentMadInterface(_both(seq))
+    iface = MadInterface(_both(seq), create_knobs=True)
     knobs = [k for k in iface.knob_names if k != "pt"]
     absolute = iface.get_absolute_knob_values(knobs)
     iface.mad.send("alltws = twiss{sequence=loaded_sequence, observe=0}")
@@ -104,7 +104,7 @@ def _measurement(
     seq: Path, truth: dict[str, float], delta: float, rng: np.random.Generator
 ) -> pd.DataFrame:
     """The perturbed machine's twiss, noised, as an omc3-style measurement."""
-    iface = GradientDescentMadInterface(_both(seq))
+    iface = MadInterface(_both(seq), create_knobs=True)
     iface.update_knob_values(truth)
     iface.mad.send(
         f"mtws = twiss{{sequence=loaded_sequence, observe=1, "
@@ -148,9 +148,7 @@ def fitted(seq_psb: Path):
     truth = _truth(seq_psb)
     rng = np.random.default_rng(8)
     measurements = {d: _measurement(seq_psb, truth, d, rng) for d in DELTAS}
-    reference = fit_momentum_reference(
-        _both(seq_psb), measurements, observables=ORBIT_AND_PHASE
-    )
+    reference = fit_momentum_reference(_both(seq_psb), measurements, observables=ORBIT_AND_PHASE)
     machine = closed_orbit_at(_both(seq_psb), truth, 0.0)
     return truth, machine, reference
 
@@ -213,5 +211,3 @@ def test_reference_records_plain_data_fit_metadata(fitted) -> None:
     assert reference.fit_settings["sequence_range"] == "$start/$end"
     assert isinstance(reference.diagnostics["converged"], bool)
     assert reference.diagnostics["iterations"] > 0
-
-

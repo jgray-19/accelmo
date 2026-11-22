@@ -45,8 +45,8 @@ class LBFGSOptimiser(BaseOptimiser):
         eps: float = 1e-12,
         weight_decay: float = 0.0,
         # --- stability knobs ---
-        max_step_norm: float | None = 1.0,   # step-vector clipping after two-loop
-        powell_damping: float = 0.2,         # minimum y^T s / s^T B s
+        max_step_norm: float | None = 1.0,  # step-vector clipping after two-loop
+        powell_damping: float = 0.2,  # minimum y^T s / s^T B s
     ):
         self.history_size = int(history_size)
         self.eps = float(eps)
@@ -187,9 +187,7 @@ class LBFGSOptimiser(BaseOptimiser):
     def _load_state(self, state: dict[str, Any]) -> None:
         """Restore optimiser internal state from a dictionary."""
         if state.get("type") != self.OPTIMISER_NAME:
-            raise ValueError(
-                f"State type {state.get('type')} does not match {self.OPTIMISER_NAME}"
-            )
+            raise ValueError(f"State type {state.get('type')} does not match {self.OPTIMISER_NAME}")
 
         self.history_size = int(state["history_size"])
         self.eps = float(state["eps"])

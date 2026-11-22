@@ -19,7 +19,7 @@ pytest.importorskip("xobjects")
 from omc3.hole_in_one import hole_in_one_entrypoint
 from turn_by_turn import write_tbt
 from turn_by_turn.structures import TbtData, TransverseData
-from xobjects import ContextCpu  # noqa: E402
+from xobjects import ContextCpu
 from xtrack_tools import (
     create_xsuite_environment,
     get_monitor_names_at_pattern,
@@ -29,13 +29,11 @@ from xtrack_tools import (
     run_tracking,
 )
 
+from accelmo.backend.madng.interface import MadInterface
 from accelmo.machine.accelerators import LHC
-from accelmo.backend.madng.aba_mad_interface import AbaMadInterface
 
 # Setup logging
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 LOGGER = logging.getLogger(__name__)
 
@@ -80,9 +78,7 @@ COL_LIST = [
 ]
 
 
-def run_acd_twiss(
-    line: xt.Line, beam: int, dpp: float, driven_tunes: list[float]
-) -> xt.TwissTable:
+def run_acd_twiss(line: xt.Line, beam: int, dpp: float, driven_tunes: list[float]) -> xt.TwissTable:
     """
     Run twiss calculation with AC dipole elements.
 
@@ -142,9 +138,7 @@ def write_tfs(
     if ng_tws is not None:
         # Merge ng_tws k1l and k2l columns into twiss_df
         ng_tws.columns = [col.upper() for col in ng_tws.columns]
-        ng_tws_df = ng_tws[
-            ["NAME", "K1L", "K2L", "K1SL", "K3L", "K4L", "R11", "R12", "R21", "R22"]
-        ]
+        ng_tws_df = ng_tws[["NAME", "K1L", "K2L", "K1SL", "K3L", "K4L", "R11", "R12", "R21", "R22"]]
         twiss_df = twiss_df.merge(ng_tws_df, on="NAME", how="left").fillna(0.0)
 
     # Write to TFS file
@@ -180,7 +174,7 @@ def generate_model_data():
 
     # Create MAD interface and load sequence
     accel = LHC(beam=1, sequence_file=SEQUENCE_FILE)
-    mad = AbaMadInterface(accel)
+    mad = MadInterface(accel)
     mad.run_twiss(observe=0, coupling=True)
     mad.mad.send("""
 local melmcol in MAD.gphys
@@ -302,12 +296,8 @@ def perform_tracking(line, tws, files):
         # Add noise manually
         for bpm in bpm_names:
             scale = NOISE_LEVEL / 10 if bpm.endswith("_DOROS") else NOISE_LEVEL
-            transverse_data.X.loc[bpm] += rng.normal(
-                0, scale, len(transverse_data.X.columns)
-            )
-            transverse_data.Y.loc[bpm] += rng.normal(
-                0, scale, len(transverse_data.Y.columns)
-            )
+            transverse_data.X.loc[bpm] += rng.normal(0, scale, len(transverse_data.X.columns))
+            transverse_data.Y.loc[bpm] += rng.normal(0, scale, len(transverse_data.Y.columns))
 
         # Convert from m to mm
         transverse_data.X *= 1e3

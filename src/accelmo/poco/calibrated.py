@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from accelmo.fitting.bpm_gains import PLANES, bpm_gain_names
+from accelmo.fitting.lm_loop import LMPoint, run_levenberg_marquardt
 from accelmo.fitting.protocol import Evaluate, GradReply, distribute
 from accelmo.machine.machine_state import resolve_machine_state
 from accelmo.poco.calibration import (
@@ -25,7 +26,6 @@ from accelmo.poco.calibration import (
     reduce_blocks,
 )
 from accelmo.poco.closed_orbit import CLOSED_ORBIT_OBSERVABLES, ClosedOrbitFitter
-from accelmo.fitting.lm_loop import LMPoint, run_levenberg_marquardt
 from accelmo.poco.workers.calibrated import CalibratedClosedOrbitWorker
 
 if TYPE_CHECKING:
@@ -87,7 +87,9 @@ class CalibratedClosedOrbitFitter(ClosedOrbitFitter):
         self.fit_corrector_gains = bool(fit_corrector_gains)
         self.corrector_gain_pattern = corrector_gain_pattern
         self.zero_mean_gain_pattern = zero_mean_gain_pattern
-        self.knob_sigmas = {name.lower(): float(sigma) for name, sigma in (knob_sigmas or {}).items()}
+        self.knob_sigmas = {
+            name.lower(): float(sigma) for name, sigma in (knob_sigmas or {}).items()
+        }
         if any(sigma <= 0 for sigma in self.knob_sigmas.values()):
             raise ValueError("knob_sigmas must be > 0")
         #: Evaluate each trial point with the loss alone (plain closed-orbit solves, no knob derivatives) and run the full
@@ -95,7 +97,9 @@ class CalibratedClosedOrbitFitter(ClosedOrbitFitter):
         self.loss_only_trials = bool(loss_only_trials)
         self.sigma_bpm = float(sigma_bpm)
         self.sigma_corrector = float(sigma_corrector)
-        self._attached: dict[str, shared_memory.SharedMemory] = {}  # workers' shared blocks, mapped once
+        self._attached: dict[
+            str, shared_memory.SharedMemory
+        ] = {}  # workers' shared blocks, mapped once
         self.calibration_result: dict[str, float] = {}
         self.calibration_uncertainty: dict[str, float] = {}
         self.calibration_spec: CalibrationSpec | None = None
@@ -131,14 +135,22 @@ class CalibratedClosedOrbitFitter(ClosedOrbitFitter):
             )
             correctors = tuple(
                 corrector
-                for corrector in dict.fromkeys(name[len(self.kick_prefix) :].upper() for name in kicks)
-                if self.corrector_gain_pattern is None or re.fullmatch(self.corrector_gain_pattern, corrector)
+                for corrector in dict.fromkeys(
+                    name[len(self.kick_prefix) :].upper() for name in kicks
+                )
+                if self.corrector_gain_pattern is None
+                or re.fullmatch(self.corrector_gain_pattern, corrector)
             )
         self.calibration_spec = CalibrationSpec(bpms, correctors, self.kick_prefix)
         for _, data in payloads:
             data.calibration = self.calibration_spec
         groups = distribute([len(item.measurements) for item in self.series], self.n_workers)
-        LOGGER.info("Calibration fit: %d BPMs x 2 planes, %d correctors, %d worker(s)", len(bpms), len(correctors), len(groups))
+        LOGGER.info(
+            "Calibration fit: %d BPMs x 2 planes, %d correctors, %d worker(s)",
+            len(bpms),
+            len(correctors),
+            len(groups),
+        )
         return [(payloads[group[0]][0], [payloads[i][1] for i in group]) for group in groups]
 
     def _attach(self, name: str) -> shared_memory.SharedMemory:
@@ -148,11 +160,13 @@ class CalibratedClosedOrbitFitter(ClosedOrbitFitter):
                 self._attached[name] = shared_memory.SharedMemory(name=name, track=False)
             else:
                 block = shared_memory.SharedMemory(name=name)
-                resource_tracker.unregister(block._name, "shared_memory")  # noqa: SLF001
+                resource_tracker.unregister(block._name, "shared_memory")
                 self._attached[name] = block
         return self._attached[name]
 
-    def _collect_calibrated(self, channels, knobs: dict[str, float]) -> tuple[CalibrationBlocks, float] | None:
+    def _collect_calibrated(
+        self, channels, knobs: dict[str, float]
+    ) -> tuple[CalibrationBlocks, float] | None:
         """Sum every worker's blocks; ``None`` if any worker lost its closed orbit."""
         channels.send_all(Evaluate(knobs))
         replies = channels.recv_all()
@@ -161,15 +175,21 @@ class CalibratedClosedOrbitFitter(ClosedOrbitFitter):
             if not isinstance(result, GradReply):
                 raise RuntimeError(f"Unexpected closed-orbit worker payload: {result!r}")
             if result.loss == float("inf"):
-                raise RuntimeError("Worker error detected during calibrated closed-orbit optimisation")
+                raise RuntimeError(
+                    "Worker error detected during calibrated closed-orbit optimisation"
+                )
             payloads.append(result.extra)
         if any(np.isnan(result.loss) for result in replies) or not payloads:
             return None
         first = payloads[0]
         shape = (first["n_q"], first["n_g"], first["n_b"])
-        parts = [CalibrationBlocks(*shape, self._attach(p["shared_memory"]).buf, zero=False) for p in payloads]
+        parts = [
+            CalibrationBlocks(*shape, self._attach(p["shared_memory"]).buf, zero=False)
+            for p in payloads
+        ]
         total = CalibrationBlocks(*shape)
         total.loss = sum(p["loss"] for p in payloads)
+
         # Memory-bound sum of ~170 MB per worker: split by rows over threads (numpy releases the GIL).
         def add_rows(name: str, rows: slice) -> None:
             out = getattr(total, name)[rows]
@@ -178,7 +198,11 @@ class CalibratedClosedOrbitFitter(ClosedOrbitFitter):
                 np.add(out, getattr(part, name)[rows], out=out)
 
         step = 64
-        jobs = [(name, slice(i, i + step)) for name in CalibrationBlocks.ARRAYS for i in range(0, getattr(total, name).shape[0], step)]
+        jobs = [
+            (name, slice(i, i + step))
+            for name in CalibrationBlocks.ARRAYS
+            for i in range(0, getattr(total, name).shape[0], step)
+        ]
         with ThreadPoolExecutor(max_workers=16) as pool:
             list(pool.map(lambda job: add_rows(*job), jobs))
         return total, first["loss_unit"]
@@ -195,7 +219,9 @@ class CalibratedClosedOrbitFitter(ClosedOrbitFitter):
                 raise RuntimeError(f"Unexpected closed-orbit worker payload: {result!r}")
             loss, payload = result.loss, result.extra
             if loss == float("inf"):
-                raise RuntimeError("Worker error detected during calibrated closed-orbit optimisation")
+                raise RuntimeError(
+                    "Worker error detected during calibrated closed-orbit optimisation"
+                )
             if np.isnan(loss):
                 lost = True
                 continue
@@ -217,11 +243,16 @@ class CalibratedClosedOrbitFitter(ClosedOrbitFitter):
         b_names = bpm_gain_names(spec.bpms)
 
         attributes = [name.rpartition(".")[2].lower() for name in knob_names]
-        unknown = sorted(set(self.knob_sigmas) - {name.lower() for name in knob_names} - set(attributes))
+        unknown = sorted(
+            set(self.knob_sigmas) - {name.lower() for name in knob_names} - set(attributes)
+        )
         if unknown:
             raise ValueError(f"knob_sigmas names knobs that are not optimised: {unknown[:5]}")
         sigma_q = np.array(
-            [self.knob_sigmas.get(name.lower(), self.knob_sigmas.get(attribute, 0.0)) for name, attribute in zip(knob_names, attributes)]
+            [
+                self.knob_sigmas.get(name.lower(), self.knob_sigmas.get(attribute, 0.0))
+                for name, attribute in zip(knob_names, attributes)
+            ]
         )
 
         u = np.zeros(n_q + n_g)
@@ -230,9 +261,18 @@ class CalibratedClosedOrbitFitter(ClosedOrbitFitter):
         gains = {"b": np.zeros(n_b), "best_b": np.zeros(n_b), "best_blocks": None, "unit": 1.0}
         zero_mean = None
         if self.zero_mean_gain_pattern is not None:
-            zero_mean = np.array([i for i, c in enumerate(spec.correctors) if re.fullmatch(self.zero_mean_gain_pattern, c)], dtype=int)
+            zero_mean = np.array(
+                [
+                    i
+                    for i, c in enumerate(spec.correctors)
+                    if re.fullmatch(self.zero_mean_gain_pattern, c)
+                ],
+                dtype=int,
+            )
             if not len(zero_mean):
-                raise ValueError(f"zero_mean_gain_pattern {self.zero_mean_gain_pattern!r} matches no fitted corrector")
+                raise ValueError(
+                    f"zero_mean_gain_pattern {self.zero_mean_gain_pattern!r} matches no fitted corrector"
+                )
 
         def knobs_at(params: np.ndarray) -> dict[str, float]:
             values = np.concatenate([params, gains["b"]]).tolist()
@@ -244,7 +284,15 @@ class CalibratedClosedOrbitFitter(ClosedOrbitFitter):
                 return None
             shell = SimpleNamespace(loss=trial[0], n_q=n_q)
             apply_prior(
-                shell, params, gains["b"], self.sigma_corrector, self.sigma_bpm, trial[1], sigma_q, zero_mean=zero_mean, loss_only=True
+                shell,
+                params,
+                gains["b"],
+                self.sigma_corrector,
+                self.sigma_bpm,
+                trial[1],
+                sigma_q,
+                zero_mean=zero_mean,
+                loss_only=True,
             )
             return shell.loss
 
@@ -252,20 +300,35 @@ class CalibratedClosedOrbitFitter(ClosedOrbitFitter):
             del iteration
             collected = self._collect_calibrated(channels, knobs_at(params))
             if collected is None:
-                return LMPoint(float("nan"), np.zeros(n_q + n_g), np.zeros((n_q + n_g,) * 2), failed=True)
+                return LMPoint(
+                    float("nan"), np.zeros(n_q + n_g), np.zeros((n_q + n_g,) * 2), failed=True
+                )
             blocks, unit = collected
             gains["unit"] = unit
-            apply_prior(blocks, params, gains["b"], self.sigma_corrector, self.sigma_bpm, unit, sigma_q, zero_mean=zero_mean)
+            apply_prior(
+                blocks,
+                params,
+                gains["b"],
+                self.sigma_corrector,
+                self.sigma_bpm,
+                unit,
+                sigma_q,
+                zero_mean=zero_mean,
+            )
             grad, hess = reduce_blocks(blocks)
             return LMPoint(blocks.loss, grad, hess, extra=blocks)
 
         def on_accept(params: np.ndarray, point: LMPoint) -> None:
             gains["best_b"], gains["best_blocks"] = gains["b"].copy(), point.extra
-            self.history.append((dict(zip(knob_names, params[:n_q].tolist(), strict=True)), float(point.loss)))
+            self.history.append(
+                (dict(zip(knob_names, params[:n_q].tolist(), strict=True)), float(point.loss))
+            )
 
         def after_step(params: np.ndarray, optimiser) -> None:
             if gains["best_blocks"] is not None:
-                gains["b"] = gains["best_b"] + back_substitute(gains["best_blocks"], params - optimiser.best.value)
+                gains["b"] = gains["best_b"] + back_substitute(
+                    gains["best_blocks"], params - optimiser.best.value
+                )
 
         optimiser, self.diagnostics = run_levenberg_marquardt(
             u,

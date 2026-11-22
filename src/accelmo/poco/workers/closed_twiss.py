@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -31,7 +31,7 @@ LOGGER = logging.getLogger(__name__)
 ORBIT_COORDS = ("x", "px", "y", "py")
 
 
-class ObservableKind(str, Enum):
+class ObservableKind(StrEnum):
     """How a per-BPM observable is turned into a residual.
 
     ``POINTWISE``
@@ -178,22 +178,19 @@ class ClosedTwissWorker(AbstractWorker[ClosedTwissData]):
             raise ValueError(f"Worker {self.worker_id}: weight_scale must be finite and positive")
         self.normalisation_points = max(1, int(data.total_points))
 
-
-    def extra_knobs(self) -> list[str] | None:
-        """Zero-valued knobs after the magnet knobs (see :class:`CalibratedClosedOrbitWorker`)."""
-        return None
-
-    def on_start(self, knobs: dict[str, float]) -> None:
-        """Build the engine; ``pt`` is never a knob here, it is pinned on the closed orbit."""
-        self.engine = self.backend.ClosedOrbitEngine(
+    def _make_engine(self, knobs: dict[str, float]):
+        return self.backend.ClosedOrbitEngine(
             self.config,
             knobs,
             optics_names=self.optics_names,
             orbit_coords=self.orbit_coords,
-            extra_knobs=self.extra_knobs(),
             worker_id=self.worker_id,
             logfile=self.engine_logfile,
         )
+
+    def on_start(self, knobs: dict[str, float]) -> None:
+        """Build the engine; ``pt`` is never a knob here, it is pinned on the closed orbit."""
+        self.engine = self._make_engine(knobs)
         self.n_knobs = len(self.engine.knob_names)
         self.engine.set_pt(self.pt)
 
@@ -217,14 +214,21 @@ class ClosedTwissWorker(AbstractWorker[ClosedTwissData]):
         return solution.names, solution.values, solution.jacobian
 
     def _reply(
-        self, grad: np.ndarray, loss: float, hessian: np.ndarray, normal_matrix: np.ndarray, extra=None
+        self,
+        grad: np.ndarray,
+        loss: float,
+        hessian: np.ndarray,
+        normal_matrix: np.ndarray,
+        extra=None,
     ) -> GradReply:
         """Normalise by the global point count; the physical ``normal`` stays un-normalised.
 
         Summed across workers, the inverse of ``normal`` is the covariance in real units.
         """
         points = self.normalisation_points
-        return GradReply(self.worker_id, loss / points, grad / points, hessian / points, normal_matrix, extra)
+        return GradReply(
+            self.worker_id, loss / points, grad / points, hessian / points, normal_matrix, extra
+        )
 
     def _failure(self) -> GradReply:
         """Reply for a lost closed orbit: NaN loss, so the optimiser backtracks."""
@@ -291,9 +295,7 @@ def align_observables(
         indices = order if observable.kind is ObservableKind.POINTWISE else order[:-1]
         targets.append(np.asarray(observable.targets, dtype=float)[indices])
         raw_weights.append(
-            variance_to_weight(
-                np.asarray(observable.variances, dtype=float)[indices]
-            )
+            variance_to_weight(np.asarray(observable.variances, dtype=float)[indices])
         )
     return targets, raw_weights, [weight / weight_scale for weight in raw_weights]
 

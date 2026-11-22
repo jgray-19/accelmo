@@ -44,20 +44,6 @@ class WorkerObservationPlan:
         return self.init_marker or self.range_spec.init_bpm
 
 
-@dataclass(frozen=True)
-class WorkerRuntimeMetadata:
-    """Fitter-side metadata of one worker."""
-
-    worker_id: int
-    file_idx: int
-    start_bpm: str
-    end_bpm: str
-    sdir: int
-    kick_plane: KickPlane
-    n_run_turns: int
-    bpm_names: list[str]
-
-
 class WorkerSetupHelper:
     """Build worker ranges, observation plans, and worker configs."""
 
@@ -130,7 +116,9 @@ class WorkerSetupHelper:
             bad_bpms=bad_bpms,
         )
 
-    def build_range_specs(self, start_bpms: list[str], end_bpms: list[str]) -> list[WorkerRangeSpec]:
+    def build_range_specs(
+        self, start_bpms: list[str], end_bpms: list[str]
+    ) -> list[WorkerRangeSpec]:
         """Return the logical worker ranges for this tracking plan."""
         ctx = RangeContext(
             start_bpms=start_bpms,
@@ -152,7 +140,9 @@ class WorkerSetupHelper:
             starts = [bpm for bpm in start_bpms if bpm in plane_bpms]
             ends = [bpm for bpm in end_bpms if bpm in plane_bpms]
             if not starts or not ends:
-                LOGGER.warning("No %s-plane start and end BPMs; no %s-plane ranges", plane.value, plane.value)
+                LOGGER.warning(
+                    "No %s-plane start and end BPMs; no %s-plane ranges", plane.value, plane.value
+                )
                 continue
             plane_ctx = dataclasses.replace(
                 ctx,
@@ -164,6 +154,20 @@ class WorkerSetupHelper:
             )
             specs.extend(self.tracking_plan.build_range_specs(plane_ctx))
         return specs
+
+    def plan_workers(
+        self,
+        start_bpms: list[str],
+        end_bpms: list[str],
+        file_idx: int,
+        available_bpms: set[str],
+    ) -> list[WorkerObservationPlan]:
+        """Every worker one turn batch of file ``file_idx`` fans out to."""
+        return [
+            plan
+            for spec in self.build_range_specs(start_bpms, end_bpms)
+            for plan in self.build_observation_plans(spec, file_idx, available_bpms)
+        ]
 
     def build_observation_plans(
         self,
@@ -264,25 +268,4 @@ class WorkerSetupHelper:
                 self.tracking_plan.observed_tracking_anchor_markers
             ),
             cycle_marker=self.tracking_plan.cycle_marker,
-            named_marker_range=self.tracking_plan.named_marker_range,
-        )
-
-    @staticmethod
-    def make_runtime_metadata(
-        worker_id: int,
-        file_idx: int,
-        config: WorkerConfig,
-        bpm_names: list[str],
-        n_run_turns: int,
-    ) -> WorkerRuntimeMetadata:
-        """Return the metadata needed after a worker has started."""
-        return WorkerRuntimeMetadata(
-            worker_id=worker_id,
-            file_idx=file_idx,
-            start_bpm=config.tracking_start_bpm,
-            end_bpm=config.tracking_end_bpm,
-            sdir=config.sdir,
-            kick_plane=config.kick_plane,
-            n_run_turns=n_run_turns,
-            bpm_names=bpm_names,
         )

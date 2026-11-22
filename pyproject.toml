@@ -17,8 +17,8 @@ dependencies = [
     "threadpoolctl",
     "pandas",
     "tfs-pandas",
-    "pymadng>=0.3.0",
-    "pymadng-utils",
+    "pymadng>=0.10.0",
+    "pymadng-utils>=0.0.1",
     "matplotlib",
     "uncertainties",
     "scipy>=1.17.1",
@@ -55,21 +55,7 @@ dev = [
     "pre-commit",
     "ruff",
 ]
-all = [
-    "pytest",
-    "pytest-cov",
-    "pytest-xdist",
-    "sphinx>=7.0",
-    "sphinx-autodoc-typehints>=2.0",
-    "myst-parser>=2.0",
-    "shibuya>=2026.1.9",
-    "omc3 > 0.26.0",
-    "cpymad",
-    "pyarrow",
-    "psutil",
-    "pre-commit",
-    "ruff",
-]
+all = ["accelmo[test,docs,tracking,monitor,dev]"]
 
 [dependency-groups]
 dev = [
@@ -86,7 +72,6 @@ package-dir = {"" = "src"}
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["accelmo*"]
-exclude = ["accelmo.measurements*"]
 
 [tool.coverage.run]
 # Use the importable package name so coverage can map executed files correctly
@@ -126,8 +111,7 @@ exclude = [
   "dist",
 ]
 
-# Assume Python 3.10+
-target-version = "py310"
+target-version = "py311"
 
 line-length = 100
 indent-width = 4
@@ -140,6 +124,9 @@ ignore = [
   "FBT001",  # boolean-type-hint-positional-argument
   "FBT002",  # boolean-default-value-positional-argument
   "PT019",  # pytest-fixture-param-without-value (but suggested solution fails)
+  "TRY004",  # config validation raises ValueError by design
+  "RUF012",  # class-level family tables are constants
+  "UP042",  # str-mixin enums keep their string behaviour
 ]
 extend-select = [
     "F",        # Pyflakes rules

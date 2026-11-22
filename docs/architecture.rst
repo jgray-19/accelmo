@@ -121,8 +121,8 @@ Imports only point down this list; the two engines never import each other
 ``accelmo.machine``
     ``machine.accelerators``: machine definitions (``LHC``, ``PSB``, ``SPS``,
     ``FCC``), knob families, BPM pattern and tune configuration. ``backend.madng``: the
-    MAD-NG interfaces; ``GenericMadInterface`` builds the model,
-    ``GradientDescentMadInterface`` adds the optimisation knobs and derivatives, and
+    MAD-NG interfaces; ``MadInterface`` builds the model,
+    ``MadInterface`` adds the optimisation knobs and derivatives, and
     ``machine_state`` handles fixed machine-state inputs.
 ``accelmo.analysis``
     Degeneracy checks.

@@ -95,4 +95,3 @@ def test_updated_momenta_match_markers_case_insensitively_and_keep_positions() -
     # An ACD refresh moves momenta only; the marker positions are unchanged.
     assert updated.values["x"][0, 0] == 1.0
     assert updated.values["y"][0, 0] == 3.0
-

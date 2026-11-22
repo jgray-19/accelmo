@@ -9,9 +9,7 @@ import numpy as np
 
 LOGGER = logging.getLogger(__name__)
 
-_GROUPED_QFO_KNOB_RE = re.compile(
-    r"^(BR\.QFO)CELL(\d+)(\.(?:dk1l|dx|dy|tilt))$", re.IGNORECASE
-)
+_GROUPED_QFO_KNOB_RE = re.compile(r"^(BR\.QFO)CELL(\d+)(\.(?:dk1l|dx|dy|tilt))$", re.IGNORECASE)
 _CELL_TILT_KNOB_RE = re.compile(r"^(BR\.)QCELL(\d+)(\.tilt)$", re.IGNORECASE)
 
 
@@ -40,9 +38,7 @@ def expand_psb_grouped_quadrupole_knobs(
     return expanded
 
 
-_PHYSICAL_QFO_KNOB_RE = re.compile(
-    r"^(BR\.QFO)(\d+)([12])(\.(?:dk1l|dx|dy|tilt))$", re.IGNORECASE
-)
+_PHYSICAL_QFO_KNOB_RE = re.compile(r"^(BR\.QFO)(\d+)([12])(\.(?:dk1l|dx|dy|tilt))$", re.IGNORECASE)
 _PHYSICAL_QUAD_TILT_RE = re.compile(r"^(BR\.)(?:QFO(\d+)[12]|QDE(\d+))(\.tilt)$", re.IGNORECASE)
 
 

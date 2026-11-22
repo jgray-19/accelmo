@@ -15,8 +15,8 @@ import logging
 from pathlib import Path
 
 import matplotlib.pyplot as plt
-import matplotlib.ticker as ticker
 import numpy as np
+from matplotlib import ticker
 
 from accelmo.config import PROJECT_ROOT
 
@@ -206,16 +206,30 @@ def plot_comparison(
         # --- Plot 2: Point/Scatter chart ---
         fig, ax = plt.subplots(figsize=(10, 6))
 
-        ax.scatter(arc_indices, sim_values * SCALE_FACTOR, s=100, marker="o",
-                   label=label_sim, alpha=0.7, edgecolors="black", linewidth=1.5)
-        ax.scatter(arc_indices, meas_values * SCALE_FACTOR, s=100, marker="s",
-                   label=label_meas, alpha=0.7, edgecolors="black", linewidth=1.5)
+        ax.scatter(
+            arc_indices,
+            sim_values * SCALE_FACTOR,
+            s=100,
+            marker="o",
+            label=label_sim,
+            alpha=0.7,
+            edgecolors="black",
+            linewidth=1.5,
+        )
+        ax.scatter(
+            arc_indices,
+            meas_values * SCALE_FACTOR,
+            s=100,
+            marker="s",
+            label=label_meas,
+            alpha=0.7,
+            edgecolors="black",
+            linewidth=1.5,
+        )
 
         ax.set_xlabel("Arc")
         ax.set_ylabel(r"$\Delta p/p$ ($\times 10^{-5}$)")
-        ax.set_title(
-            rf"Arc-by-Arc $\Delta p/p$: Point Chart Comparison (Beam {beam}, {point} dpp)"
-        )
+        ax.set_title(rf"Arc-by-Arc $\Delta p/p$: Point Chart Comparison (Beam {beam}, {point} dpp)")
         ax.set_xticks(arc_indices)
         ax.axhline(y=0, color="k", linestyle="-", linewidth=0.5, alpha=0.3)
         ax.grid(visible=True, alpha=0.3)
@@ -234,19 +248,33 @@ def plot_comparison(
         # Calculate differences between consecutive arcs
         sim_consecutive_diffs = np.diff(sim_values)
         meas_consecutive_diffs = np.diff(meas_values)
-        arc_pair_labels = [f"Arc{i}-Arc{i-1}" for i in range(2, len(arc_indices) + 1)]
+        arc_pair_labels = [f"Arc{i}-Arc{i - 1}" for i in range(2, len(arc_indices) + 1)]
         arc_pair_indices = np.arange(1, len(arc_indices))
 
-        ax.scatter(arc_pair_indices, sim_consecutive_diffs * SCALE_FACTOR, s=100, marker="o",
-                   label=label_sim, alpha=0.7, edgecolors="black", linewidth=1.5)
-        ax.scatter(arc_pair_indices, meas_consecutive_diffs * SCALE_FACTOR, s=100, marker="s",
-                   label=label_meas, alpha=0.7, edgecolors="black", linewidth=1.5)
+        ax.scatter(
+            arc_pair_indices,
+            sim_consecutive_diffs * SCALE_FACTOR,
+            s=100,
+            marker="o",
+            label=label_sim,
+            alpha=0.7,
+            edgecolors="black",
+            linewidth=1.5,
+        )
+        ax.scatter(
+            arc_pair_indices,
+            meas_consecutive_diffs * SCALE_FACTOR,
+            s=100,
+            marker="s",
+            label=label_meas,
+            alpha=0.7,
+            edgecolors="black",
+            linewidth=1.5,
+        )
 
         ax.set_xlabel("Arc Pair")
         ax.set_ylabel(r"$\Delta p/p$ difference ($\times 10^{-5}$)")
-        ax.set_title(
-            rf"Consecutive Arc Differences: Arc(n) - Arc(n-1) (Beam {beam}, {point} dpp)"
-        )
+        ax.set_title(rf"Consecutive Arc Differences: Arc(n) - Arc(n-1) (Beam {beam}, {point} dpp)")
         ax.set_xticks(arc_pair_indices)
         ax.set_xticklabels(arc_pair_labels)
         ax.axhline(y=0, color="k", linestyle="-", linewidth=1, alpha=0.5)
@@ -275,21 +303,29 @@ def print_statistics(
     sim_values = np.array([sim_results.get(f"arc{i}", np.nan) for i in arc_indices])
     meas_values = np.array([meas_results.get(f"arc{i}", np.nan) for i in arc_indices])
 
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print("Arc-by-Arc dpp Comparison Statistics")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
 
     print(f"\n{label_sim}:")
     print(f"  Mean:     {np.nanmean(sim_values) * SCALE_FACTOR:>12.3f} x 10⁻⁵")
     print(f"  Std Dev:  {np.nanstd(sim_values) * SCALE_FACTOR:>12.3f} x 10⁻⁵")
-    print(f"  Min:      {np.nanmin(sim_values) * SCALE_FACTOR:>12.3f} x 10⁻⁵  (Arc {arc_indices[np.nanargmin(sim_values)]})")
-    print(f"  Max:      {np.nanmax(sim_values) * SCALE_FACTOR:>12.3f} x 10⁻⁵  (Arc {arc_indices[np.nanargmax(sim_values)]})")
+    print(
+        f"  Min:      {np.nanmin(sim_values) * SCALE_FACTOR:>12.3f} x 10⁻⁵  (Arc {arc_indices[np.nanargmin(sim_values)]})"
+    )
+    print(
+        f"  Max:      {np.nanmax(sim_values) * SCALE_FACTOR:>12.3f} x 10⁻⁵  (Arc {arc_indices[np.nanargmax(sim_values)]})"
+    )
 
     print(f"\n{label_meas}:")
     print(f"  Mean:     {np.nanmean(meas_values) * SCALE_FACTOR:>12.3f} x 10⁻⁵")
     print(f"  Std Dev:  {np.nanstd(meas_values) * SCALE_FACTOR:>12.3f} x 10⁻⁵")
-    print(f"  Min:      {np.nanmin(meas_values) * SCALE_FACTOR:>12.3f} x 10⁻⁵  (Arc {arc_indices[np.nanargmin(meas_values)]})")
-    print(f"  Max:      {np.nanmax(meas_values) * SCALE_FACTOR:>12.3f} x 10⁻⁵  (Arc {arc_indices[np.nanargmax(meas_values)]})")
+    print(
+        f"  Min:      {np.nanmin(meas_values) * SCALE_FACTOR:>12.3f} x 10⁻⁵  (Arc {arc_indices[np.nanargmin(meas_values)]})"
+    )
+    print(
+        f"  Max:      {np.nanmax(meas_values) * SCALE_FACTOR:>12.3f} x 10⁻⁵  (Arc {arc_indices[np.nanargmax(meas_values)]})"
+    )
 
     # Print arc-by-arc comparison
     print("\nArc-by-Arc Values:")
@@ -304,7 +340,7 @@ def print_statistics(
             f"{diff * SCALE_FACTOR:>14.3f}"
         )
 
-    print(f"{'='*60}\n")
+    print(f"{'=' * 60}\n")
 
 
 def main() -> None:
@@ -340,13 +376,17 @@ def main() -> None:
         logger.error("No valid arc results found in one or both files")
         return
 
-    logger.info(f"Loaded {len(sim_results)} simulation arcs and {len(meas_results)} measurement arcs")
+    logger.info(
+        f"Loaded {len(sim_results)} simulation arcs and {len(meas_results)} measurement arcs"
+    )
 
     # Print statistics
     print_statistics(sim_results, meas_results, args.label_sim, args.label_meas)
 
     # Create plots
-    plot_comparison(sim_results, meas_results, output_path, args.label_sim, args.label_meas, beam, point)
+    plot_comparison(
+        sim_results, meas_results, output_path, args.label_sim, args.label_meas, beam, point
+    )
 
 
 if __name__ == "__main__":

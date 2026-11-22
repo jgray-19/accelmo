@@ -27,8 +27,8 @@ from tests.training.controller_test_utils import (
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from accelmo.backend.madng.interface import MadInterface
     from accelmo.config import OptimiserConfig
-    from accelmo.backend.madng.aba_mad_interface import AbaMadInterface
 
 
 logger = logging.getLogger(__name__)
@@ -49,7 +49,7 @@ def _build_lhc_quad_controller(
     *,
     tmp_path: Path,
     seq_b1: Path,
-    loaded_interface: AbaMadInterface,
+    loaded_interface: MadInterface,
     start_marker: str,
     optimiser_config: OptimiserConfig | None = None,
 ) -> tuple[ArcByArcFitter, dict[str, float]]:
@@ -100,7 +100,7 @@ def test_controller_quad_opt_simple(
     tmp_path: Path,
     seq_b1: Path,
     start_marker: str,
-    loaded_interface: AbaMadInterface,
+    loaded_interface: MadInterface,
     controller_test_mode: str,
 ) -> None:
     ctrl, true_values = _build_lhc_quad_controller(
@@ -129,7 +129,7 @@ def test_controller_quad_opt_simple(
 def test_controller_quad_opt_simple_without_early_stopping_reaches_truth(
     tmp_path: Path,
     seq_b1: Path,
-    loaded_interface: AbaMadInterface,
+    loaded_interface: MadInterface,
     controller_test_mode: str,
     optimiser_type: str,
 ) -> None:

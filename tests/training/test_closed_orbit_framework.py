@@ -8,11 +8,11 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from accelmo.backend.madng import MadInterface
 from accelmo.config import SimulationConfig
 from accelmo.fitting.protocol import Evaluate, GradReply
 from accelmo.fitting.worker import WorkerConfig
 from accelmo.machine.accelerators import PSB
-from accelmo.backend.madng import GradientDescentMadInterface
 from accelmo.poco import (
     ClosedOrbitMeasurement,
     ClosedOrbitSeries,
@@ -128,9 +128,11 @@ def test_measurements_in_one_series_add_up_like_separate_series(seq_psb: Path) -
     the wrong momentum, breaks the equality.
     """
     accelerator = PSB(ring=3, sequence_file=seq_psb, misalignments={"quad": {"dx"}})
-    iface = GradientDescentMadInterface(accelerator)
+    iface = MadInterface(accelerator, create_knobs=True)
     bpms = list(iface.all_bpms)
-    knobs = {name: 1e-5 * (i + 1) for i, name in enumerate(n for n in iface.knob_names if n != "pt")}
+    knobs = {
+        name: 1e-5 * (i + 1) for i, name in enumerate(n for n in iface.knob_names if n != "pt")
+    }
     iface.close()
     config = WorkerConfig(
         accelerator=accelerator,
@@ -146,7 +148,9 @@ def test_measurements_in_one_series_add_up_like_separate_series(seq_psb: Path) -
 
     def evaluate(*measurements: ClosedOrbitMeasurementData) -> GradReply:
         series = ClosedOrbitSeriesData(bpm_names=bpms, measurements=list(measurements))
-        worker = ClosedOrbitWorker(None, 0, [series], config, SimulationConfig(num_workers=1, num_batches=1))
+        worker = ClosedOrbitWorker(
+            None, 0, [series], config, SimulationConfig(num_workers=1, num_batches=1)
+        )
         worker.on_start(knobs)
         try:
             return worker.evaluate(Evaluate(knobs))

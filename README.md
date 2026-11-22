@@ -25,7 +25,7 @@ Requires Python 3.11 or later.
 ```bash
 git clone https://github.com/jgray-19/accelmo.git
 cd accelmo
-pip install -e .
+uv sync
 ```
 
 Optional dependency groups:
@@ -39,7 +39,7 @@ Optional dependency groups:
 | `dev` | ruff, pre-commit |
 
 ```bash
-pip install -e ".[test,docs,tracking]"
+uv sync --extra test --extra docs --extra tracking
 ```
 
 ### Companion packages
@@ -51,10 +51,8 @@ Companion packages:
 | [pymadng-utils](https://pypi.org/project/pymadng-utils/) | Shared accelerator abstractions, dp/p and pt conversion, knob-file I/O |
 | [xtrack_tools](https://github.com/jgray-19/xtrack_tools) | Tracking helpers and dataframe conversion (tests) |
 
-```bash
-pip install pymadng-utils
-pip install git+https://github.com/jgray-19/xtrack_tools.git
-```
+`pymadng-utils` is a normal dependency. `xtrack_tools` is pinned in the `dev` dependency
+group, so `uv sync` installs it.
 
 ## Usage
 
@@ -146,9 +144,9 @@ See `tests/training/test_closed_orbit_machine_state.py`.
 ## Tests
 
 ```bash
-pytest -m "not slow"          # fast suite
-pytest -m slow                # convergence and end-to-end tests
-pytest --cov=accelmo
+uv run pytest -m "not slow"          # fast suite
+uv run pytest -m slow                # convergence and end-to-end tests
+uv run pytest --cov=accelmo
 ```
 
 Markers are listed in `pyproject.toml` and `tests/README.md`.
@@ -156,8 +154,8 @@ Markers are listed in `pyproject.toml` and `tests/README.md`.
 ## Documentation
 
 ```bash
-pip install -e ".[docs]"
-cd docs && make html
+uv sync --extra docs
+cd docs && uv run make html
 ```
 
 The output is written to `docs/_build/html/index.html`.

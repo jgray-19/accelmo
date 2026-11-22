@@ -24,7 +24,7 @@ from tests.training.controller_test_utils import (
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from accelmo.backend.madng.aba_mad_interface import AbaMadInterface
+    from accelmo.backend.madng.interface import MadInterface
 
 logger = logging.getLogger(__name__)
 pytestmark = pytest.mark.serial
@@ -34,7 +34,7 @@ def _build_kicker_controller(
     *,
     tmp_path: Path,
     seq_psb: Path,
-    loaded_psb_interface: AbaMadInterface,
+    loaded_psb_interface: MadInterface,
     flattop_turns: int = 10,
 ) -> tuple[KickerFitter, dict[str, float]]:
     magnet_range = "$start/$end"
@@ -80,7 +80,7 @@ def _build_kicker_controller(
 def test_controller_kicker_has_no_held_out_validation(
     tmp_path: Path,
     seq_psb: Path,
-    loaded_psb_interface: AbaMadInterface,
+    loaded_psb_interface: MadInterface,
 ) -> None:
     """The kicker plan disables validation, so no turns are held out.
 
@@ -105,10 +105,44 @@ def test_controller_kicker_has_no_held_out_validation(
         ctrl.session.terminate()
 
 
+def test_check_degeneracy_finds_the_quad_behind_the_last_bpm(
+    tmp_path: Path,
+    seq_psb: Path,
+    loaded_psb_interface: MadInterface,
+) -> None:
+    """One turn from the kicker never reaches a BPM after BR.QDE1 (between BR3.BPM1L3 and the
+    kicker), so its knob is the only flat direction; four turns constrain every quad."""
+    one_turn, _ = _build_kicker_controller(
+        tmp_path=tmp_path,
+        seq_psb=seq_psb,
+        loaded_psb_interface=loaded_psb_interface,
+        flattop_turns=1,
+    )
+    report = one_turn.check_degeneracy()
+    assert len(report.knob_names) == 48
+    assert report.n_degenerate == 1
+    assert report.zero_sensitivity_knobs == ["BR.QDE1.dk1l"]
+    (flat,) = report.degenerate_directions
+    assert abs(flat.relative_eigenvalue) < 1e-14
+    qde1 = report.knob_names.index("BR.QDE1.dk1l")
+    assert abs(abs(flat.components[qde1]) - 1.0) < 1e-12
+
+    four_turns, _ = _build_kicker_controller(
+        tmp_path=tmp_path,
+        seq_psb=seq_psb,
+        loaded_psb_interface=loaded_psb_interface,
+        flattop_turns=4,
+    )
+    report = four_turns.check_degeneracy()
+    assert not report.is_degenerate
+    assert report.zero_sensitivity_knobs == []
+    assert report.condition_number < 1e6
+
+
 def test_controller_quad_opt_with_kicker(
     tmp_path: Path,
     seq_psb: Path,
-    loaded_psb_interface: AbaMadInterface,
+    loaded_psb_interface: MadInterface,
     controller_test_mode: str,
 ) -> None:
     loss_regression = controller_test_mode == "loss_regression"

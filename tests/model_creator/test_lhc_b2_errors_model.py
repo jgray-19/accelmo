@@ -21,8 +21,8 @@ from omc3.model_creator import create_instance_and_model
 from pymadng_utils.io.utils import save_knobs
 from pymadng_utils.madx.make_sequence import make_madx_sequence
 
+from accelmo.backend.madng.interface import MadInterface
 from accelmo.machine.accelerators import LHC
-from accelmo.backend.madng.optimising_mad_interface import GenericMadInterface
 
 BEAM = 1
 ENERGY_GEV = 6800.0
@@ -32,7 +32,11 @@ OPTICS_MODIFIER = "R2025aRP_A12cmC12cmA10mL200cm_Flat.madx"
 B2_STEM = "MB2022_6800.0GeV_0133cm"
 
 # Per-arc trim quads (MAD-X names) set by the b2 correction, 8 arcs for KQTF and KQTD.
-KQT_MADX_NAMES = [f"kqt{fd}.a{arc}b{BEAM}" for fd in "fd" for arc in ("12", "23", "34", "45", "56", "67", "78", "81")]
+KQT_MADX_NAMES = [
+    f"kqt{fd}.a{arc}b{BEAM}"
+    for fd in "fd"
+    for arc in ("12", "23", "34", "45", "56", "67", "78", "81")
+]
 
 
 @pytest.fixture(scope="module")
@@ -119,7 +123,7 @@ def test_madng_b2_errors_match_omc3_best_knowledge_phase(
         sequence_file=sequence_file,
         kinetic_energy=ENERGY_GEV,
     )
-    interface = GenericMadInterface(
+    interface = MadInterface(
         accelerator=accelerator,
         machine_state=tune_knobs,
         b2_errors=data_dir / "strengths" / (B2_STEM + ".errors"),

@@ -57,8 +57,7 @@ def prior_alphas(
         alphas[indices] = float(strength) * scale
         if log:
             logger.info(
-                "Knob prior for %s: %d knobs, alpha=%.3e "
-                "(strength=%.3e x median diag H=%.3e)",
+                "Knob prior for %s: %d knobs, alpha=%.3e (strength=%.3e x median diag H=%.3e)",
                 family,
                 len(indices),
                 alphas[indices[0]],

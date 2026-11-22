@@ -15,7 +15,7 @@ from accelmo.fitting.worker import KickPlane
 
 if TYPE_CHECKING:
     from accelmo.fitting.pool import WorkerPool
-    from accelmo.tracking.dispatch.setup import WorkerRuntimeMetadata
+    from accelmo.tracking.dispatch.setup import WorkerObservationPlan
 
 LOGGER = logging.getLogger(__name__)
 
@@ -79,7 +79,10 @@ def noise_matrix(part: UncertaintyPart) -> np.ndarray:
 
 
 def drain_uncertainty(
-    pool: WorkerPool[WorkerRuntimeMetadata], n_knobs: int, propagate_uncertainty: bool
+    pool: WorkerPool[WorkerObservationPlan],
+    n_knobs: int,
+    propagate_uncertainty: bool,
+    n_run_turns: int,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Stop ``pool`` in memory-bounded chunks and return the normal matrix ``A`` and noise ``B``.
 
@@ -94,7 +97,9 @@ def drain_uncertainty(
     files = [meta.file_idx for meta in pool.metadata]
     order = sorted(range(len(pool)), key=files.__getitem__)
     remaining = Counter(files)
-    chunk_size = _concurrency(pool, n_knobs) if propagate_uncertainty else max(1, len(order))
+    chunk_size = (
+        _concurrency(pool, n_knobs, n_run_turns) if propagate_uncertainty else max(1, len(order))
+    )
 
     pending: dict[int, UncertaintyPart] = {}
     for start in range(0, len(order), chunk_size):
@@ -133,7 +138,7 @@ def _drain_parts(
     return parts
 
 
-def _concurrency(pool: WorkerPool, n_knobs: int) -> int:
+def _concurrency(pool: WorkerPool, n_knobs: int, n_run_turns: int) -> int:
     """How many workers may send their parts at once within half the free memory.
 
     A part has at most one row per observed point for up to two observables per
@@ -143,7 +148,7 @@ def _concurrency(pool: WorkerPool, n_knobs: int) -> int:
     largest = 0
     for meta, particles in zip(pool.metadata, pool.particle_counts):
         planes = 2 if meta.kick_plane == KickPlane.XY else 1
-        points = len(meta.bpm_names) * meta.n_run_turns
+        points = len(meta.bpm_names) * n_run_turns
         rows = particles * planes * (2 * points + 1)
         largest = max(largest, rows * (n_knobs + 2) * 8)
     available = psutil.virtual_memory().available

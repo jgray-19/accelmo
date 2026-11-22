@@ -5,8 +5,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import matplotlib.pyplot as plt
-import matplotlib.ticker as ticker
 import numpy as np
+from matplotlib import ticker
 
 
 def read_deltap_file(filepath):
@@ -126,15 +126,9 @@ def plot_differences(beam_data: BeamData, ax=None):
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Plot deltap differences for beam 1 or 2."
-    )
-    parser.add_argument(
-        "beam", type=int, choices=[1, 2], nargs="?", help="Beam number (1 or 2)"
-    )
-    parser.add_argument(
-        "--both", action="store_true", help="Plot both beams on the same plot"
-    )
+    parser = argparse.ArgumentParser(description="Plot deltap differences for beam 1 or 2.")
+    parser.add_argument("beam", type=int, choices=[1, 2], nargs="?", help="Beam number (1 or 2)")
+    parser.add_argument("--both", action="store_true", help="Plot both beams on the same plot")
     args = parser.parse_args()
 
     if args.both:
@@ -148,9 +142,7 @@ def main():
         plt.ylabel(r"Deltap Difference ($\times 10^{-5}$)")
         plt.title("Deltap Difference vs Arc for Both Beams")
         ax = plt.gca()
-        ax.yaxis.set_major_formatter(
-            ticker.FuncFormatter(lambda x, pos: f"{x * 1e5:.1f}")
-        )
+        ax.yaxis.set_major_formatter(ticker.FuncFormatter(lambda x, pos: f"{x * 1e5:.1f}"))
         plt.legend()
         plt.grid(visible=True)
         plt.savefig("deltap_difference_both.png")

@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
-import pandas as pd
 
 from accelmo.config import SimulationConfig
 from accelmo.fitting.lifecycle import run_with_workers
+from accelmo.fitting.lm_loop import LMPoint, run_levenberg_marquardt
 from accelmo.fitting.pool import WorkerPool
 from accelmo.fitting.protocol import Evaluate, GradReply, Start
 from accelmo.fitting.reduction import reduce_replies
@@ -20,7 +19,6 @@ from accelmo.fitting.uncertainty import hessian_uncertainties, warn_if_singular
 from accelmo.fitting.weights import global_weight_scale, variance_to_weight
 from accelmo.fitting.worker import WorkerConfig
 from accelmo.optimisers.levenberg_marquardt import LevenbergMarquardtConfig
-from accelmo.fitting.lm_loop import LMPoint, run_levenberg_marquardt
 from accelmo.poco.prior import (
     apply_prior,
     prior_alphas,
@@ -35,6 +33,9 @@ from accelmo.poco.workers.closed_twiss import (
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
+    from pathlib import Path
+
+    import pandas as pd
 
     from accelmo.fitting.config import OutputConfig, SequenceConfig
     from accelmo.machine.accelerators import Accelerator
@@ -222,7 +223,9 @@ class LMFitter:
             if self.prior_strengths and not reduced.particle_lost:
                 if not alphas:
                     alphas.append(prior_alphas(self.prior_strengths, hessian, knob_names, log=True))
-                loss, grad, hessian = apply_prior(loss, grad, hessian, params, prior_mean, alphas[0])
+                loss, grad, hessian = apply_prior(
+                    loss, grad, hessian, params, prior_mean, alphas[0]
+                )
             return LMPoint(loss, grad, hessian, reduced.particle_lost)
 
         def on_accept(params: np.ndarray, point: LMPoint) -> None:
@@ -286,9 +289,7 @@ class ClosedTwissFitter(LMFitter):
             raise ValueError("At least one observable must be fitted")
         unknown = [name for name in observables if name not in MEASUREMENT_COLUMNS]
         if unknown:
-            raise ValueError(
-                f"Unknown observables {unknown}; known: {sorted(MEASUREMENT_COLUMNS)}"
-            )
+            raise ValueError(f"Unknown observables {unknown}; known: {sorted(MEASUREMENT_COLUMNS)}")
 
         self.observable_names = observables
         super().__init__(
@@ -303,8 +304,7 @@ class ClosedTwissFitter(LMFitter):
             output_config=output_config,
         )
         self.measurements = {
-            float(pt): load_measurement(frame, observables)
-            for pt, frame in measurements.items()
+            float(pt): load_measurement(frame, observables) for pt, frame in measurements.items()
         }
         interface_options = {} if machine_state is None else {"machine_state": machine_state}
         self.worker_payloads = create_worker_payloads(
@@ -496,8 +496,7 @@ def build_worker_payload(
     )
 
     observable_data = [
-        _build_observable(name, measurement, measured_bpms, use_errors, pt)
-        for name in observables
+        _build_observable(name, measurement, measured_bpms, use_errors, pt) for name in observables
     ]
 
     worker_bad_bpms = list(unmeasured) + (list(bad_bpms) if bad_bpms else [])
@@ -568,8 +567,7 @@ def _build_observable(
         variances = np.full_like(targets, scale, dtype=float)
     elif not np.all(usable):
         logger.warning(
-            "Observable '%s' (pt=%g): %d/%d points have no usable error and carry "
-            "zero weight.",
+            "Observable '%s' (pt=%g): %d/%d points have no usable error and carry zero weight.",
             name,
             pt,
             int(np.count_nonzero(~usable)),

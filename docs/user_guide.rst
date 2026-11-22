@@ -203,7 +203,7 @@ with:
 
 .. code-block:: bash
 
-   pip install -e ".[monitor]"
+   uv sync --extra monitor
    python -m accelmo.monitor RUN_LOG_ROOT --spec my_package.monitor:SPEC
 
 ``accelmo-monitor`` is the same command as ``python -m accelmo.monitor``. Then open

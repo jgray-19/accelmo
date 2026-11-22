@@ -189,7 +189,9 @@ def test_lm_stops_after_patience_stalled_steps_on_a_tiny_loss() -> None:
             np.array([float(k)]), 1e-7 * (1.0 - 1e-8 * k), np.array([1e-3]), np.array([[2.0]])
         )
         converged.append(update.converged)
-    assert converged == [False] * 5 + [True] * 2  # 1st update has no previous loss; stalls 1..5 end at k=5
+    assert (
+        converged == [False] * 5 + [True] * 2
+    )  # 1st update has no previous loss; stalls 1..5 end at k=5
 
 
 def test_lm_stall_count_resets_on_a_real_improvement() -> None:
@@ -202,6 +204,16 @@ def test_lm_stall_count_resets_on_a_real_improvement() -> None:
         ),
         initial_params=np.array([0.0]),
     )
-    losses = [1e-7, 1e-7 * (1 - 1e-9), 1e-7 * (1 - 2e-9), 0.5e-7, 0.5e-7 * (1 - 1e-9), 0.5e-7 * (1 - 2e-9)]
-    flags = [optim.update(np.array([float(k)]), x, np.array([1e-3]), np.array([[2.0]])).converged for k, x in enumerate(losses)]
+    losses = [
+        1e-7,
+        1e-7 * (1 - 1e-9),
+        1e-7 * (1 - 2e-9),
+        0.5e-7,
+        0.5e-7 * (1 - 1e-9),
+        0.5e-7 * (1 - 2e-9),
+    ]
+    flags = [
+        optim.update(np.array([float(k)]), x, np.array([1e-3]), np.array([[2.0]])).converged
+        for k, x in enumerate(losses)
+    ]
     assert flags == [False] * 6  # the drop to 0.5e-7 restarts the count: two stalls < 3

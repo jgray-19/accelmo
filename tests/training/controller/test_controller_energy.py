@@ -20,7 +20,7 @@ from tests.training.controller_test_utils import (
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from accelmo.backend.madng.aba_mad_interface import AbaMadInterface
+    from accelmo.backend.madng.interface import MadInterface
 
 
 pytestmark = pytest.mark.serial
@@ -30,7 +30,7 @@ pytestmark = pytest.mark.serial
 def test_controller_energy_opt(
     tmp_path: Path,
     seq_b1: Path,
-    loaded_interface: AbaMadInterface,
+    loaded_interface: MadInterface,
     optimise_momenta: bool,
     controller_test_mode: str,
 ) -> None:
@@ -74,4 +74,3 @@ def test_controller_energy_opt(
     assert 0 < uncertainty < 3e-6
     assert not estimate
     assert not unc
-

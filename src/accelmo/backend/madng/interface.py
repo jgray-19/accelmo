@@ -1,9 +1,7 @@
-"""High-level MAD-NG interfaces used by optimisation and worker code.
+"""The MAD-NG session of accelmo: :class:`MadInterface`.
 
-The classes in this module build on :mod:`accelmo.backend.madng.aba_mad_interface`
-to provide a fully configured MAD-NG session for optimisation workflows. They
-handle sequence loading, BPM observation setup, optional machine-state
-application, and knob discovery for gradient-based tuning.
+Loads the sequence and beam, observes and thins the BPMs, applies the machine state and,
+with ``create_knobs=True``, creates the fit knobs selected by the accelerator.
 """
 
 from __future__ import annotations
@@ -19,21 +17,18 @@ from pymadng_utils.mad.accelerator_mad_interface import (
     MULTIPOLE_ATTRS,
     MultipoleInfo,
 )
+from pymadng_utils.mad.knob_mad_interface import KnobMadInterface
 
 from accelmo.machine.accelerators import LHC
 from accelmo.machine.knob_names import is_magnet_strength_name
-
-from .aba_mad_interface import AbaMadInterface
-from .accelerator_hooks import knob_expansion_block, mad_attr_spec, prepare_knob_creation
 from accelmo.machine.machine_state import MachineState, resolve_machine_state
 
-from .machine_state import assign_state
+from .accelerator_hooks import knob_expansion_block, mad_attr_spec, prepare_knob_creation
+from .machine_state import set_vars
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
     from pathlib import Path
-
-    from pymadng_utils.accelerators import Accelerator as PyMadAccelerator
 
     from accelmo.machine.accelerators import Accelerator, KnobSpec
 
@@ -60,7 +55,7 @@ def indexed_multipole_attr_info(attr: str) -> MultipoleInfo | None:
 
 
 def _ensure_cycleable_start_element(
-    iface: GenericMadInterface,
+    iface: MadInterface,
     start_bpm: str,
     observed_bpms: list[str],
 ) -> None:
@@ -132,7 +127,7 @@ def apply_b2_errors_to_sequence(
 
     Works on any MAD interface whose sequence is bound to the ``loaded_sequence``
     global (the reconstruction ``ACDipoleMadDriver`` and the optimisation
-    ``GenericMadInterface`` both qualify). The b2 K1L is added to the quadrupole
+    ``MadInterface`` both qualify). The b2 K1L is added to the quadrupole
     perturbation slot (dknl[2]), leaving the dipole slot dknl[1] untouched. b2
     errors shift the machine tunes, so a machine state holding the tune knobs is required
     to restore them.
@@ -190,30 +185,27 @@ end
     LOGGER.info("Applied %d b2 dipole error entries from %s", len(applied), b2_errors)
 
 
-class GenericMadInterface(AbaMadInterface):
+class MadInterface(KnobMadInterface):
+    """MAD-NG session: sequence, beam, observed thin BPMs, machine state and (optionally) fit knobs.
+
+    ``create_knobs=True`` creates the knobs selected by the accelerator's ``errors`` and
+    ``misalignments`` (accelerator hooks in :mod:`accelmo.backend.madng.accelerator_hooks`)
+    and then applies ``initial_model_values``.
     """
-    Generic MAD interface for all setup tasks EXCEPT knob creation.
 
-    This interface handles:
-    - Loading sequences and setting up beams
-    - Observing BPMs and configuring ranges
-    - Applying corrector strengths and tune knobs
-    - General MAD-NG operations
-
-    Knob creation (for gradient descent) is handled by ``GradientDescentMadInterface``.
-
-    This separation allows non-gradient-descent use cases to use this interface
-    without unnecessary knob creation overhead.
-    """
+    accelerator: Accelerator
 
     def __init__(
         self,
-        accelerator: PyMadAccelerator,
+        accelerator: Accelerator,
+        *,
         magnet_range: str = "$start/$end",
         bpm_range: str | None = None,
         bad_bpms: list[str] | None = None,
         machine_state: MachineState | None = None,
         b2_errors: Path | None = None,
+        create_knobs: bool = False,
+        initial_model_values: dict[str, float] | None = None,
         py_name: str = "py",
         debug: bool = False,
         mad_logfile: Path | None = None,
@@ -265,6 +257,144 @@ class GenericMadInterface(AbaMadInterface):
             self._set_machine_state(machine_state)
         else:
             LOGGER.info("Skipping machine state (not provided)")
+
+        if create_knobs:
+            if accelerator.has_any_optimisation():
+                self._make_adj_knobs()
+            else:
+                LOGGER.warning("create_knobs=True but the accelerator selects no knobs")
+        self.apply_initial_model_values(initial_model_values)
+
+    def observe_bpms(
+        self,
+        bpm_pattern: str | None = None,
+        bad_bpms: list[str] | None = None,
+        unobserve_first: bool = True,
+    ) -> None:
+        """Observe the BPMs matching ``bpm_pattern`` (default: the accelerator's)."""
+        if bpm_pattern is None:
+            bpm_pattern = self.accelerator.bpm_pattern
+        super().observe_bpms(bpm_pattern, bad_bpms, unobserve_first)
+
+    def get_bpm_list(self, bpm_range: str) -> tuple[list[str], list[str]]:
+        """Observed BPM names in the whole sequence and in ``bpm_range``."""
+        get_bpms_mad = f"""
+        local all_bpms = {{}}
+        local bpm_in_range = {{}}
+        for _, elm in loaded_sequence:iter() do
+            if elm:is_observed() then
+                table.insert(all_bpms, elm.name)
+            end
+        end
+        for _, elm in loaded_sequence:iter("{bpm_range}") do
+            if elm:is_observed() then
+                table.insert(bpm_in_range, elm.name)
+            end
+        end
+        {self.py_name}:send(all_bpms, true)
+        {self.py_name}:send(bpm_in_range, true)
+        """
+        self.mad.send(get_bpms_mad)
+        all_bpms = self.mad.receive()
+        bpms_in_range = self.mad.receive()
+
+        # Remove duplicate if the first and last BPM are the same physical element.
+        if all_bpms[0] == all_bpms[-1] and len(all_bpms) > 1:
+            all_bpms = all_bpms[:-1]
+        bpms_in_range = [bpm for bpm in all_bpms if bpm in bpms_in_range]
+        return all_bpms, bpms_in_range
+
+    def _clear_disabled_elements(self) -> None:
+        """Clear the MAD disabled flag on every element in the loaded sequence."""
+        self.mad.send("loaded_sequence:deselect(MAD.element.flags.disabled)")
+
+    def _enable_only_named_elements(self, names: list[str], element_class: str) -> None:
+        """Disable an element class, then re-enable the provided element-name table."""
+        self.mad.send(
+            f"""
+local disabled_flag = MAD.element.flags.disabled
+loaded_sequence:select(disabled_flag, nil, {{class={element_class}}}) ! Disable all elements of the given class
+loaded_sequence:deselect(disabled_flag, nil, {self.py_name}:recv())   ! Re-enable only the provided element names
+{self.py_name}:send("Complete")
+"""
+        )
+        self.mad.send(names)
+        self._check_mad_response("Complete", "Error applying orbit-correction element filter")
+
+    def _apply_orbit_correction_filters(
+        self,
+        bpms: list[str] | None,
+        correctors: list[str] | None,
+    ) -> bool:
+        """Apply optional orbit-correction BPM/corrector filters."""
+        if bpms is None and correctors is None:
+            return False
+
+        self._clear_disabled_elements()
+        if bpms is not None:
+            self._enable_only_named_elements(bpms, "MAD.element.monitor")
+        if correctors is not None:
+            self._enable_only_named_elements(correctors, "MAD.element.kicker")
+        return True
+
+    def _run_orbit_correction_mad(self, twiss_name: str) -> None:
+        """Run MAD-NG orbit correction using already prepared sequence flags."""
+        self.mad.send(
+            rf"""
+local correct, option in MAD
+
+io.write("*** orbit correction using off momentum twiss\n")
+local tws_offmom = twiss {{ sequence=loaded_sequence, deltap=machine_deltap }}
+
+local fmt = option.numfmt ; option.numfmt = "% -.16e"
+local tbl = correct {{ sequence=loaded_sequence, model=tws_offmom, target={twiss_name}, method="svd", info=1, plane=correction_plane }}
+if correct_file then
+    tbl:write(correct_file)
+end
+option.numfmt = fmt
+
+{self.py_name}:send("Complete")
+"""
+        )
+        self._check_mad_response("Complete", "Error during MAD-NG orbit correction")
+
+    def perform_orbit_correction(
+        self,
+        machine_deltap: float,
+        target_qx: float | None = None,
+        target_qy: float | None = None,
+        corrector_file: Path | None = None,
+        twiss_name: str = "zero_twiss",
+        correct_tunes: bool = True,
+        bpms: list[str] | None = None,
+        correctors: list[str] | None = None,
+        plane: str = "x",
+    ) -> dict[str, float]:
+        """Perform orbit correction with optional BPM/corrector name filtering."""
+        qx_knob, qy_knob = self.accelerator.tune_variables
+        if plane not in {"x", "y", "xy"}:
+            raise ValueError(f"Invalid orbit correction plane {plane!r}; expected 'x', 'y' or 'xy'")
+        self.mad["machine_deltap"] = machine_deltap
+        self.mad["correct_file"] = str(corrector_file.absolute()) if corrector_file else None
+        self.mad["correction_plane"] = plane
+
+        filters_applied = self._apply_orbit_correction_filters(bpms, correctors)
+        try:
+            self._run_orbit_correction_mad(twiss_name)
+        finally:
+            if filters_applied:
+                self._clear_disabled_elements()
+
+        if correct_tunes:
+            if target_qx is None or target_qy is None:
+                raise ValueError(
+                    "Orbit has been corrected, but target tunes are not provided for matching, so MAD-NG cannot match tunes."
+                )
+            return self.match_tunes(target_qx, target_qy, deltap=machine_deltap)
+        return {
+            qx_knob: self.mad[f"MADX['{qx_knob}']"],
+            qy_knob: self.mad[f"MADX['{qy_knob}']"],
+        }
 
     def prepare_tracking_anchors(
         self,
@@ -346,9 +476,7 @@ class GenericMadInterface(AbaMadInterface):
 
     def make_all_monitors_thin(self, monitors: list[str], observe_after: bool = True) -> None:
         """Replace monitor elements with markers in the specified BPM range."""
-        self.make_elements_thin(
-            monitors, observe_after=observe_after, require_kind="monitor"
-        )
+        self.make_elements_thin(monitors, observe_after=observe_after, require_kind="monitor")
         LOGGER.info(
             "Replaced %d monitor BPMs with thin observation markers in range: %s",
             len(monitors),
@@ -364,64 +492,8 @@ class GenericMadInterface(AbaMadInterface):
     def _set_machine_state(self, machine_state: MachineState) -> None:
         """Put the model in *machine_state* (see :mod:`accelmo.machine.machine_state`)."""
         state = resolve_machine_state(machine_state)
-        assign_state(self.mad, state)
+        set_vars(self.mad, state)
         LOGGER.info("Set %d machine-state entries", len(state))
-
-
-class GradientDescentMadInterface(GenericMadInterface):
-    """
-    MAD interface for gradient descent optimisation.
-
-    Extends GenericMadInterface with knob creation capabilities. Accelerator-specific
-    behaviour (which knobs to create, naming, MAD preparation) is provided via
-    accelerator hooks, keeping this interface generic.
-    """
-
-    accelerator: Accelerator  # narrows the parent's PyMadAccelerator type
-
-    def __init__(
-        self,
-        accelerator: Accelerator,
-        magnet_range: str = "$start/$end",
-        bpm_range: str | None = None,
-        bad_bpms: list[str] | None = None,
-        machine_state: MachineState | None = None,
-        b2_errors: Path | None = None,
-        initial_model_values: dict[str, float] | None = None,
-        py_name: str = "py",
-        debug: bool = False,
-        mad_logfile: Path | None = None,
-        discard_mad_output: bool = False,
-        tracking_anchor_mode: str | None = None,
-        tracking_anchor_markers: list[str] | None = None,
-        observed_tracking_anchor_markers: list[str] | None = None,
-    ):
-        super().__init__(
-            accelerator,
-            magnet_range,
-            bpm_range,
-            bad_bpms,
-            machine_state,
-            b2_errors,
-            py_name,
-            debug,
-            mad_logfile,
-            discard_mad_output,
-            tracking_anchor_mode,
-            tracking_anchor_markers,
-            observed_tracking_anchor_markers,
-        )
-
-        if accelerator.has_any_optimisation():
-            self._make_adj_knobs()
-        else:
-            LOGGER.warning(
-                "Gradient descent optimisation interface initialised without any optimisation enabled."
-                "\nUse GenericMadInterface if no optimisation is required."
-            )
-
-        # Apply after knob creation
-        self.apply_initial_model_values(initial_model_values)
 
     def apply_initial_model_values(self, values: dict[str, float] | None) -> None:
         """Apply a full initial machine-state map without changing the trainable set."""
@@ -444,9 +516,7 @@ class GradientDescentMadInterface(GenericMadInterface):
             self.mad["loaded_sequence['pt']"] = float(values["pt"])
 
         knob_values = {
-            name: float(value)
-            for name, value in values.items()
-            if name in self.knob_name_set
+            name: float(value) for name, value in values.items() if name in self.knob_name_set
         }
         if knob_values:
             self.update_knob_values(knob_values)
@@ -535,7 +605,8 @@ class GradientDescentMadInterface(GenericMadInterface):
         if specs:
             attr_conditions = [
                 (
-                    kind, attr,
+                    kind,
+                    attr,
                     f'(e.kind == "{kind}" {"and e." + nonzero_attr + " ~=0 " if nonzero_attr else ""}and e.name:match("{pattern}"))',
                 )
                 for kind, attr, pattern, nonzero_attr, _label in specs
@@ -586,7 +657,9 @@ local counts = {{}}
             keep = set(self.accelerator.custom_knobs_to_optimise)
             pairs = [(k, s) for k, s in zip(knob_names_all, elem_spos_all) if k in keep]
             knob_names_all, elem_spos_all = (list(x) for x in zip(*pairs)) if pairs else ([], [])
-            LOGGER.info(f"Filtered to {len(knob_names_all)} knobs based on custom_knobs_to_optimise")
+            LOGGER.info(
+                f"Filtered to {len(knob_names_all)} knobs based on custom_knobs_to_optimise"
+            )
 
         self.knob_names = knob_names_all
         self.elem_spos = elem_spos_all

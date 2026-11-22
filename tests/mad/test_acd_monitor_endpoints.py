@@ -7,8 +7,8 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from accelmo.backend.madng.interface import MadInterface
 from accelmo.machine.accelerators import PSB
-from accelmo.backend.madng.optimising_mad_interface import GradientDescentMadInterface
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 pytestmark = pytest.mark.serial
 
 
-def _capture_slc_minus_4_names(iface: GradientDescentMadInterface) -> list[str]:
+def _capture_slc_minus_4_names(iface: MadInterface) -> list[str]:
     """Return element names seen by the regular tracking atexit slice -4."""
     py = iface.py_name
     iface.mad.send(f"""
@@ -43,11 +43,12 @@ def test_acd_endpoints_are_monitors_and_visible_to_slc_minus_4(seq_psb: Path) ->
     acd_after = accelerator.acd_marker_name("after")
     acd_before = accelerator.acd_marker_name("before")
 
-    iface = GradientDescentMadInterface(
+    iface = MadInterface(
         accelerator=accelerator,
         bpm_range=f"{acd_after}/{acd_before}",
         tracking_anchor_mode="acd",
         discard_mad_output=True,
+        create_knobs=True,
     )
     iface.cycle_to_start(acd_after)
     try:

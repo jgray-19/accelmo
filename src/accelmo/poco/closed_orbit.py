@@ -61,7 +61,9 @@ def difference_orbit(
     if not planes:
         return orbit
     if reference is None:
-        raise ValueError(f"Closed-orbit series {label or '<unnamed>'!r} fits {list(planes)} relative to a reference but has no reference orbit")
+        raise ValueError(
+            f"Closed-orbit series {label or '<unnamed>'!r} fits {list(planes)} relative to a reference but has no reference orbit"
+        )
     delta = orbit.copy()
     for plane in planes:
         value, error = MEASUREMENT_COLUMNS[plane]
@@ -176,11 +178,15 @@ class ClosedOrbitFitter(LMFitter):
             output_config=output_config,
         )
 
-        self.default_machine_state = resolve_machine_state(machine_state) if machine_state is not None else {}
+        self.default_machine_state = (
+            resolve_machine_state(machine_state) if machine_state is not None else {}
+        )
         #: Known LHC dipole b2 error table, applied to every worker's sequence.
         #: The interface insists on the tune knobs that compensate them, so it also gets the default machine state.
         self.interface_options = (
-            {} if b2_errors is None else {"b2_errors": b2_errors, "machine_state": self.default_machine_state}
+            {}
+            if b2_errors is None
+            else {"b2_errors": b2_errors, "machine_state": self.default_machine_state}
         )
         self.worker_payloads = self._create_series_payloads(sequence_config, accelerator)
 
@@ -188,10 +194,14 @@ class ClosedOrbitFitter(LMFitter):
     def _worker_count(n_series: int, max_workers: int | None) -> int:
         limit, limited_by = machine_worker_limit()
         if max_workers is not None and max_workers > limit:
-            LOGGER.warning("max_workers=%d exceeds the machine limit %d (%s)", max_workers, limit, limited_by)
+            LOGGER.warning(
+                "max_workers=%d exceeds the machine limit %d (%s)", max_workers, limit, limited_by
+            )
         cap = limit if max_workers is None else min(max_workers, limit)
         count = max(1, min(n_series, cap))
-        LOGGER.info("%d series on %d worker(s); machine limit %d (%s)", n_series, count, limit, limited_by)
+        LOGGER.info(
+            "%d series on %d worker(s); machine limit %d (%s)", n_series, count, limit, limited_by
+        )
         return count
 
     def _group_payloads(self, payloads):
@@ -208,16 +218,25 @@ class ClosedOrbitFitter(LMFitter):
             return grouped  # nothing is solved twice
         coords = {tuple(o.name for o in data.measurements[0].observables) for data in needing}
         if len(coords) != 1:
-            LOGGER.warning("Series fit different observables (%s); each solves its own reference", sorted(coords))
+            LOGGER.warning(
+                "Series fit different observables (%s); each solves its own reference",
+                sorted(coords),
+            )
             return grouped
         config, first = next((c, d) for c, d in payloads if d.needs_reference)
         measurements = {m.reference_pt: m for data in needing for m in data.measurements}.values()
-        reference = replace(first, measurements=list(measurements), shared_reference=False, reference_only=True)
+        reference = replace(
+            first, measurements=list(measurements), shared_reference=False, reference_only=True
+        )
         for _, data in payloads:
             data.shared_reference = True
         grouped = [*grouped, (config, [reference])]
         self._reference_worker = len(grouped) - 1
-        LOGGER.info("Reference orbit solved once by worker %d for %d series", self._reference_worker, len(needing))
+        LOGGER.info(
+            "Reference orbit solved once by worker %d for %d series",
+            self._reference_worker,
+            len(needing),
+        )
         return grouped
 
     def _evaluate_workers(self, channels, knobs):
@@ -258,15 +277,15 @@ class ClosedOrbitFitter(LMFitter):
             )
             frames = [
                 load_measurement(
-                    difference_orbit(measurement.orbit, measurement.reference, relative, item.label),
+                    difference_orbit(
+                        measurement.orbit, measurement.reference, relative, item.label
+                    ),
                     item_observables,
                 )
                 for measurement in item.measurements
             ]
             common_bpms = [
-                bpm
-                for bpm in self.machine.all_bpms
-                if all(bpm in frame.index for frame in frames)
+                bpm for bpm in self.machine.all_bpms if all(bpm in frame.index for frame in frames)
             ]
             if len(common_bpms) < 2:
                 raise ValueError(
@@ -305,7 +324,10 @@ class ClosedOrbitFitter(LMFitter):
                     ClosedOrbitSeriesData(
                         bpm_names=common_bpms,
                         measurements=measurement_data,
-                        machine_state={**self.default_machine_state, **resolve_machine_state(item.machine_state)},
+                        machine_state={
+                            **self.default_machine_state,
+                            **resolve_machine_state(item.machine_state),
+                        },
                         reference_state=dict(self.default_machine_state),
                         absolute_planes=tuple(item.absolute_planes),
                     ),

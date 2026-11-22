@@ -42,7 +42,7 @@ from xtrack_tools.acd import run_ac_dipole_tracking
 from xtrack_tools.env import initialise_env
 from xtrack_tools.monitors import process_tracking_data
 
-from accelmo.backend.madng.aba_mad_interface import AbaMadInterface
+from accelmo.backend.madng.interface import MadInterface
 from accelmo.config import OptimiserConfig, SimulationConfig
 from accelmo.fitting.config import OutputConfig, SequenceConfig
 from accelmo.machine.accelerators import SPS
@@ -92,7 +92,7 @@ class StudyData:
 def generate_cases(output_dir: Path, *, flattop_turns: int, seed: int = 42) -> StudyData:
     """Track every case's acquisitions through one quadrupole-perturbed SPS."""
     output_dir.mkdir(parents=True, exist_ok=True)
-    interface = AbaMadInterface(
+    interface = MadInterface(
         accelerator=SPS(sequence_file=SEQUENCE_FILE, kinetic_energy=KINETIC_ENERGY)
     )
     errors, _ = interface.apply_magnet_perturbations(rel_error=None, seed=seed, magnet_type="q")
@@ -217,7 +217,7 @@ def knob_error(knobs: dict[str, float], truth: dict[str, float]) -> float:
 
 def bpm_betas(data: StudyData, strengths: dict[str, float] | None) -> pd.DataFrame:
     """BPM ``s`` and betas of the tune-matched SPS with the given quadrupole errors."""
-    interface = AbaMadInterface(
+    interface = MadInterface(
         accelerator=SPS(sequence_file=SEQUENCE_FILE, kinetic_energy=KINETIC_ENERGY)
     )
     interface.set_variables(**data.tune_knobs)

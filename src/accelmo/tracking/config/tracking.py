@@ -26,7 +26,6 @@ def extract_bpm_range_names(
     start_bpm: str,
     end_bpm: str,
     sdir: int,
-    allow_missing_start: bool = False,
 ) -> list[str]:
     """Extract BPM names between start and end BPMs, handling circular wrapping.
 
@@ -39,14 +38,9 @@ def extract_bpm_range_names(
     Returns:
         List of BPM names in the range
     """
-    if start_bpm in all_bpms:
-        start_pos = all_bpms.index(start_bpm)
-    elif allow_missing_start:
-        if sdir == -1:
-            raise ValueError(f"Start marker '{start_bpm}' is not in BPM list for reverse tracking")
-        start_pos = 0
-    else:
+    if start_bpm not in all_bpms:
         raise ValueError(f"Start BPM '{start_bpm}' not found in BPM list")
+    start_pos = all_bpms.index(start_bpm)
 
     if end_bpm not in all_bpms:
         raise ValueError(f"End BPM '{end_bpm}' not found in BPM list")
@@ -188,8 +182,6 @@ class TrackingPlan:
 
     # Element supplying tracking initial conditions instead of a range BPM.
     init_marker: str | None = None
-    # Whether the start element may be absent from the BPM list.
-    allow_missing_start: bool = False
     # Whether validation workers should be enabled.
     enable_validation: bool = True
     # Whether fixed BPM start/end derivation applies to this plan.
@@ -200,8 +192,6 @@ class TrackingPlan:
     tracking_anchor_mode: str | None = None
     # Optional unobserved element used only for sequence cycling.
     cycle_marker: str | None = None
-    # Marker-started tracks follow their named range instead of the whole sequence.
-    named_marker_range: bool = False
     # Non-BPM markers that must be kept in measurement data.
     extra_markers: tuple[str, ...] = ()
     # How this plan's start points are described in logs.
@@ -231,18 +221,6 @@ class TrackingPlan:
         """Return the BPMs compared against measurements."""
         return bpms_in_range
 
-    def range_specs_per_batch(
-        self,
-        *,
-        use_fixed_bpm: bool,
-        num_starts: int,
-        num_ends: int,
-    ) -> tuple[int, str]:
-        """Return the range-spec count used for worker planning."""
-        if use_fixed_bpm:
-            return num_starts + num_ends, f"fixed pairs ({num_starts} starts + {num_ends} ends)"
-        return num_starts * num_ends * 2, f"2 directions x {num_starts} starts x {num_ends} ends"
-
     def select_available_turns(
         self,
         *,
@@ -268,14 +246,6 @@ class TrackingPlan:
 
         return boundary_turns_by_file, [t for t in available_turns if t not in turns_to_remove]
 
-    def bpm_pairs(self, ctx: RangeContext) -> list[tuple[str, str]]:
-        """Return logical fitter-side BPM pairs."""
-        if ctx.use_fixed_bpm:
-            return [(s, ctx.fixed_end) for s in ctx.start_bpms] + [
-                (ctx.fixed_start, e) for e in ctx.end_bpms
-            ]
-        return [(s, e) for s in ctx.start_bpms for e in ctx.end_bpms]
-
     def build_range_specs(self, ctx: RangeContext) -> list[WorkerRangeSpec]:
         """Return the worker range specs for this plan."""
         return [
@@ -299,13 +269,7 @@ class TrackingPlan:
         bad_bpms: list[str] | None,
     ) -> list[str]:
         """Return the BPMs in one logical observation range."""
-        bpm_names = extract_bpm_range_names(
-            all_bpms,
-            start_bpm,
-            end_bpm,
-            sdir,
-            self.allow_missing_start,
-        )
+        bpm_names = extract_bpm_range_names(all_bpms, start_bpm, end_bpm, sdir)
         excluded = set(bad_bpms or [])
         return [bpm for bpm in bpm_names if bpm not in excluded]
 
@@ -321,7 +285,6 @@ class KickerTrackingPlan(TrackingPlan):
 
     kicker_name: str
 
-    allow_missing_start = True
     enable_validation = False
     tracking_anchor_mode = "kicker"
     start_point_label = "kicker tracking start marker(s)"
@@ -349,15 +312,6 @@ class KickerTrackingPlan(TrackingPlan):
     def observed_bpms(self, bpms_in_range: list[str], all_bpms: list[str]) -> list[str]:
         return all_bpms
 
-    def range_specs_per_batch(
-        self,
-        *,
-        use_fixed_bpm: bool,
-        num_starts: int,
-        num_ends: int,
-    ) -> tuple[int, str]:
-        return num_starts, f"kicker forward-only x {num_starts} start marker(s)"
-
     def select_available_turns(
         self,
         *,
@@ -367,10 +321,6 @@ class KickerTrackingPlan(TrackingPlan):
     ) -> tuple[dict[int, set[int]], list[int]]:
         """Each bunch contributes exactly one track, seeded from its first turn."""
         return _first_turn_per_bunch(bunch_turns_by_file)
-
-    def bpm_pairs(self, ctx: RangeContext) -> list[tuple[str, str]]:
-        start = ctx.all_bpms[0]
-        return [(start, _bpm_behind(ctx.all_bpms, start))]
 
     def build_range_specs(self, ctx: RangeContext) -> list[WorkerRangeSpec]:
         start = ctx.all_bpms[0]
@@ -428,18 +378,6 @@ class ACDTrackingPlan(_AcdPlan):
     def observed_bpms(self, bpms_in_range: list[str], all_bpms: list[str]) -> list[str]:
         return all_bpms
 
-    def range_specs_per_batch(
-        self,
-        *,
-        use_fixed_bpm: bool,
-        num_starts: int,
-        num_ends: int,
-    ) -> tuple[int, str]:
-        return 2, "ACD bidirectional (forward + backward)"
-
-    def bpm_pairs(self, ctx: RangeContext) -> list[tuple[str, str]]:
-        return [(self.acd_after, self.acd_before)]
-
     def build_range_specs(self, ctx: RangeContext) -> list[WorkerRangeSpec]:
         return [
             WorkerRangeSpec(start_bpm=self.acd_after, end_bpm=self.acd_before, sdir=sdir)
@@ -475,48 +413,6 @@ class ACDTrackingPlan(_AcdPlan):
 
 
 @dataclass(frozen=True)
-class ACDHalfRingTrackingPlan(ACDTrackingPlan):
-    """One turn split at the ring midpoint: forward from ``after``, backward from ``before``.
-
-    Every BPM reading between two AC-dipole passes is observed exactly once.
-    """
-
-    named_marker_range = True
-
-    @property
-    def cycle_marker(self) -> str:
-        """Cycle at ``after``: neither half range crosses the sequence start."""
-        return self.acd_after
-
-    def _half_ends(self, all_bpms: list[str]) -> tuple[str, str]:
-        start = all_bpms.index(self.acd_after)
-        markers = {self.acd_after, self.acd_before}
-        ring = [b for b in all_bpms[start + 1 :] + all_bpms[:start] if b not in markers]
-        half = len(ring) // 2
-        return ring[half - 1], ring[half]
-
-    def observed_bpms(self, bpms_in_range: list[str], all_bpms: list[str]) -> list[str]:
-        return bpms_in_range
-
-    def range_specs_per_batch(
-        self,
-        *,
-        use_fixed_bpm: bool,
-        num_starts: int,
-        num_ends: int,
-    ) -> tuple[int, str]:
-        return 2, "ACD half ring (forward + backward)"
-
-    def bpm_pairs(self, ctx: RangeContext) -> list[tuple[str, str]]:
-        forward_end, backward_end = self._half_ends(ctx.all_bpms)
-        return [(self.acd_after, forward_end), (backward_end, self.acd_before)]
-
-    def build_range_specs(self, ctx: RangeContext) -> list[WorkerRangeSpec]:
-        (fwd_start, fwd_end), (bwd_start, bwd_end) = self.bpm_pairs(ctx)
-        return [WorkerRangeSpec(fwd_start, fwd_end, 1), WorkerRangeSpec(bwd_start, bwd_end, -1)]
-
-
-@dataclass(frozen=True)
 class ACDSinusoidTrackingPlan(_AcdPlan):
     """Forward multi-turn tracking from the AC-dipole before-marker through the AC kickers.
 
@@ -544,15 +440,6 @@ class ACDSinusoidTrackingPlan(_AcdPlan):
     def observed_bpms(self, bpms_in_range: list[str], all_bpms: list[str]) -> list[str]:
         return bpms_in_range
 
-    def range_specs_per_batch(
-        self,
-        *,
-        use_fixed_bpm: bool,
-        num_starts: int,
-        num_ends: int,
-    ) -> tuple[int, str]:
-        return 1, "ACD sinusoid forward-only"
-
     def select_available_turns(
         self,
         *,
@@ -562,11 +449,8 @@ class ACDSinusoidTrackingPlan(_AcdPlan):
     ) -> tuple[dict[int, set[int]], list[int]]:
         return _window_starts(bunch_turns_by_file, simulation_config.n_run_turns)
 
-    def bpm_pairs(self, ctx: RangeContext) -> list[tuple[str, str]]:
-        return [(self.acd_before, _bpm_behind(ctx.all_bpms, self.acd_before))]
-
     def build_range_specs(self, ctx: RangeContext) -> list[WorkerRangeSpec]:
-        return [WorkerRangeSpec(*self.bpm_pairs(ctx)[0], sdir=1)]
+        return [WorkerRangeSpec(self.acd_before, _bpm_behind(ctx.all_bpms, self.acd_before), 1)]
 
     def get_range_bpm_names(
         self,
@@ -656,17 +540,6 @@ class ACDArcByArcTrackingPlan(_AcdPlan):
                 len(specs),
                 self.acd_name,
             )
-        return rerouted
-
-    def bpm_pairs(self, ctx: RangeContext) -> list[tuple[str, str]]:
-        rerouted: list[tuple[str, str]] = []
-        seen: set[tuple[str, str]] = set()
-        for start, end in super().bpm_pairs(ctx):
-            pair = self._reroute_pair(ctx.all_bpms, start, end)
-            if pair in seen:
-                continue
-            seen.add(pair)
-            rerouted.append(pair)
         return rerouted
 
 
@@ -783,22 +656,6 @@ def kicker_setup(
         bpm_start_points=[kicker_config.kicker_name],
         bpm_end_points=[],
         first_bpm_fallback=kicker_config.kicker_name,
-    )
-
-
-def acd_half_ring_setup(
-    accelerator: Accelerator,
-    simulation_config: SimulationConfig,
-) -> TrackingModeSetup:
-    """Return the AC-dipole half-ring setup (:class:`ACDHalfRingTrackingPlan`), one turn."""
-    plan = ACDHalfRingTrackingPlan(acd_name=accelerator.ac_dipole_name)
-    simulation_config = dataclasses.replace(simulation_config, n_run_turns=1)
-    logger.info("ACD half-ring mode: after=%s, before=%s", plan.acd_after, plan.acd_before)
-    return TrackingModeSetup(
-        plan=plan,
-        simulation_config=simulation_config,
-        bpm_start_points=[plan.acd_after, plan.acd_before],
-        bpm_end_points=[],
     )
 
 

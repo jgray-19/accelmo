@@ -35,7 +35,7 @@ from tests.training.controller_test_utils import (
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from accelmo.backend.madng.aba_mad_interface import AbaMadInterface
+    from accelmo.backend.madng.interface import MadInterface
 
 pytestmark = [pytest.mark.slow, pytest.mark.serial]
 
@@ -44,7 +44,7 @@ SEXTUPOLES_ON = {"kbr3xno311l1": 0.05}
 
 
 def _fitter(
-    tmp_path: Path, seq_psb: Path, interface: AbaMadInterface, *, num_batches: int
+    tmp_path: Path, seq_psb: Path, interface: MadInterface, *, num_batches: int
 ) -> ArcByArcFitter:
     track = tmp_path / "track.parquet"
     corrector, _, tune_knobs = _generate_nonoise_track(
@@ -91,7 +91,7 @@ def _fitter(
 
 
 def test_sextupole_uncertainties_keyed_like_knobs(
-    tmp_path: Path, seq_psb: Path, loaded_psb_interface: AbaMadInterface
+    tmp_path: Path, seq_psb: Path, loaded_psb_interface: MadInterface
 ) -> None:
     fitter = _fitter(tmp_path, seq_psb, loaded_psb_interface, num_batches=1)
     result = fitter.run()
@@ -102,7 +102,7 @@ def test_sextupole_uncertainties_keyed_like_knobs(
 
 
 def test_num_batches_clamped_to_the_data_reaches_every_consumer(
-    tmp_path: Path, seq_psb: Path, loaded_psb_interface: AbaMadInterface
+    tmp_path: Path, seq_psb: Path, loaded_psb_interface: MadInterface
 ) -> None:
     fitter = _fitter(tmp_path, seq_psb, loaded_psb_interface, num_batches=10_000)
     simulation_config = fitter.machine.simulation_config

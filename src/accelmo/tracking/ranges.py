@@ -6,8 +6,6 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from accelmo.tracking.config.tracking import RangeContext
-
 if TYPE_CHECKING:
     from accelmo.fitting.setup import MachineSetup
     from accelmo.tracking.config.tracking import TrackingPlan
@@ -62,20 +60,6 @@ class BpmRanges:
     use_fixed_bpm: bool
     fixed_start: str = ""
     fixed_end: str = ""
-
-    @property
-    def bpm_pairs(self) -> list[tuple[str, str]]:
-        """The tracking plan's BPM ranges as explicit ``(start, end)`` tuples."""
-        return self.plan.bpm_pairs(
-            RangeContext(
-                start_bpms=self.start_bpms,
-                end_bpms=self.end_bpms,
-                all_bpms=self.all_bpms,
-                use_fixed_bpm=self.use_fixed_bpm,
-                fixed_start=self.fixed_start,
-                fixed_end=self.fixed_end,
-            )
-        )
 
 
 def resolve_bpm_ranges(

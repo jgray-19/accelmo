@@ -8,7 +8,6 @@ parametric turn and the fixed-point shift ``d(orbit_s)/dk = R_s (I - R)^-1 P + P
 from __future__ import annotations
 
 import logging
-from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
 import madng_tpsa
@@ -21,10 +20,10 @@ from accelmo.backend.protocol import ClosedSolution, TrackResult
 from accelmo.backend.xtrack.model import XtrackModel, _range_indices
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Mapping, Sequence
+    from collections.abc import Mapping, Sequence
     from pathlib import Path
 
-    from accelmo.backend.protocol import TrackingPlan
+    from accelmo.backend.protocol import TrackRequest
     from accelmo.fitting.worker import WorkerConfig
     from accelmo.machine.accelerators import Accelerator
 
@@ -96,7 +95,7 @@ class TrackingEngine:
     def __init__(
         self,
         config: WorkerConfig,
-        plan: TrackingPlan,
+        plan: TrackRequest,
         init_knobs: Mapping[str, float],
         *,
         worker_id: int,
@@ -104,7 +103,9 @@ class TrackingEngine:
     ) -> None:
         del worker_id, logfile
         if config.sdir != 1 or config.accelerator.has_ac_kickers:
-            raise NotImplementedError("xtrack backend: backward tracking and AC kickers are not supported")
+            raise NotImplementedError(
+                "xtrack backend: backward tracking and AC kickers are not supported"
+            )
         self.plan = plan
         self.model = _model(config, init_knobs)
         self.knob_names = list(self.model.knob_names)
@@ -155,8 +156,15 @@ class TrackingEngine:
         particle = xtpsa.ParticlesTpsa(
             order=1,
             descriptor=self.params.descriptor,
-            x=coords[0], px=coords[1], y=coords[2], py=coords[3], zeta=0.0, ptau=pt,
-            p0c=ref.p0c[0], mass0=ref.mass0, q0=ref.q0,
+            x=coords[0],
+            px=coords[1],
+            y=coords[2],
+            py=coords[3],
+            zeta=0.0,
+            ptau=pt,
+            p0c=ref.p0c[0],
+            mass0=ref.mass0,
+            q0=ref.q0,
         )
         try:
             line.track(
@@ -165,7 +173,7 @@ class TrackingEngine:
                 ele_stop=self.ele_stop,
                 num_turns=self.plan.n_run_turns,
                 multi_element_monitor_at=self.observed,
-                monitor_monomials={o: self.monomials for o in COORDS},
+                monitor_monomials=dict.fromkeys(COORDS, self.monomials),
             )
         except RuntimeError as exc:
             LOGGER.debug("xtrack backend: particle lost (%s)", exc)
@@ -220,34 +228,28 @@ class ClosedOrbitEngine:
         *,
         optics_names: Sequence[str],
         orbit_coords: Sequence[str],
-        extra_knobs: Sequence[str] | None = None,
         worker_id: int,
         logfile: Path | None = None,
     ) -> None:
         del worker_id, logfile
-        if optics_names or extra_knobs is not None:
-            raise NotImplementedError("xtrack backend: closed orbit only (no optics, no calibration)")
+        if optics_names:
+            raise NotImplementedError("xtrack backend: closed orbit only (no optics)")
         self.model = _model(config, init_knobs)
         self.orbit_coords = list(orbit_coords)
         self.knob_names = list(self.model.knob_names)
-        self.n_knobs = len(self.knob_names)
         self.fit_pt = False
         self.params = _Parametric(self.model, self.knob_names)
-        self.monomials = _monomials(self.n_knobs)
+        self.monomials = _monomials(len(self.knob_names))
         self.pt = 0.0
 
     def set_knobs(self, knobs: Mapping[str, float]) -> None:
         self.params.set(knobs)
 
-    def read_state(self, names: list[str]) -> dict[str, float]:
-        return self.model.read_state(names)
+    def get_vars(self, names: Sequence[str]) -> dict[str, float]:
+        return self.model.get_vars(names)
 
-    def assign_state(self, state: Mapping[str, float]) -> None:
-        self.model.assign_state(state)
-
-    def scale_globals(self, scaled: Sequence[tuple[str, float, float, str]]) -> None:
-        if scaled:
-            raise NotImplementedError("xtrack backend: corrector calibration is not supported")
+    def set_vars(self, values: Mapping[str, float]) -> None:
+        self.model.set_vars(values)
 
     def set_pt(self, pt: float) -> None:
         self.pt = float(pt)
@@ -259,31 +261,45 @@ class ClosedOrbitEngine:
         """Plain 4D twiss at ``ptau = pt``; ``None`` when no closed orbit is found."""
         self.params.plain()
         ref = self.model.particle_ref
-        delta0 = float(xt.Particles(p0c=ref.p0c[0], mass0=ref.mass0, q0=ref.q0, ptau=self.pt).delta[0])
+        delta0 = float(
+            xt.Particles(p0c=ref.p0c[0], mass0=ref.mass0, q0=ref.q0, ptau=self.pt).delta[0]
+        )
         try:
             return self.model.line.twiss(method="4d", delta0=delta0, only_orbit=only_orbit)
         except Exception as exc:  # noqa: BLE001  xsuite raises several types when no orbit exists
             LOGGER.warning("xtrack backend: closed orbit not found (%s)", exc)
             return None
 
-    def solve(self, observables: Sequence[str]) -> ClosedSolution | None:
+    def solve(self, observables: Sequence[str], *, jacobian: bool = True) -> ClosedSolution | None:
         twiss = self._twiss(only_orbit=True)
         if twiss is None:
             return None
+        if not jacobian:
+            rows = [name.lower() for name in self.model.all_bpms]
+            values = np.array([twiss.rows[rows][name] for name in observables])
+            return ClosedSolution(list(self.model.all_bpms), values, None)
         co = twiss.particle_on_co
         line, ref = self.model.line, self.model.particle_ref
         self.params.apply()
         particle = xtpsa.ParticlesTpsa(
-            order=1, descriptor=self.params.descriptor,
-            x=co.x[0], px=co.px[0], y=co.y[0], py=co.py[0], zeta=co.zeta[0], delta=co.delta[0],
-            p0c=ref.p0c[0], mass0=ref.mass0, q0=ref.q0,
+            order=1,
+            descriptor=self.params.descriptor,
+            x=co.x[0],
+            px=co.px[0],
+            y=co.y[0],
+            py=co.py[0],
+            zeta=co.zeta[0],
+            delta=co.delta[0],
+            p0c=ref.p0c[0],
+            mass0=ref.mass0,
+            q0=ref.q0,
         )
         observed = [name.lower() for name in self.model.all_bpms]
         try:
             line.track(
                 particle,
                 multi_element_monitor_at=observed,
-                monitor_monomials={o: self.monomials for o in COORDS},
+                monitor_monomials=dict.fromkeys(COORDS, self.monomials),
             )
         except RuntimeError as exc:
             LOGGER.warning("xtrack backend: parametric turn lost (%s)", exc)
@@ -298,20 +314,6 @@ class ClosedOrbitEngine:
         values = record[:, rows, 0].T
         jacobian = (record[:, rows, 1:5] @ shift + record[:, rows, 5:]).transpose(1, 0, 2)
         return ClosedSolution(list(self.model.all_bpms), values, jacobian)
-
-    @contextmanager
-    def plain_knobs(self) -> Iterator[None]:
-        yield
-
-    def solve_orbit_plain(self, n_bpms: int) -> np.ndarray | None:
-        twiss = self._twiss(only_orbit=True)
-        if twiss is None:
-            return None
-        rows = [name.lower() for name in self.model.all_bpms]
-        values = np.array([twiss.rows[rows][name] for name in self.orbit_coords])
-        if values.shape[1] != n_bpms:
-            raise RuntimeError(f"xtrack backend: {values.shape[1]} BPMs, expected {n_bpms}")
-        return values
 
     def close(self) -> None:
         self.model.close()
@@ -331,7 +333,9 @@ def open_model(
 ) -> XtrackModel:
     del debug, mad_logfile
     if b2_errors is not None or anchor_mode is not None or anchor_markers:
-        raise NotImplementedError("xtrack backend: b2 errors and tracking anchors are not supported")
+        raise NotImplementedError(
+            "xtrack backend: b2 errors and tracking anchors are not supported"
+        )
     return XtrackModel(
         accelerator, magnet_range=magnet_range, bad_bpms=bad_bpms, machine_state=machine_state
     )

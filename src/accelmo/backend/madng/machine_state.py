@@ -33,7 +33,7 @@ def check_state_names(mad: MAD, py_name: str, names: list[str]) -> None:
             )
 
 
-def read_state(mad: MAD, py_name: str, names: list[str]) -> dict[str, float]:
+def get_vars(mad: MAD, py_name: str, names: list[str]) -> dict[str, float]:
     """The current value of each name (checked first, see :func:`check_state_names`)."""
     check_state_names(mad, py_name, names)
     values = {}
@@ -46,7 +46,7 @@ def read_state(mad: MAD, py_name: str, names: list[str]) -> dict[str, float]:
     return values
 
 
-def assign_state(mad: MAD, state: Mapping[str, float]) -> None:
+def set_vars(mad: MAD, state: Mapping[str, float]) -> None:
     """Set every name of *state*: an existing variable, else an element attribute, else a new variable."""
     if state:
         mad.send("\n".join(_assignment(name, value) for name, value in state.items()))

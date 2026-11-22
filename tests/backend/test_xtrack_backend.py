@@ -6,7 +6,7 @@ Asserted:
 * the TPSA knob derivatives equal central differences of the tracked orbit;
 * the horizontal one-turn tracking and its knob Jacobian match MAD-NG.
 The vertical PSB plane differs between the two codes' lattice models (see
-``docs/replacing_madng.rst``) and is not compared.
+``docs/backends.rst``) and is not compared.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ import numpy as np
 import pytest
 
 from accelmo.backend import get_backend
-from accelmo.backend.protocol import TrackingPlan
+from accelmo.backend.protocol import TrackRequest
 from accelmo.fitting.worker import WorkerConfig
 from accelmo.machine.accelerators import PSB
 
@@ -59,7 +59,7 @@ def _orbit(seq_psb: Path, backend: str, state: dict[str, float], knobs: dict[str
         interface_options={"machine_state": state},
     )
     engine = get_backend(backend).ClosedOrbitEngine(
-        config, knobs, optics_names=[], orbit_coords=["x", "y"], extra_knobs=None, worker_id=0
+        config, knobs, optics_names=[], orbit_coords=["x", "y"], worker_id=0
     )
     engine.set_pt(0.0)
     solution = engine.solve(["x", "y"])
@@ -86,7 +86,7 @@ def _tracking(seq_psb: Path, backend: str, knobs: dict[str, float]):
         tracking_end_bpm=bpms[-1],
         magnet_range="$start/$end",
     )
-    plan = TrackingPlan(
+    plan = TrackRequest(
         observables=("x", "px", "y", "py"),
         batch_size=2,
         num_batches=1,
@@ -177,7 +177,7 @@ def test_kicker_start_matches_madng(seq_psb: Path) -> None:
             magnet_range="$start/$end",
             initial_condition_marker="BE3.KFA14L1",
         )
-        plan = TrackingPlan(
+        plan = TrackRequest(
             observables=("x", "y"),
             batch_size=1,
             num_batches=1,

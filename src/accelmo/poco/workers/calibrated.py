@@ -39,14 +39,34 @@ class CalibratedClosedOrbitWorker(ClosedOrbitWorker):
     constant) in :attr:`~accelmo.fitting.protocol.GradReply.extra`, followed on the pipe by the blocks' arrays.
     """
 
-    def extra_knobs(self) -> list[str]:
+    def _make_engine(self, knobs: dict[str, float]):
+        engine = getattr(self.backend, "CalibratedClosedOrbitEngine", None)
+        if engine is None:
+            raise NotImplementedError(
+                f"backend {self.config.accelerator.backend!r} has no corrector calibration"
+            )
+        return engine(
+            self.config,
+            knobs,
+            extra_knobs=self._gain_knobs(),
+            optics_names=self.optics_names,
+            orbit_coords=self.orbit_coords,
+            worker_id=self.worker_id,
+            logfile=self.engine_logfile,
+        )
+
+    def _gain_knobs(self) -> list[str]:
         """One more knob per corrector that is on in this worker's series: its gain offset, after the magnet knobs."""
         correctors = list(
             dict.fromkeys(
                 corrector
                 for series in self.series
-                for name, value in (*series.data.machine_state.items(), *series.data.reference_state.items())
-                if (corrector := series.data.calibration.corrector_of(name)) in series.data.calibration.correctors
+                for name, value in (
+                    *series.data.machine_state.items(),
+                    *series.data.reference_state.items(),
+                )
+                if (corrector := series.data.calibration.corrector_of(name))
+                in series.data.calibration.correctors
                 and value != 0.0
             )
         )
@@ -65,7 +85,7 @@ class CalibratedClosedOrbitWorker(ClosedOrbitWorker):
         The gain knob is 0, so the value is ``k * (1 + g)``, and its Jacobian column is d(orbit)/d(g).
         """
         state = self._states[role]
-        self.engine.assign_state(state)
+        self.engine.set_vars(state)
         spec = self.series[0].data.calibration
         scaled = []
         for name, kick in state.items():
@@ -85,7 +105,9 @@ class CalibratedClosedOrbitWorker(ClosedOrbitWorker):
         self.engine.set_knobs(knob_updates)
         spec = self.series[0].data.calibration
         n_g, n_b = len(spec.correctors), len(PLANES) * len(spec.bpms)
-        blocks = CalibrationBlocks(self.n_q, n_g, n_b, self._shared_buffer(CalibrationBlocks.nbytes(self.n_q, n_g, n_b)))
+        blocks = CalibrationBlocks(
+            self.n_q, n_g, n_b, self._shared_buffer(CalibrationBlocks.nbytes(self.n_q, n_g, n_b))
+        )
         for series in self.series:
             if not self._evaluate_calibrated(series, knob_updates, spec, blocks):
                 return GradReply(self.worker_id, float("nan"), np.zeros(1), extra={})
@@ -120,14 +142,15 @@ class CalibratedClosedOrbitWorker(ClosedOrbitWorker):
         """
         self.engine.set_knobs(knob_updates)
         total = 0.0
-        with self.engine.plain_knobs():
-            for series in self.series:
-                part = self._evaluate_calibrated_loss(series, knob_updates)
-                if part is None:
-                    return GradReply(self.worker_id, float("nan"), np.zeros(1), extra={})
-                total += part
+        for series in self.series:
+            part = self._evaluate_calibrated_loss(series, knob_updates)
+            if part is None:
+                return GradReply(self.worker_id, float("nan"), np.zeros(1), extra={})
+            total += part
         loss = total / self.normalisation_points
-        return GradReply(self.worker_id, loss, np.zeros(1), extra={"loss": loss, "loss_unit": self._loss_unit()})
+        return GradReply(
+            self.worker_id, loss, np.zeros(1), extra={"loss": loss, "loss_unit": self._loss_unit()}
+        )
 
     def _evaluate_calibrated_loss(
         self, series: SeriesState, knob_updates: dict[str, float]
@@ -167,5 +190,7 @@ class CalibratedClosedOrbitWorker(ClosedOrbitWorker):
                     cols[o] = [plane * len(spec.bpms) + bpm_index[name] for name in names]
                     gains[o] = bpm_gains(knob_updates, observable.name, names)
                 q_jac, d_gain = jacobian[..., : self.n_q], jacobian[..., self.n_q :]
-                add_series(blocks, values, q_jac, d_gain, targets, weights, gains, cols, corrector_indices)
+                add_series(
+                    blocks, values, q_jac, d_gain, targets, weights, gains, cols, corrector_indices
+                )
         return True

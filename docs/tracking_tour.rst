@@ -4,8 +4,8 @@ Tracking Fit Tour
 A tour of :class:`~accelmo.tracking.fitter.ArcByArcFitter` and
 :class:`~accelmo.tracking.fitter.ACDMarkerFitter`: what each part of the code does, in the
 order it runs. The other fitters differ only in where the particles start and which
-readings are compared (:doc:`fit_families`). Replacing MAD-NG is described in
-:doc:`replacing_madng`. Underlined words are defined in the :ref:`tour-glossary` at the bottom
+readings are compared (:doc:`fit_families`). Other model backends are described in
+:doc:`backends`. Underlined words are defined in the :ref:`tour-glossary` at the bottom
 of the page.
 
 The idea

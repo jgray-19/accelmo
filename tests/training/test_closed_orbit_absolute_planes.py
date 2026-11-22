@@ -57,7 +57,9 @@ def test_without_absolute_planes_both_planes_are_differenced() -> None:
 def test_an_untrimmed_series_is_signal_only_when_a_plane_is_absolute() -> None:
     with pytest.raises(ValueError, match="absolute plane"):
         _prepared(machine_state={})
-    assert _prepared(machine_state={}, absolute_planes=("y",)).series[0].data.absolute_planes == ("y",)
+    assert _prepared(machine_state={}, absolute_planes=("y",)).series[0].data.absolute_planes == (
+        "y",
+    )
 
 
 def test_an_unknown_plane_is_rejected() -> None:

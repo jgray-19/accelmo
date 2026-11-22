@@ -21,7 +21,6 @@ from accelmo.tracking.worker import (
 )
 
 if TYPE_CHECKING:
-
     from accelmo.fitting.worker import WorkerConfig
     from accelmo.machine.accelerators import Accelerator
     from accelmo.tracking.data_manager import FileTracks
@@ -29,7 +28,7 @@ if TYPE_CHECKING:
 
 LOGGER = logging.getLogger(__name__)
 
-WorkerPayload: TypeAlias = tuple["TrackingData", "WorkerConfig", int]
+WorkerPayload: TypeAlias = tuple["TrackingData", "WorkerConfig", "WorkerObservationPlan"]
 
 
 def observation_turn_offsets(cols: np.ndarray, sdir: int) -> np.ndarray:
@@ -193,7 +192,7 @@ class WorkerPayloadBuilder:
         observables = ("x", "y", "px", "py")
         raw_by_payload = []
         active_weights = []
-        for data, config, _file_idx in payloads:
+        for data, config, _plan in payloads:
             active = active_observables(config.kick_plane, optimise_momenta)
             raw = [
                 variance_to_weight(variance)

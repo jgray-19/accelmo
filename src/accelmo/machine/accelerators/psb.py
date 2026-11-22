@@ -56,7 +56,9 @@ class PSB(BasePSB, Accelerator):
             {"multipole": PATTERN_SEXTUPOLE}, errors=frozenset({"knl[3]"}), nonzero_attr="knl[3]"
         ),
         "skew_sextupole": MagnetFamily(
-            {"multipole": PATTERN_SKEW_SEXTUPOLE}, errors=frozenset({"ksl[3]"}), nonzero_attr="ksl[3]"
+            {"multipole": PATTERN_SKEW_SEXTUPOLE},
+            errors=frozenset({"ksl[3]"}),
+            nonzero_attr="ksl[3]",
         ),
         "corrector": MagnetFamily(
             {"hkicker": PATTERN_CORRECTOR_H, "vkicker": PATTERN_CORRECTOR_V},
@@ -192,7 +194,6 @@ class PSB(BasePSB, Accelerator):
         name = bpm_name.upper()
         if any(token in name for token in (".BPM", ".BWS", ".BPP", ".BPT")):
             return "HV"
-        if name.endswith("_AFTER") or name.endswith("_BEFORE"):
+        if name.endswith(("_AFTER", "_BEFORE")):
             return "HV"
         raise ValueError(f"Unsupported PSB monitor name for plane inference: {bpm_name}")
-

@@ -7,7 +7,6 @@ parameters on the sequence.
 from __future__ import annotations
 
 import logging
-from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -18,8 +17,8 @@ from pymadng_utils.mad.ac_kickers import (
 )
 
 from accelmo.backend.madng.accelerator_hooks import track_methods
-from accelmo.backend.madng.machine_state import assign_state, read_state
-from accelmo.backend.madng.optimising_mad_interface import GradientDescentMadInterface
+from accelmo.backend.madng.interface import MadInterface
+from accelmo.backend.madng.machine_state import get_vars, set_vars
 from accelmo.backend.madng.scripts import (
     CLOSED_TWISS_INIT,
     PYTHON_IN_MAD,
@@ -34,19 +33,16 @@ from accelmo.backend.madng.scripts import (
 from accelmo.backend.protocol import ClosedSolution, TrackResult
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Mapping, Sequence
+    from collections.abc import Mapping, Sequence
     from pathlib import Path
 
     from pymadng import MAD
 
-    from accelmo.backend.protocol import TrackingPlan
+    from accelmo.backend.protocol import TrackRequest
     from accelmo.fitting.worker import WorkerConfig
     from accelmo.machine.accelerators import Accelerator
 
 LOGGER = logging.getLogger(__name__)
-
-#: Observables that are phase-space coordinates, read off the saved map, not optical functions.
-ORBIT_COORDS = ("x", "px", "y", "py")
 
 
 class _MadngSession:
@@ -55,7 +51,7 @@ class _MadngSession:
     def __init__(
         self, config: WorkerConfig, init_knobs: Mapping[str, float], logfile: Path | None
     ) -> None:
-        iface = GradientDescentMadInterface(
+        iface = MadInterface(
             accelerator=config.accelerator,
             magnet_range=config.magnet_range,
             bpm_range=config.bpm_range,
@@ -68,6 +64,7 @@ class _MadngSession:
             tracking_anchor_mode=config.tracking_anchor_mode,
             tracking_anchor_markers=config.tracking_anchor_sources,
             observed_tracking_anchor_markers=config.observed_tracking_anchor_markers,
+            create_knobs=True,
         )
         # One contiguous segment from this worker's start; closed-twiss workers do not cycle.
         if config.cycle_target is not None:
@@ -94,7 +91,9 @@ class _MadngSession:
 
     def set_knobs(self, knobs: Mapping[str, float], *, plain: bool) -> None:
         """Set this process's knobs; ``plain`` assigns numbers instead of the TPSA constant part."""
-        template = "loaded_sequence['{}'] = {:.15e}" if plain else "loaded_sequence['{}']:set0({:.15e})"
+        template = (
+            "loaded_sequence['{}'] = {:.15e}" if plain else "loaded_sequence['{}']:set0({:.15e})"
+        )
         commands = [
             template.format(name, value)
             for name, value in knobs.items()
@@ -125,7 +124,7 @@ class TrackingEngine:
     def __init__(
         self,
         config: WorkerConfig,
-        plan: TrackingPlan,
+        plan: TrackRequest,
         init_knobs: Mapping[str, float],
         *,
         worker_id: int,
@@ -190,7 +189,11 @@ end
             ("run_track_uncertainty", self._start_track_script),
         ):
             dump_debug_script(
-                name, text, debug=config.debug, mad_logfile=config.mad_logfile, worker_id=self.worker_id
+                name,
+                text,
+                debug=config.debug,
+                mad_logfile=config.mad_logfile,
+                worker_id=self.worker_id,
             )
 
     def set_knobs(self, knobs: Mapping[str, float]) -> None:
@@ -290,7 +293,7 @@ def _strip_comment_lines(text: str) -> str:
     kept = []
     for line in text.splitlines():
         stripped = line.strip()
-        if not stripped or stripped.startswith("--") or stripped.startswith("!"):
+        if not stripped or stripped.startswith(("--", "!")):
             continue
         kept.append(line)
     return "\n".join(kept)
@@ -332,7 +335,6 @@ class ClosedOrbitEngine:
         *,
         optics_names: Sequence[str],
         orbit_coords: Sequence[str],
-        extra_knobs: Sequence[str] | None = None,
         worker_id: int,
         logfile: Path | None = None,
     ) -> None:
@@ -341,16 +343,9 @@ class ClosedOrbitEngine:
         mad = self.session.mad
         self.optics_names = list(optics_names)
         self.orbit_coords = list(orbit_coords)
-        if extra_knobs is None:
-            self.fit_pt = "pt" in self.session.knob_names
-        else:
-            # Calibrated fit: zero-valued gain knobs after the magnet knobs; pt is never fitted.
-            if extra_knobs:
-                mad.send("\n".join(f"loaded_sequence['{knob}'] = 0" for knob in extra_knobs))
-            mad["knob_names"] = [name for name in mad["knob_names"] if name != "pt"] + list(
-                extra_knobs
-            )
-            self.fit_pt = False
+        #: ``pt`` is fitted (as a parameter after the knobs) when MAD created it as a knob.
+        self.fit_pt = "pt" in self.session.knob_names
+        self._add_extra_knobs()
         #: Parametric knobs in Jacobian column order (magnet knobs, then extra knobs).
         self.knob_names = self.session.fitted_knobs_without_pt()
         self.n_knobs = len(self.knob_names)
@@ -364,24 +359,21 @@ class ClosedOrbitEngine:
         mad["orbit_coords"] = self.orbit_coords
         mad.send(_strip_comment_lines(CLOSED_TWISS_INIT.read_text()))
         self._solver = "compute_closed_twiss()" if self.optics_names else "compute_closed_orbit()"
+        #: Knobs are plain numbers (after a ``jacobian=False`` solve) until the next full solve.
+        self._plain = False
+        self._names: list[str] | None = None
+
+    def _add_extra_knobs(self) -> None:
+        """Hook for zero-valued knobs after the magnet knobs (:class:`CalibratedClosedOrbitEngine`)."""
 
     def set_knobs(self, knobs: Mapping[str, float]) -> None:
-        self.session.set_knobs(knobs, plain=False)
+        self.session.set_knobs(knobs, plain=self._plain)
 
-    def read_state(self, names: list[str]) -> dict[str, float]:
-        return read_state(self.session.mad, PYTHON_IN_MAD, names)
+    def get_vars(self, names: Sequence[str]) -> dict[str, float]:
+        return get_vars(self.session.mad, PYTHON_IN_MAD, list(names))
 
-    def assign_state(self, state: Mapping[str, float]) -> None:
-        assign_state(self.session.mad, state)
-
-    def scale_globals(self, scaled: Sequence[tuple[str, float, float, str]]) -> None:
-        """Deferred ``kick * (gain + knob)``: follows the knobs when they are made plain."""
-        commands = [
-            f"MADX['{name}'] = \\-> {kick:.15e} * ({gain:.15e} + loaded_sequence['{knob}'])"
-            for name, kick, gain, knob in scaled
-        ]
-        if commands:
-            self.session.mad.send("\n".join(commands))
+    def set_vars(self, values: Mapping[str, float]) -> None:
+        set_vars(self.session.mad, values)
 
     def set_pt(self, pt: float) -> None:
         self.session.mad.send(f"x0map.pt:set0({pt:.15e})")
@@ -399,66 +391,105 @@ class ClosedOrbitEngine:
             return False
         return bool(found)
 
-    def solve(self, observables: Sequence[str]) -> ClosedSolution | None:
+    def _set_plain(self, *, plain: bool) -> None:
+        """Switch the knobs between plain numbers and TPSA parameters (one MAD call per switch)."""
+        if plain != self._plain:
+            self.session.mad.send("knobs_to_plain()" if plain else "knobs_to_param()")
+            self._plain = plain
+
+    def solve(self, observables: Sequence[str], *, jacobian: bool = True) -> ClosedSolution | None:
+        if not jacobian:
+            return self._solve_plain(observables)
+        self._set_plain(plain=False)
         if not self._found(self._solver, "closed-orbit solve"):
             return None
         mad = self.session.mad
         n_knobs = self.n_knobs
         if not self.optics_names:
-            return ClosedSolution(*read_orbit_only(mad, len(self.orbit_coords), n_knobs))
-
-        columns = ["name", *self.orbit_coords, *self._value_columns, *self._derivative_columns]
-        frame = mad.closed_tbl.to_df(columns=columns)
-        names = list(frame["name"])
-        n_bpms = len(names)
-        n_optics = len(self.optics_names)
-        optics_values = frame[self._value_columns].to_numpy(dtype=float).T
-        optics_jacobian = (
-            frame[self._derivative_columns]
-            .to_numpy(dtype=float)
-            .reshape(n_bpms, n_optics, n_knobs)
-            .transpose(1, 0, 2)
+            names, values, jac = read_orbit_only(mad, len(self.orbit_coords), n_knobs)
+            rows = dict(zip(self.orbit_coords, zip(values, jac, strict=True), strict=True))
+        else:
+            columns = ["name", *self.orbit_coords, *self._value_columns, *self._derivative_columns]
+            frame = mad.closed_tbl.to_df(columns=columns)
+            names = list(frame["name"])
+            n_bpms, n_optics = len(names), len(self.optics_names)
+            optics_jacobian = (
+                frame[self._derivative_columns]
+                .to_numpy(dtype=float)
+                .reshape(n_bpms, n_optics, n_knobs)
+                .transpose(1, 0, 2)
+            )
+            rows = {
+                name: (frame[column].to_numpy(dtype=float), optics_jacobian[i])
+                for i, (name, column) in enumerate(zip(self.optics_names, self._value_columns))
+            }
+            if self.orbit_coords:
+                mad.send("send_orbit_jacobian()")
+                for coord in self.orbit_coords:
+                    jac = np.asarray(mad.recv(), dtype=float).reshape(n_bpms, n_knobs)
+                    rows[coord] = (frame[coord].to_numpy(dtype=float), jac)
+        self._names = names
+        return ClosedSolution(
+            names,
+            np.array([rows[name][0] for name in observables]),
+            np.array([rows[name][1] for name in observables]),
         )
-        orbit_values = frame[list(self.orbit_coords)].to_numpy(dtype=float).T
-        orbit_jacobian = np.empty((len(self.orbit_coords), n_bpms, n_knobs))
-        if self.orbit_coords:
-            mad.send("send_orbit_jacobian()")
-            for i in range(len(self.orbit_coords)):
-                orbit_jacobian[i] = np.asarray(mad.recv(), dtype=float).reshape(n_bpms, n_knobs)
 
-        values = np.empty((len(observables), n_bpms))
-        jacobian = np.empty((len(observables), n_bpms, n_knobs))
-        orbit_iter, optics_iter = iter(range(len(self.orbit_coords))), iter(range(n_optics))
-        for i, name in enumerate(observables):
-            if name in ORBIT_COORDS:
-                source = next(orbit_iter)
-                values[i], jacobian[i] = orbit_values[source], orbit_jacobian[source]
-            else:
-                source = next(optics_iter)
-                values[i], jacobian[i] = optics_values[source], optics_jacobian[source]
-        return ClosedSolution(names, values, jacobian)
-
-    @contextmanager
-    def plain_knobs(self) -> Iterator[None]:
-        self.session.mad.send("knobs_to_plain()")
-        try:
-            yield
-        finally:
-            self.session.mad.send("knobs_to_param()")
-
-    def solve_orbit_plain(self, n_bpms: int) -> np.ndarray | None:
+    def _solve_plain(self, observables: Sequence[str]) -> ClosedSolution | None:
         if self.optics_names:
             raise NotImplementedError("loss-only evaluation supports orbit observables only")
+        if self._names is None:
+            raise RuntimeError("loss-only orbit needs the BPM order from a prior full solve")
+        self._set_plain(plain=True)
         if not self._found("compute_orbit_plain()", "loss-only orbit"):
             return None
         mad = self.session.mad
-        values = np.empty((len(self.orbit_coords), n_bpms))
-        for index in range(len(self.orbit_coords)):
-            values[index] = np.asarray(mad.recv(), dtype=float).ravel()
-        return values
+        rows = {coord: np.asarray(mad.recv(), dtype=float).ravel() for coord in self.orbit_coords}
+        return ClosedSolution(self._names, np.array([rows[name] for name in observables]), None)
 
     def close(self) -> None:
         self.session.close()
+
+
+class CalibratedClosedOrbitEngine(ClosedOrbitEngine):
+    """Closed orbit with zero-valued gain knobs after the magnet knobs; ``pt`` is never fitted."""
+
+    def __init__(
+        self,
+        config: WorkerConfig,
+        init_knobs: Mapping[str, float],
+        *,
+        extra_knobs: Sequence[str],
+        optics_names: Sequence[str],
+        orbit_coords: Sequence[str],
+        worker_id: int,
+        logfile: Path | None = None,
+    ) -> None:
+        self._extra_knobs = list(extra_knobs)
+        super().__init__(
+            config,
+            init_knobs,
+            optics_names=optics_names,
+            orbit_coords=orbit_coords,
+            worker_id=worker_id,
+            logfile=logfile,
+        )
+
+    def _add_extra_knobs(self) -> None:
+        self.fit_pt = False
+        mad = self.session.mad
+        if self._extra_knobs:
+            mad.send("\n".join(f"loaded_sequence['{knob}'] = 0" for knob in self._extra_knobs))
+        mad["knob_names"] = [name for name in mad["knob_names"] if name != "pt"] + self._extra_knobs
+
+    def scale_globals(self, scaled: Sequence[tuple[str, float, float, str]]) -> None:
+        """Set each global ``name`` to the deferred ``kick * (gain + knob)``, so it follows the knob."""
+        commands = [
+            f"MADX['{name}'] = \\-> {kick:.15e} * ({gain:.15e} + loaded_sequence['{knob}'])"
+            for name, kick, gain, knob in scaled
+        ]
+        if commands:
+            self.session.mad.send("\n".join(commands))
 
 
 def open_model(
@@ -472,9 +503,9 @@ def open_model(
     mad_logfile: Path | None = None,
     anchor_mode: str | None = None,
     anchor_markers: Sequence[str] = (),
-) -> GradientDescentMadInterface:
+) -> MadInterface:
     """Parent-side model: knob discovery and BPM lists."""
-    return GradientDescentMadInterface(
+    return MadInterface(
         accelerator=accelerator,
         magnet_range=magnet_range,
         machine_state=machine_state,
@@ -484,6 +515,7 @@ def open_model(
         mad_logfile=mad_logfile,
         tracking_anchor_mode=anchor_mode,
         tracking_anchor_markers=list(anchor_markers),
+        create_knobs=True,
     )
 
 
@@ -495,7 +527,7 @@ def closed_orbit_table(
     columns: Sequence[str],
 ):
     """Coupled twiss columns at every observed element, ``pt`` pinned on the initial condition."""
-    iface = GradientDescentMadInterface(accelerator, machine_state=machine_state)
+    iface = MadInterface(accelerator, machine_state=machine_state, create_knobs=True)
     try:
         if magnet_strengths:
             iface.update_knob_values(dict(magnet_strengths))

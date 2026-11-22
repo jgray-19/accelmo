@@ -55,19 +55,19 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from accelmo.backend.madng import MadInterface
+from accelmo.backend.madng.engines import read_orbit_only
+from accelmo.backend.madng.scripts import CLOSED_TWISS_INIT, PYTHON_IN_MAD
 from accelmo.fitting.config import SequenceConfig
 from accelmo.fitting.pool import WorkerPool
 from accelmo.fitting.protocol import Start
 from accelmo.fitting.reduction import reduce_replies
 from accelmo.machine.accelerators import PSB
-from accelmo.backend.madng import GradientDescentMadInterface
-from accelmo.backend.madng.scripts import CLOSED_TWISS_INIT, PYTHON_IN_MAD
 from accelmo.poco import (
     DEFAULT_OBSERVABLES,
     ClosedTwissFitter,
     LevenbergMarquardtConfig,
 )
-from accelmo.backend.madng.engines import read_orbit_only
 from accelmo.poco.workers.closed_twiss import ClosedTwissWorker
 
 if TYPE_CHECKING:
@@ -108,7 +108,7 @@ def _fake_measurement(
     the per-interval advances it actually fits.
     """
     accel = PSB(ring=3, sequence_file=seq_psb, **accelerator_kwargs)
-    iface = GradientDescentMadInterface(accel)
+    iface = MadInterface(accel, create_knobs=True)
     iface.update_knob_values(knob_values)
     iface.mad.send(
         f"motws = twiss{{sequence=loaded_sequence, observe=1, "
@@ -142,7 +142,9 @@ def _fake_measurement(
 
 def _knob_names(seq_psb: Path, accelerator_kwargs: dict) -> list[str]:
     """Optimisable knob names for a given PSB configuration (excluding momentum)."""
-    probe = GradientDescentMadInterface(PSB(ring=3, sequence_file=seq_psb, **accelerator_kwargs))
+    probe = MadInterface(
+        PSB(ring=3, sequence_file=seq_psb, **accelerator_kwargs), create_knobs=True
+    )
     names = [k for k in probe.knob_names if k != "pt"]
     del probe
     return names
@@ -173,9 +175,7 @@ def _fit(
         lm_config=LevenbergMarquardtConfig(max_iterations=40, gradient_converged_value=1e-12),
         measurements=measurements,
         observables=observables,
-        prior_strengths=(
-            dict.fromkeys(families, prior_strength) if prior_strength > 0.0 else None
-        ),
+        prior_strengths=(dict.fromkeys(families, prior_strength) if prior_strength > 0.0 else None),
     )
     return fitter.run().knobs
 
@@ -308,8 +308,8 @@ def test_observables_are_consistent_with_an_independent_twiss(seq_psb: Path) -> 
 
     # The init script talks to the MAD-side object under the name the workers
     # give it, so the interface has to be built the same way here.
-    iface = GradientDescentMadInterface(
-        PSB(ring=3, sequence_file=seq_psb, **kwargs), py_name=PYTHON_IN_MAD
+    iface = MadInterface(
+        PSB(ring=3, sequence_file=seq_psb, **kwargs), py_name=PYTHON_IN_MAD, create_knobs=True
     )
     mad = iface.mad
     mad["knob_names"] = knobs
@@ -500,8 +500,8 @@ def _analytic_orbit_jacobian(
     No optics columns are requested, so this is the orbit-only path: ``cofind`` and one
     parametric ``track`` on a first-order map, not ``twiss``.
     """
-    iface = GradientDescentMadInterface(
-        PSB(ring=3, sequence_file=seq_psb, **kwargs), py_name=PYTHON_IN_MAD
+    iface = MadInterface(
+        PSB(ring=3, sequence_file=seq_psb, **kwargs), py_name=PYTHON_IN_MAD, create_knobs=True
     )
     mad = iface.mad
     knobs = [k for k in iface.knob_names if k != "pt"][:n_knobs]
@@ -646,6 +646,7 @@ def test_quadrupole_tilts_recovered_from_vertical_dispersion(seq_psb: Path) -> N
     assert residual_dy < 1e-2 * measured_dy_rms, (
         f"fitted Dy residual {residual_dy:.3e} m against a measured rms of {measured_dy_rms:.3e} m"
     )
+
 
 def test_closed_twiss_worker_uses_method_6():
     """The worker bypasses ``run_twiss`` and must pin the integrator itself."""

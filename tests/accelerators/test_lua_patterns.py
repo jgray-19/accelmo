@@ -14,7 +14,7 @@ from accelmo.machine.accelerators import LHC, PSB
 from accelmo.machine.patterns import lua_to_regex
 
 if TYPE_CHECKING:
-    from accelmo.backend.madng import AbaMadInterface
+    from accelmo.backend.madng import MadInterface
 
 
 def _patterns(accelerator) -> list[str]:
@@ -24,7 +24,7 @@ def _patterns(accelerator) -> list[str]:
     return sorted(patterns)
 
 
-def _compare(interface: AbaMadInterface, patterns: list[str]) -> None:
+def _compare(interface: MadInterface, patterns: list[str]) -> None:
     mad = interface.mad
     mad.send(f"""
 local names = {{}}
@@ -48,11 +48,11 @@ end
         assert [name for name in names if regex.search(name)] == lua_hits, pattern
 
 
-def test_lhc_patterns_match_madng(loaded_interface: AbaMadInterface, seq_b1) -> None:
+def test_lhc_patterns_match_madng(loaded_interface: MadInterface, seq_b1) -> None:
     _compare(loaded_interface, _patterns(LHC(beam=1, sequence_file=seq_b1)))
 
 
-def test_psb_patterns_match_madng(loaded_psb_interface: AbaMadInterface, seq_psb) -> None:
+def test_psb_patterns_match_madng(loaded_psb_interface: MadInterface, seq_psb) -> None:
     _compare(loaded_psb_interface, _patterns(PSB(ring=3, sequence_file=seq_psb)))
 
 

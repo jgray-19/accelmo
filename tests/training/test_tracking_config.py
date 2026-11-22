@@ -71,15 +71,14 @@ class TestACDArcByArcReroute:
         forward_specs = [s for s in specs if s.sdir == 1]
         assert all((s.start_bpm, s.end_bpm) == ("BPM.5", "BPM.6") for s in forward_specs)
 
-    def test_bpm_pairs_deduplicates_after_reroute(self) -> None:
+    def test_range_specs_deduplicate_after_reroute(self) -> None:
         plan = self._plan()
-        # Both pairs reroute to the same complementary arc, so they should
-        # collapse to a single logical pair.
+        # Rerouted ranges that land on the same arc collapse to one range per direction.
         ctx = self._ctx(start_bpms=["BPM.2", "BPM.1"], end_bpms=["BPM.5"])
 
-        pairs = plan.bpm_pairs(ctx)
+        specs = plan.build_range_specs(ctx)
 
-        assert len(pairs) == len(set(pairs))
+        assert len(specs) == len(set(specs))
 
     def test_observed_bpms_excludes_exciter_markers(self) -> None:
         plan = self._plan()

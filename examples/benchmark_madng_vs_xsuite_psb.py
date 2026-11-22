@@ -16,7 +16,7 @@ full Jacobian with respect to the 48 quadrupole ``k1`` knobs of PSB ring 3.
 - ``dlmn_kicker_multi_turn``: a few kicked initial conditions tracked for many turns from
   the kicker (kicker method, multi-turn). The AC-dipole multi-turn method needs the ACD
   amplitude and phase as TPSA parameters, which xsuite elements do not offer
-  (``docs/replacing_madng.rst``), so it is not benchmarked.
+  (``docs/backends.rst``), so it is not benchmarked.
 
 Both backends run in this process, single-threaded, through
 :mod:`accelmo.backend.protocol`, so the numbers include the Python side of each engine.
@@ -55,7 +55,7 @@ from omc3.model_creator import create_instance_and_model
 from pymadng_utils.madx.make_sequence import make_madx_sequence
 
 from accelmo.backend import get_backend
-from accelmo.backend.protocol import TrackingPlan
+from accelmo.backend.protocol import TrackRequest
 from accelmo.fitting.worker import WorkerConfig
 from accelmo.machine.accelerators import PSB
 
@@ -158,7 +158,7 @@ def poco(sequence: Path, backend: str, knobs: dict[str, float], profile: bool):
     )
     start = time.perf_counter()
     engine = get_backend(backend).ClosedOrbitEngine(
-        config, knobs, optics_names=[], orbit_coords=["x", "y"], extra_knobs=None, worker_id=0
+        config, knobs, optics_names=[], orbit_coords=["x", "y"], worker_id=0
     )
     engine.set_pt(0.0)
     engine.set_knobs(knobs)
@@ -186,7 +186,7 @@ def dlmn(
         magnet_range="$start/$end",
         initial_condition_marker=KICKER if multi_turn else None,
     )
-    plan = TrackingPlan(
+    plan = TrackRequest(
         observables=("x", "px", "y", "py"),
         batch_size=n_particles,
         num_batches=1,

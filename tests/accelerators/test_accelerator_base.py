@@ -12,7 +12,7 @@ from pymadng_utils.physics import PROTON_MASS_GEV
 from accelmo.machine.accelerators.base import Accelerator, KnobSpec, MagnetFamily
 
 if TYPE_CHECKING:
-    from accelmo.backend.madng.aba_mad_interface import AbaMadInterface
+    from accelmo.backend.madng.interface import MadInterface
 
 
 class ConcreteAccelerator(Accelerator):
@@ -52,7 +52,7 @@ class ConcreteAccelerator(Accelerator):
     # def get_exciter_bpm(self) -> dict[str, float] | None:
     #     """Return None for exciter BPM in base class."""
 
-    def apply_accelerator_specific_errors(self, mad_iface: AbaMadInterface) -> None:
+    def apply_accelerator_specific_errors(self, mad_iface: MadInterface) -> None:
         """No accelerator-specific errors to apply in base class."""
 
     @staticmethod
@@ -189,9 +189,7 @@ class TestAcceleratorBase:
         result = acc.get_bend_lengths()
         assert result is None
 
-    def test_normalise_true_strengths_returns_unchanged(
-        self, test_sequence_file: Path
-    ) -> None:
+    def test_normalise_true_strengths_returns_unchanged(self, test_sequence_file: Path) -> None:
         """Test that base normalise_true_strengths returns unchanged dictionary."""
         acc = ConcreteAccelerator(
             sequence_file=test_sequence_file,
@@ -202,9 +200,7 @@ class TestAcceleratorBase:
         assert result == test_strengths
         assert result is test_strengths  # Should return same object
 
-    def test_normalise_true_strengths_with_bend_lengths(
-        self, test_sequence_file: Path
-    ) -> None:
+    def test_normalise_true_strengths_with_bend_lengths(self, test_sequence_file: Path) -> None:
         """Test normalise_true_strengths with bend lengths provided."""
         acc = ConcreteAccelerator(
             sequence_file=test_sequence_file,
@@ -215,9 +211,7 @@ class TestAcceleratorBase:
         result = acc.normalise_true_strengths(test_strengths, bend_lengths)
         assert result == test_strengths
 
-    def test_format_result_knob_names_without_energy(
-        self, test_sequence_file: Path
-    ) -> None:
+    def test_format_result_knob_names_without_energy(self, test_sequence_file: Path) -> None:
         """Test format_result_knob_names without energy optimisation."""
         acc = ConcreteAccelerator(
             sequence_file=test_sequence_file,
@@ -228,9 +222,7 @@ class TestAcceleratorBase:
         result = acc.format_result_knob_names(knob_names)
         assert result == ["K1.b1", "K2.b1", "pt"]
 
-    def test_format_result_knob_names_with_energy_no_pt(
-        self, test_sequence_file: Path
-    ) -> None:
+    def test_format_result_knob_names_with_energy_no_pt(self, test_sequence_file: Path) -> None:
         """Test format_result_knob_names with energy but no pt knob."""
         acc = ConcreteAccelerator(
             sequence_file=test_sequence_file,
@@ -241,9 +233,7 @@ class TestAcceleratorBase:
         result = acc.format_result_knob_names(knob_names)
         assert result == ["K1.b1", "K2.b1"]
 
-    def test_format_result_knob_names_with_energy_and_pt(
-        self, test_sequence_file: Path
-    ) -> None:
+    def test_format_result_knob_names_with_energy_and_pt(self, test_sequence_file: Path) -> None:
         """Test format_result_knob_names preserves pt when energy optimisation is enabled."""
         acc = ConcreteAccelerator(
             sequence_file=test_sequence_file,
@@ -257,9 +247,7 @@ class TestAcceleratorBase:
         assert "K1.b1" in result
         assert "K2.b1" in result
 
-    def test_format_result_knob_names_returns_copy(
-        self, test_sequence_file: Path
-    ) -> None:
+    def test_format_result_knob_names_returns_copy(self, test_sequence_file: Path) -> None:
         """Test that format_result_knob_names returns a new list."""
         acc = ConcreteAccelerator(
             sequence_file=test_sequence_file,
@@ -303,9 +291,7 @@ class TestAcceleratorBase:
             acc.log_optimisation_targets()
         assert "beam energy" in caplog.text
 
-    def test_log_optimisation_targets_multiple(
-        self, test_sequence_file: Path, caplog
-    ) -> None:
+    def test_log_optimisation_targets_multiple(self, test_sequence_file: Path, caplog) -> None:
         """Test log_optimisation_targets logs multiple targets."""
         acc = ConcreteAccelerator(
             sequence_file=test_sequence_file,
@@ -336,7 +322,9 @@ class TestSelectionValidation:
 
     def test_unknown_misalignment_family_raises(self, seq: Path) -> None:
         with pytest.raises(ValueError, match="Unknown magnet family"):
-            ConcreteAccelerator(sequence_file=seq, kinetic_energy=1.0, misalignments={"bend": {"dx"}})
+            ConcreteAccelerator(
+                sequence_file=seq, kinetic_energy=1.0, misalignments={"bend": {"dx"}}
+            )
 
     @pytest.mark.parametrize(
         ("kwarg", "selection"),

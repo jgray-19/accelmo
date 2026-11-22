@@ -36,8 +36,7 @@ def parse_selection(tokens: Iterable[str] | None) -> Selection:
         names = {attr.strip() for attr in attrs.split(",") if attr.strip()}
         if not sep or not family.strip() or not names:
             raise ValueError(
-                f"Invalid selection {token!r}: expected FAMILY:ATTR[,ATTR...], "
-                "e.g. quad:k1,tilt"
+                f"Invalid selection {token!r}: expected FAMILY:ATTR[,ATTR...], e.g. quad:k1,tilt"
             )
         selection.setdefault(family.strip(), set()).update(names)
     return selection

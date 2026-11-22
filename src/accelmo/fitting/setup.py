@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import datetime
+import datetime as dt
 import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -139,7 +139,7 @@ class MachineSetup:
                 return RunLog(
                     interrupted, name=name, metadata=self.output_config.run_metadata, resume=True
                 )
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        timestamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
         directory = self.output_config.run_log_root / f"{timestamp}_{name}"
         LOGGER.info("Run log: %s", directory)
         return RunLog(directory, name=name, metadata=self.output_config.run_metadata)

@@ -7,26 +7,24 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pytest
 
+from accelmo.backend.madng import MadInterface
 from accelmo.machine.accelerators import PSB
-from accelmo.backend.madng import GradientDescentMadInterface
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from accelmo.backend.madng.aba_mad_interface import AbaMadInterface
 
-
-def _get_element_attr(interface: AbaMadInterface, element_name: str, attr: str) -> float:
+def _get_element_attr(interface: MadInterface, element_name: str, attr: str) -> float:
     """Read one element attribute from the currently loaded MAD sequence."""
     return float(interface.mad.loaded_sequence[element_name][attr])
 
 
-def _get_effective_strength(interface: AbaMadInterface, element_name: str, attr: str) -> float:
+def _get_effective_strength(interface: MadInterface, element_name: str, attr: str) -> float:
     """Read the effective strength reported by the interface."""
     return interface.get_magnet_strengths([f"{element_name}.{attr}"])[f"{element_name}.{attr}"]
 
 
-def _get_element_dknl(interface: AbaMadInterface, element_name: str, index: int) -> float:
+def _get_element_dknl(interface: MadInterface, element_name: str, index: int) -> float:
     """Read one dknl component (0-based, Python indexing)."""
     try:
         return float(interface.mad.loaded_sequence[element_name].dknl[index])
@@ -36,7 +34,7 @@ def _get_element_dknl(interface: AbaMadInterface, element_name: str, index: int)
 
 
 def test_effective_strength_matches_base_when_dknl_not_created(
-    loaded_interface: AbaMadInterface,
+    loaded_interface: MadInterface,
     seq_b1: Path,
 ) -> None:
     """Effective strength lookup should fall back to the base strength before any perturbation."""
@@ -51,7 +49,7 @@ def test_effective_strength_matches_base_when_dknl_not_created(
 
 
 def test_perturbation_records_integrated_dknl_matching_readback(
-    loaded_psb_interface: AbaMadInterface,
+    loaded_psb_interface: MadInterface,
     seq_psb: Path,
 ) -> None:
     """The dict returned by apply_magnet_perturbations must be self-consistent.
@@ -83,7 +81,7 @@ def test_perturbation_records_integrated_dknl_matching_readback(
     ids=["table_relative_errors", "global_relative_error"],
 )
 def test_lhc_quadrupole_perturbation_modes(
-    loaded_interface: AbaMadInterface,
+    loaded_interface: MadInterface,
     seq_b1: Path,
     rel_error: float | None,
     expect_non_table_changed: bool,
@@ -116,7 +114,7 @@ def test_lhc_quadrupole_perturbation_modes(
 
 
 def test_zero_strength_selected_magnet_is_not_perturbed(
-    loaded_psb_interface: AbaMadInterface,
+    loaded_psb_interface: MadInterface,
     seq_psb: Path,
 ) -> None:
     """Relative perturbations should skip selected magnets that are off."""
@@ -136,7 +134,7 @@ def test_zero_strength_selected_magnet_is_not_perturbed(
 
 
 def test_psb_bend_and_qfo_qde_perturbation_families(
-    loaded_psb_interface: AbaMadInterface,
+    loaded_psb_interface: MadInterface,
     seq_psb: Path,
 ) -> None:
     """PSB perturbations should cover ring bends and QFO/QDE quadrupoles."""
@@ -160,14 +158,15 @@ def test_psb_bend_and_qfo_qde_perturbation_families(
 
 
 def test_perturbation_preserves_deferred_optimisation_knob_link(seq_psb: Path) -> None:
-    """Perturbing a GradientDescentMadInterface must not break its dk*l knobs."""
-    iface = GradientDescentMadInterface(
+    """Perturbing a MadInterface must not break its dk*l knobs."""
+    iface = MadInterface(
         accelerator=PSB(
             ring=3,
             sequence_file=seq_psb,
             errors={"bend": {"k0"}, "quad": {"k1"}},
         ),
         discard_mad_output=True,
+        create_knobs=True,
     )
     try:
         knob = "BR.BHZ11.dk0l"
@@ -185,5 +184,3 @@ def test_perturbation_preserves_deferred_optimisation_knob_link(seq_psb: Path) -
         assert iface.get_magnet_strengths([knob])[knob] == pytest.approx(changed)
     finally:
         iface.close()
-
-

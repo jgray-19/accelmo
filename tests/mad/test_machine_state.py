@@ -18,10 +18,9 @@ import pytest
 import tfs
 from pymadng_utils.io.utils import save_knobs
 
+from accelmo.backend.madng import MadInterface
 from accelmo.machine.accelerators import PSB
-from accelmo.backend.madng import GenericMadInterface
-from accelmo.machine.machine_state import merge_machine_states
-from accelmo.machine.machine_state import resolve_machine_state
+from accelmo.machine.machine_state import merge_machine_states, resolve_machine_state
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -62,15 +61,17 @@ def test_merge_layers_later_states_over_earlier_ones(tmp_path: Path) -> None:
     assert merge_machine_states(None, None) is None
 
 
-def _value(interface: GenericMadInterface, expression: str) -> float:
+def _value(interface: MadInterface, expression: str) -> float:
     interface.mad.send(f"{interface.py_name}:send({expression})")
     return float(interface.mad.recv())
 
 
 @pytest.mark.slow
-def test_interface_applies_variables_element_attributes_and_new_names(seq_psb: Path, tmp_path: Path) -> None:
+def test_interface_applies_variables_element_attributes_and_new_names(
+    seq_psb: Path, tmp_path: Path
+) -> None:
     state = {"kbrqf": 0.7, "br3.dhz2l4.kick": 2e-5, "not_in_the_model": 3.0}
-    interface = GenericMadInterface(PSB(ring=3, sequence_file=seq_psb), machine_state=state)
+    interface = MadInterface(PSB(ring=3, sequence_file=seq_psb), machine_state=state)
     try:
         assert _value(interface, "MADX.kbrqf") == pytest.approx(0.7)
         assert _value(interface, "loaded_sequence['BR3.DHZ2L4'].kick") == pytest.approx(2e-5)
@@ -78,8 +79,9 @@ def test_interface_applies_variables_element_attributes_and_new_names(seq_psb: P
     finally:
         interface.close()
 
-    from_table = GenericMadInterface(
-        PSB(ring=3, sequence_file=seq_psb), machine_state=_corrector_table(tmp_path / "correctors.tfs")
+    from_table = MadInterface(
+        PSB(ring=3, sequence_file=seq_psb),
+        machine_state=_corrector_table(tmp_path / "correctors.tfs"),
     )
     try:
         assert _value(from_table, "loaded_sequence['BR3.DVT2L4'].kick") == pytest.approx(-3e-5)

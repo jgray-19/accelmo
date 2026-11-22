@@ -4,14 +4,16 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pandas as pd
 
 from accelmo.runlog.writer import HISTORY_FILE, KNOBS_FILE, RESULT_FILE, STAGE_FILE
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 
 def find_stages(root: Path | Sequence[Path]) -> list[StageLog]:
@@ -66,7 +68,11 @@ class StageLog:
     def label(self) -> str:
         """``name`` plus the run's own ``label`` (metadata) and the directory, to tell repeated stages apart."""
         run = self.metadata.get("label")
-        return f"{self.name} [{run}] ({self.directory.name})" if run else f"{self.name} ({self.directory.name})"
+        return (
+            f"{self.name} [{run}] ({self.directory.name})"
+            if run
+            else f"{self.name} ({self.directory.name})"
+        )
 
     def version(self) -> tuple[int, int]:
         """Sizes of the growing files: changes whenever a step is logged."""

@@ -15,4 +15,13 @@ from accelmo.machine.accelerators.lhc import LHC
 from accelmo.machine.accelerators.psb import PSB
 from accelmo.machine.accelerators.sps import SPS
 
-__all__ = ["MISALIGNMENT_ATTRS", "Accelerator", "KnobSpec", "MagnetFamily", "FCC", "LHC", "PSB", "SPS"]
+__all__ = [
+    "FCC",
+    "LHC",
+    "MISALIGNMENT_ATTRS",
+    "PSB",
+    "SPS",
+    "Accelerator",
+    "KnobSpec",
+    "MagnetFamily",
+]

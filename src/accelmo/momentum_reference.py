@@ -55,8 +55,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from accelmo.fitting.config import SequenceConfig
 from accelmo.backend import get_backend
+from accelmo.fitting.config import SequenceConfig
 from accelmo.machine.machine_state import resolve_machine_state
 from accelmo.poco import (
     ClosedTwissFitter,
@@ -149,9 +149,7 @@ def closed_orbit_at(
     )
 
 
-def _check_observable_knob_match(
-    accelerator: Accelerator, observables: Sequence[str]
-) -> None:
+def _check_observable_knob_match(accelerator: Accelerator, observables: Sequence[str]) -> None:
     """Reject knob families which the requested observables cannot constrain.
 
     Fitting gradients against the closed orbit alone is not merely uninformative,
@@ -159,7 +157,8 @@ def _check_observable_knob_match(
     errors, which measured ~2.6x worse than leaving them out.
     """
     if not any(
-        spec.kind == "quadrupole" and spec.attribute == "k1" for spec in accelerator.get_knob_specs()
+        spec.kind == "quadrupole" and spec.attribute == "k1"
+        for spec in accelerator.get_knob_specs()
     ):
         return
     if GRADIENT_SENSITIVE.intersection(observables):
@@ -272,12 +271,9 @@ def fit_momentum_reference(
         reference_pt,
         machine_state=machine_state,
     )
-    uncertainty_map = {
-        str(name): float(value) for name, value in (uncertainties or {}).items()
-    }
+    uncertainty_map = {str(name): float(value) for name, value in (uncertainties or {}).items()}
     coverage = {
-        float(pt): tuple(str(name) for name in frame.index)
-        for pt, frame in measurements.items()
+        float(pt): tuple(str(name) for name in frame.index) for pt, frame in measurements.items()
     }
     return MomentumReference(
         magnet_strengths=dict(magnet_strengths),
@@ -289,11 +285,15 @@ def fit_momentum_reference(
         momentum_points=momentum_points,
         bpm_coverage=coverage,
         fit_settings={
-            "sequence_range": (sequence_config or SequenceConfig(magnet_range="$start/$end")).magnet_range,
+            "sequence_range": (
+                sequence_config or SequenceConfig(magnet_range="$start/$end")
+            ).magnet_range,
             # The knobs themselves, not a path: they are tens of values, and a
             # path names a file that later runs rewrite -- which makes a saved
             # fit unreproducible from its own metadata.
-            "machine_state": None if machine_state is None else dict(sorted(resolve_machine_state(machine_state).items())),
+            "machine_state": None
+            if machine_state is None
+            else dict(sorted(resolve_machine_state(machine_state).items())),
             "lm_config": repr(lm_config or fitter.lm_config),
         },
         diagnostics={**dataclasses.asdict(result.diagnostics), "n_knobs": len(magnet_strengths)},

@@ -137,7 +137,9 @@ class OpticsCache:
         self._submit(_Task(priority, next(self._order), model_key, metadata, knobs.to_dict(), key))
         return False
 
-    def optics(self, metadata: Mapping[str, Any], knobs: pd.Series, priority: int) -> pd.DataFrame | None:
+    def optics(
+        self, metadata: Mapping[str, Any], knobs: pd.Series, priority: int
+    ) -> pd.DataFrame | None:
         """The optics for ``knobs``, or ``None`` after queueing them at ``priority``."""
         if not self.request(metadata, knobs, priority):
             return None

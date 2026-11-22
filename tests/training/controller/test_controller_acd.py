@@ -29,7 +29,7 @@ from tests.training.controller_test_utils import (
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from accelmo.backend.madng.aba_mad_interface import AbaMadInterface
+    from accelmo.backend.madng.interface import MadInterface
 
 from pymadng_utils.io.utils import save_knobs
 from xtrack_tools.monitors import get_monitor_names_at_pattern, process_tracking_data
@@ -45,7 +45,7 @@ PSB_VERTICAL_ACD_VOLTAGE = 4.86557716491e-05
 
 
 def _generate_acd_track(
-    interface_with_beam: AbaMadInterface,
+    interface_with_beam: MadInterface,
     flattop_turns: int,
     destination: Path,
     dpp_value: float,
@@ -204,7 +204,7 @@ def _build_acd_controller(
     *,
     tmp_path: Path,
     seq_psb: Path,
-    loaded_psb_interface: AbaMadInterface,
+    loaded_psb_interface: MadInterface,
     flattop_turns: int = 10,
 ) -> tuple[ACDMarkerFitter, dict[str, float]]:
     magnet_range = "$start/$end"
@@ -247,7 +247,7 @@ def _build_acd_controller(
 def test_controller_quad_opt_with_acd(
     tmp_path: Path,
     seq_psb: Path,
-    loaded_psb_interface: AbaMadInterface,
+    loaded_psb_interface: MadInterface,
     controller_test_mode: str,
 ) -> None:
     loss_regression = controller_test_mode == "loss_regression"
@@ -289,7 +289,7 @@ GAINS = {"BR3.BPM1L3": 0.03, "BR3.BPM4L3": -0.02}
 
 
 def test_lm_gain_prior_does_not_depend_on_particles_per_worker(
-    tmp_path: Path, seq_psb: Path, loaded_psb_interface: AbaMadInterface
+    tmp_path: Path, seq_psb: Path, loaded_psb_interface: MadInterface
 ) -> None:
     """Same noise-free ACD data and gain prior on 2 workers (40 training turns each) or 8 workers
     (10 each, an even split): the chi-square is the same, so the fitted gains must be too."""
@@ -339,7 +339,7 @@ def test_lm_gain_prior_does_not_depend_on_particles_per_worker(
 
 
 def test_lm_knob_prior_shifts_a_knob_by_the_gaussian_posterior_mean(
-    tmp_path: Path, seq_psb: Path, loaded_psb_interface: AbaMadInterface
+    tmp_path: Path, seq_psb: Path, loaded_psb_interface: MadInterface
 ) -> None:
     """Gaussian posterior: a zero-centred prior of width s on a knob fitted at v0 with data width
     h = sqrt((A^-1)_kk) (A = J^T W J in chi-square units) shifts it by v0 h^2 / (s^2 + h^2).

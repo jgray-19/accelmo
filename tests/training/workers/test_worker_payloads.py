@@ -114,9 +114,7 @@ def test_multi_turn_payload_continues_into_the_next_recorded_turn(tmp_path) -> N
         n_run_turns=2,
     )
 
-    assert np.allclose(
-        data.position_comparisons[0, :, 0], [1.1, 1.2, 1.3, 2.1, 2.2, 2.3]
-    )
+    assert np.allclose(data.position_comparisons[0, :, 0], [1.1, 1.2, 1.3, 2.1, 2.2, 2.3])
 
 
 def test_backward_range_crossing_the_wrap_reads_the_previous_turn(tmp_path) -> None:
@@ -184,7 +182,6 @@ def _weight_payload(accelerator, position_var, momentum_var, kick_plane=KickPlan
         reading_ids=np.zeros((1, 1), dtype=np.int64),
         init_reading_ids=np.zeros(1, dtype=np.int64),
         init_variances=np.ones((1, 4)),
-
         start_turn_offsets=np.zeros(1, dtype=np.int64),
         precomputed_weights=None,
     )
@@ -215,9 +212,9 @@ def test_position_only_runs_do_not_let_momenta_set_the_normalisation(tmp_path) -
     accelerator = _accelerator(tmp_path)
     payload = _weight_payload(accelerator, [1e-8, 1e-8], [1e-12, 1e-12])
 
-    weights = WorkerPayloadBuilder.attach_global_weights(
-        [payload], optimise_momenta=False
-    )[0][0].precomputed_weights
+    weights = WorkerPayloadBuilder.attach_global_weights([payload], optimise_momenta=False)[0][
+        0
+    ].precomputed_weights
 
     assert weights is not None
     # Positions set the scale; the far larger momentum weights are left unscaled.

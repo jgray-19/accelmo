@@ -17,9 +17,9 @@ import numpy as np
 import pandas as pd
 from pymadng_utils.io.utils import read_knobs
 
+from accelmo.backend.madng import MadInterface
 from accelmo.config import PROJECT_ROOT
 from accelmo.machine.accelerators import LHC
-from accelmo.backend.madng import GenericMadInterface
 from accelmo.machine.machine_state import merge_machine_states
 
 PC = 6800  # Beam energy in GeV
@@ -32,6 +32,13 @@ def parse_args() -> argparse.Namespace:
         description="Compare closed orbit before/after energy and corrector optimisation."
     )
     parser.add_argument("--beam", type=int, choices=[1, 2], default=1, help="Beam number")
+    parser.add_argument(
+        "--seq-dir",
+        type=int,
+        choices=[-1, 1],
+        default=None,
+        help="Beam 2: -1 MAD-X beam 2, 1 beam 4",
+    )
     parser.add_argument(
         "--analysis-dir",
         type=Path,
@@ -68,6 +75,7 @@ def read_mean_deltap(results_file: Path) -> float:
                 return float(parts[1])
     raise ValueError(f"MeanArcs not found in results file: {results_file}")
 
+
 def read_real_closed_orbit(measurement_file: Path) -> pd.DataFrame:
     """Read parquet data and compute closed orbit (mean x/y per BPM)."""
     df = pd.read_parquet(measurement_file)
@@ -81,14 +89,20 @@ def read_real_closed_orbit(measurement_file: Path) -> pd.DataFrame:
 def generate_closed_orbit(
     sequence_file: Path,
     beam: int,
+    seq_dir: int | None,
     deltap: float,
     corrector_file: Path | None,
     tune_knobs: Path | None,
     new_magnet_strengths: dict[str, float] | None = None,
 ) -> pd.DataFrame:
     """Generate closed orbit (name, s, x, y) from MAD-NG twiss."""
-    accelerator = LHC(beam=beam, kinetic_energy=PC, sequence_file=sequence_file)
-    mad_iface = GenericMadInterface(
+    accelerator = LHC(
+        beam=beam,
+        kinetic_energy=PC,
+        sequence_file=sequence_file,
+        seq_dir=seq_dir,
+    )
+    mad_iface = MadInterface(
         accelerator,
         machine_state=merge_machine_states(corrector_file, tune_knobs),
     )
@@ -188,12 +202,11 @@ def main() -> None:
     deltap_avg = read_mean_deltap(deltap_results_file)
     logger.info("Using average deltap (MeanArcs): %.6e", deltap_avg)
 
-    before = generate_closed_orbit(
-        args.sequence_file, args.beam, 0.0, None, None
-    )
+    before = generate_closed_orbit(args.sequence_file, args.beam, args.seq_dir, 0.0, None, None)
     after_energy = generate_closed_orbit(
         args.sequence_file,
         args.beam,
+        args.seq_dir,
         deltap_avg,
         None,
         None,
@@ -206,6 +219,7 @@ def main() -> None:
     after_corrector = generate_closed_orbit(
         args.sequence_file,
         args.beam,
+        args.seq_dir,
         deltap_avg,
         None,
         None,
@@ -219,7 +233,9 @@ def main() -> None:
         real_data = real_data.sort_values("s")
         logger.info("Loaded measurement closed orbit from %s", measurement_file)
     else:
-        logger.warning("Measurement parquet not found, skipping real data plot: %s", measurement_file)
+        logger.warning(
+            "Measurement parquet not found, skipping real data plot: %s", measurement_file
+        )
 
     merged = before.merge(after_energy, on="name", suffixes=("_before", "_energy"))
     merged = merged.merge(after_corrector, on="name", suffixes=("", "_corrector"))

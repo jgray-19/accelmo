@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 import numpy as np
 
 if TYPE_CHECKING:
-    from accelmo.backend.madng.aba_mad_interface import AbaMadInterface
+    from accelmo.backend.madng.interface import MadInterface
 
 
 def _recv_n(mad: Any, n: int) -> list[Any]:
@@ -38,14 +38,14 @@ def cleanup_interface(interface: Any) -> None:
         del interface
 
 
-def check_sequence_loaded(interface: AbaMadInterface, seq_name: str = "lhcb1") -> None:
+def check_sequence_loaded(interface: MadInterface, seq_name: str = "lhcb1") -> None:
     """Check that sequence is loaded correctly."""
     assert seq_name == interface.mad.SEQ_NAME
     assert interface.mad.loaded_sequence is not None
 
 
 def check_beam_setup(
-    interface: AbaMadInterface,
+    interface: MadInterface,
     particle: str = "proton",
     kinetic_energy: float | None = None,
     charge: int = 1,
@@ -64,7 +64,7 @@ def check_beam_setup(
 
 
 def check_element_observations(
-    interface: AbaMadInterface,
+    interface: MadInterface,
     condition: str,
 ) -> None:
     """Helper to check element observations in MAD."""
@@ -87,7 +87,7 @@ py:send("PASS")""")
 
 
 def check_element_observations_by_names(
-    interface: AbaMadInterface,
+    interface: MadInterface,
     observed_names: list[str],
 ) -> None:
     """Check that exactly the given elements are observed, no more, no less."""
@@ -108,7 +108,7 @@ py:send("PASS")""")
 
 
 def get_marker_and_element_positions(
-    interface: AbaMadInterface, marker_name: str, element_name: str
+    interface: MadInterface, marker_name: str, element_name: str
 ) -> tuple[float, int, float, int]:
     """Helper to get positions and indices of marker and element."""
     interface.mad.send(f"""
@@ -142,7 +142,7 @@ def _corrector_targets(row) -> list[tuple[str, float]]:
 
 
 def _assert_corrector_strength(
-    interface: AbaMadInterface, row_name: str, attr: str, expected: float
+    interface: MadInterface, row_name: str, attr: str, expected: float
 ) -> None:
     """Assert one corrector strength in both MADX and loaded_sequence."""
     madx_strength = interface.mad[f"MADX['{row_name}'].{attr}"]
@@ -156,7 +156,7 @@ def _assert_corrector_strength(
 
 
 def check_corrector_strengths_zero(
-    interface: AbaMadInterface, corrector_table: tfs.TfsDataFrame
+    interface: MadInterface, corrector_table: tfs.TfsDataFrame
 ) -> None:
     """Check that all corrector strengths are initially zero in both MADX and loaded_sequence."""
     for row in corrector_table.itertuples():
@@ -165,7 +165,7 @@ def check_corrector_strengths_zero(
 
 
 def check_corrector_strengths(
-    interface: AbaMadInterface,
+    interface: MadInterface,
     corrector_table: tfs.TfsDataFrame,
 ) -> None:
     """Check that corrector strengths match expected values in both MADX and loaded_sequence."""

@@ -58,8 +58,8 @@ MAD Interface Layer
    :toctree: _autosummary
 
    accelmo.backend.madng
-   accelmo.backend.madng.aba_mad_interface
-   accelmo.backend.madng.optimising_mad_interface
+   accelmo.backend.madng.interface
+   accelmo.backend.madng.interface
    accelmo.backend.madng.machine_state
    accelmo.backend.madng.scripts
 

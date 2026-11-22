@@ -1,12 +1,55 @@
-Replacing MAD-NG
-================
+Model backends
+==============
 
-MAD-NG does two jobs in every fit: it computes the model prediction at the BPMs, and it
-returns the derivative of that prediction with respect to every knob. This page lists what
-the rest of the code needs from those two jobs and describes two other sources of them:
-``xtrack`` (implemented, limited: see `xtrack backend requirements`_) and Cheetah
-(https://github.com/desy-ml/cheetah, a possible later one). The backend is chosen with
-``Accelerator(backend="madng" | "xtrack")``; the interface is :mod:`accelmo.backend.protocol`.
+The model backend does two jobs in every fit: it computes the model prediction at the BPMs,
+and it returns the derivative of that prediction with respect to every knob. MAD-NG is the
+production backend. ``xtrack`` is a reference implementation of the same interface, limited
+in scope (see `xtrack backend requirements`_) and slower (``examples/benchmark_madng_vs_xsuite_psb.py``);
+it shows what an xsuite-based fit needs. Cheetah (https://github.com/desy-ml/cheetah) is a
+possible further backend. The backend is chosen with ``Accelerator(backend="madng" | "xtrack")``;
+the interface is :mod:`accelmo.backend.protocol`.
+
+Backend interface
+-----------------
+
+A backend is the module ``accelmo.backend.<name>.engines`` with:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 28 72
+
+   * - Name
+     - Contract
+   * - ``open_model(accelerator, *, magnet_range, ...)``
+     - Parent-side ``Model``: ``knob_names``, ``all_bpms``, ``bpms_in_range``,
+       ``cycle_to_start``, ``recount_bpms``, ``apply_initial_model_values``,
+       ``knob_values``, ``close``. No derivatives.
+   * - ``TrackingEngine(config, plan: TrackRequest, init_knobs, *, worker_id, logfile)``
+     - ``set_knobs``, ``load_particles``, ``set_pts``, ``set_start_coords``,
+       ``preflight``, ``track(batch, *, start_derivatives) -> TrackResult``, ``close``
+   * - ``ClosedOrbitEngine(config, init_knobs, *, optics_names, orbit_coords, worker_id, logfile)``
+     - ``knob_names``, ``fit_pt``, ``set_knobs``, ``get_vars``, ``set_vars``, ``set_pt``,
+       ``set_warm_start``, ``solve(observables, *, jacobian=True) -> ClosedSolution | None``,
+       ``close``
+   * - ``closed_orbit_table(accelerator, magnet_strengths, pt, machine_state, columns)``
+     - Plain closed-orbit table (momentum reference)
+   * - ``CalibratedClosedOrbitEngine`` (optional)
+     - ``ClosedOrbitEngine`` plus zero-valued BPM-gain/corrector-gain knobs and
+       ``scale_globals``; MAD-NG only
+
+Shapes and conventions (docstrings of :mod:`accelmo.backend.protocol`):
+
+* Knobs are named as in :mod:`accelmo.machine.knob_names` (``MQ.1.dk1l``); ``pt`` is fitted
+  as the last Jacobian column when ``fit_pt`` is true.
+* ``TrackResult.obs[o]`` is ``(P, N)``, ``d_dk[o]`` ``(P, K, N)``, ``d_dc0[o]`` ``(P, 4, N)``.
+* ``ClosedSolution.values`` is ``(n_observables, n_bpms)`` and ``jacobian``
+  ``(n_observables, n_bpms, n_knobs)``, rows in the requested observable order;
+  ``jacobian=False`` returns the values only (loss-only evaluation).
+* A lost closed orbit is ``None``; lost particles are counted in ``TrackResult.n_lost``.
+* ``get_vars`` / ``set_vars`` read and set global variables of the machine state (corrector
+  kicks, tune knobs).
+* ``set_warm_start(key)`` starts the next closed-orbit search from the last orbit solved
+  under ``key``; a backend without warm starts makes it a no-op.
 
 What the optimiser needs
 ------------------------
@@ -39,55 +82,10 @@ The full Jacobian is needed, not only the gradient of the loss. Levenberg-Marqua
 sandwich uncertainties (``Cov = A⁻¹ B A⁻¹``) are built from it. Adam and L-BFGS need only
 the gradient of the loss.
 
-Where MAD-NG is called
-----------------------
-
-.. list-table::
-   :header-rows: 1
-   :widths: 38 62
-
-   * - File
-     - MAD-NG use
-   * - ``backend/madng/optimising_mad_interface.py``, ``aba_mad_interface.py``
-     - Load sequence and beam, create the knobs from the accelerator's families, observe
-       and thin the BPMs, cycle the sequence, set machine state
-   * - ``backend/madng/scripts.py``, ``backend/madng/mad_scripts/run_closed_twiss_init.mad``
-     - Lua text for the tracking calls and the closed-twiss solve
-   * - ``tracking/worker.py``
-     - TPSA map per particle, ``track`` per batch, loss report
-   * - ``poco/workers/closed_twiss.py``, ``closed_orbit.py``, ``calibrated.py``
-     - Closed-orbit solve, parametric ``twiss`` columns, orbit Jacobian
-   * - ``fitting/worker.py``
-     - ``setup_mad_interface``, ``send_knobs``, ``create_base_damap``
-   * - ``momentum_reference.py``
-     - ``iface.mad.send(...)`` to build the reference
-   * - ``machine/accelerators/*.py``
-     - Element name patterns are MAD-NG Lua patterns; ``_KNOB_PREPARATION`` is Lua text
-
-What stays unchanged
---------------------
-
-* Fitters, the worker pool, the message protocol and the run log.
-* Data loading, batching, weights and validation split.
-* Optimisers and the Levenberg-Marquardt loop.
-* Loss, gradient and uncertainty assembly (``_compute_loss_and_gradients``,
-  ``reduce_replies``, ``sandwich_uncertainties``).
-
-What a replacement implements
------------------------------
-
-1. **Model build.** Load the lattice with the beam and energy, apply the fixed machine
-   state, create one named parameter per knob selected by ``errors`` and ``misalignments``,
-   mark the BPMs as observation points, and start the lattice at a given element.
-2. **Tracking evaluation.** The function of the first table row.
-3. **Closed-orbit evaluation.** The function of the second table row.
-4. **Accelerator families.** Element patterns in the form the new code understands.
-5. **Momentum reference and monitor.** ``momentum_reference.py`` and the ``OpticsSource``
-   of ``accelmo.monitor``.
-
-Steps 2 and 3 replace ``TrackingWorker`` and the POCO workers. The new workers subclass
-:class:`~accelmo.fitting.worker.AbstractWorker`, which needs ``prepare_data``, ``evaluate``
-and the setup hooks.
+Everything outside ``accelmo/backend`` is backend independent: fitters, workers, the
+worker pool and message protocol, data loading, optimisers, and the loss, gradient and
+uncertainty assembly. A new backend implements the interface above; element patterns of
+the accelerator families (MAD-NG Lua patterns today) are translated inside the backend.
 
 Sources of the gradient
 -----------------------
@@ -100,9 +98,9 @@ tests use them as an independent check of the exact derivatives.
    :widths: 16 28 30 26
 
    * -
-     - MAD-NG (today)
-     - xtrack (planned first replacement)
-     - Cheetah (possible later)
+     - MAD-NG (production)
+     - xtrack (reference)
+     - Cheetah (possible)
    * - Derivative method
      - Knobs are TPSA parameters; one pass returns the value and every derivative
      - Knobs are TPSA parameters of ``xtrack.tpsa.ParticlesTpsa`` (``KnobParameters``); one
@@ -126,7 +124,7 @@ tests use them as an independent check of the exact derivatives.
      - Not confirmed here
    * - Evidence in this repository
      - All fits
-     - None in ``accelmo``; ``../poco_fodo_study/fodo_study/xs_ring.py`` for a FODO ring
+     - ``accelmo.backend.xtrack``, ``tests/backend/test_xtrack_backend.py``
      - None
 
 xtrack
@@ -216,8 +214,8 @@ the sources read for this page:
   function theorem.
 * A path from the MAD-X sequences used here to a ``Segment``.
 
-Checking a replacement
-----------------------
+Checking a backend
+------------------
 
 Use the existing tests as the acceptance criteria.
 
