@@ -6,22 +6,21 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-import numpy as np
 import pytest
 
-from accelmo.config import OptimiserConfig
 from tests.training.controller_test_utils import (
     DPP_VALUE,
     _build_energy_optimisation_case,
     _make_simulation_config_energy,
     _run_energy_optimisation_case,
     evaluate_controller_worker_losses,
+    make_lm_config,
 )
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from accelmo.machine.mad.aba_mad_interface import AbaMadInterface
+    from accelmo.backend.madng.aba_mad_interface import AbaMadInterface
 
 
 pytestmark = pytest.mark.serial
@@ -36,14 +35,7 @@ def test_controller_energy_opt(
     controller_test_mode: str,
 ) -> None:
     simulation_config = _make_simulation_config_energy(optimise_momenta)
-    optimiser_config = OptimiserConfig(
-        max_epochs=1000,
-        warmup_epochs=1,
-        warmup_lr_start=1e-8,
-        max_lr=2e-6,
-        min_lr=2e-7,
-        gradient_converged_value=5e-10,
-    )
+    optimiser_config = make_lm_config()
 
     if controller_test_mode == "loss_regression":
         ctrl, true_knobs = _build_energy_optimisation_case(
@@ -74,9 +66,10 @@ def test_controller_energy_opt(
     )
     estimate, unc = result.knobs, result.uncertainties
 
-    assert np.allclose(
-        estimate.pop("pt"), loaded_interface.dp2pt(DPP_VALUE), rtol=2e-3, atol=1e-10
-    )
+    true_pt = loaded_interface.dp2pt(DPP_VALUE)
+    rel_error = abs(estimate.pop("pt") - true_pt) / abs(true_pt)
+    # measured 2026-11-12: 8.8e-11 (position only), 2.3e-10 (with momenta)
+    assert rel_error < 1e-9
     uncertainty = unc.pop("pt")
     assert 0 < uncertainty < 3e-6
     assert not estimate

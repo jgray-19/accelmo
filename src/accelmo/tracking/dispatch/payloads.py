@@ -90,7 +90,8 @@ class WorkerPayloadBuilder:
         pts = np.empty(n_turns)
         reading_ids = np.zeros((n_turns, n_points), dtype=np.int64)
         init_reading_ids = np.zeros(n_turns, dtype=np.int64)
-        init_variances = np.full((n_turns, 2), np.inf)
+        init_variances = np.full((n_turns, 4), np.inf)
+        start_turn_offsets = np.zeros(n_turns, dtype=np.int64)
 
         has_x = plan.kick_plane in ("x", "xy")
         has_y = plan.kick_plane in ("y", "xy")
@@ -102,6 +103,7 @@ class WorkerPayloadBuilder:
             batch_rows_by_file[file_idx].append(i)
             turns_by_file[file_idx].append(turn)
             pts[i] = self.compute_pt(file_idx, machine_deltaps)
+            start_turn_offsets[i] = turn - tracks[file_idx].first_turn
 
         for file_idx, batch_rows in batch_rows_by_file.items():
             file_tracks = tracks[file_idx]
@@ -126,10 +128,12 @@ class WorkerPayloadBuilder:
                 init_coords[batch_rows, 0] = values["x"][init_rows, init_col]
                 init_coords[batch_rows, 1] = values["px"][init_rows, init_col]
                 init_variances[batch_rows, 0] = values["var_x"][init_rows, init_col]
+                init_variances[batch_rows, 1] = values["var_px"][init_rows, init_col]
             if has_y:
                 init_coords[batch_rows, 2] = values["y"][init_rows, init_col]
                 init_coords[batch_rows, 3] = values["py"][init_rows, init_col]
-                init_variances[batch_rows, 1] = values["var_y"][init_rows, init_col]
+                init_variances[batch_rows, 2] = values["var_y"][init_rows, init_col]
+                init_variances[batch_rows, 3] = values["var_py"][init_rows, init_col]
             init_coords[batch_rows, 5] = pts[batch_rows]
 
             # An all-zero initial state means the marker row was missing from the
@@ -165,6 +169,7 @@ class WorkerPayloadBuilder:
             reading_ids=reading_ids,
             init_reading_ids=init_reading_ids,
             init_variances=init_variances,
+            start_turn_offsets=start_turn_offsets,
             precomputed_weights=None,
             gain_bpms=self.gain_bpms,
             point_gain_index=point_gain_index(bpm_names * n_run_turns, self.gain_bpms),
@@ -218,29 +223,3 @@ class WorkerPayloadBuilder:
             len(payloads),
         )
         return payloads
-
-    @staticmethod
-    def expand_bpm_mask(mask: np.ndarray, n_run_turns: int) -> np.ndarray:
-        """Expand a per-BPM mask across repeated turns."""
-        if n_run_turns <= 1:
-            return mask
-        return np.tile(mask, n_run_turns)
-
-    @staticmethod
-    def diagnostic_loss_per_bpm(
-        loss_per_point: np.ndarray,
-        bpm_names: list[str],
-        n_run_turns: int,
-        worker_id: int,
-    ) -> np.ndarray:
-        """Reduce point-wise diagnostic losses to one value per BPM."""
-        expected_points = len(bpm_names) * n_run_turns
-        if loss_per_point.size != expected_points:
-            raise RuntimeError(
-                f"Worker {worker_id}: diagnostics size mismatch "
-                f"(got {loss_per_point.size}, expected {expected_points} = "
-                f"{len(bpm_names)} BPMs x {n_run_turns} turns)"
-            )
-        if n_run_turns == 1:
-            return loss_per_point
-        return loss_per_point.reshape(n_run_turns, len(bpm_names)).sum(axis=0)

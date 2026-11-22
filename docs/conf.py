@@ -65,7 +65,6 @@ napoleon_use_ivar = True
 autodoc_mock_imports = [
     "bokeh",
     "matplotlib",
-    "nxcals",
     "numpy",
     "omc3",
     "pandas",
@@ -75,7 +74,6 @@ autodoc_mock_imports = [
     "pymadng_utils",
     "scipy",
     "tfs",
-    "tmom_recon",
     "turn_by_turn",
     "uncertainties",
 ]

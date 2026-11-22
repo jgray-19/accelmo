@@ -10,7 +10,6 @@ import numpy as np
 
 from accelmo.fitting.bpm_gains import PLANES, bpm_gains, bpm_reading
 from accelmo.fitting.protocol import GradReply
-from accelmo.machine.mad.machine_state import assign_state
 from accelmo.poco.calibration import (
     CalibrationBlocks,
     add_series,
@@ -20,8 +19,6 @@ from accelmo.poco.calibration import (
 from accelmo.poco.workers.closed_orbit import ClosedOrbitWorker
 
 if TYPE_CHECKING:
-    from pymadng import MAD
-
     from accelmo.fitting.protocol import Evaluate
     from accelmo.poco.workers.closed_orbit import SeriesState
 
@@ -38,11 +35,11 @@ class CalibratedClosedOrbitWorker(ClosedOrbitWorker):
     either state) gets no gain knob and is never scaled.
 
     The knob dict it receives carries the gains next to the magnet knobs (names from :mod:`accelmo.poco.calibration`);
-    MAD-NG never sees them. Its reply carries the blocks' header (``b`` coupling, diagonal, gradient, loss-normalisation
+    the engine never sees them. Its reply carries the blocks' header (``b`` coupling, diagonal, gradient, loss-normalisation
     constant) in :attr:`~accelmo.fitting.protocol.GradReply.extra`, followed on the pipe by the blocks' arrays.
     """
 
-    def _setup_da_maps(self, mad: MAD) -> None:
+    def extra_knobs(self) -> list[str]:
         """One more knob per corrector that is on in this worker's series: its gain offset, after the magnet knobs."""
         correctors = list(
             dict.fromkeys(
@@ -53,48 +50,44 @@ class CalibratedClosedOrbitWorker(ClosedOrbitWorker):
                 and value != 0.0
             )
         )
-        gain_knobs = [corrector_gain_knob_name(corrector) for corrector in correctors]
-        if gain_knobs:
-            mad.send("\n".join(f"loaded_sequence['{knob}'] = 0" for knob in gain_knobs))
-        mad["knob_names"] = [name for name in mad["knob_names"] if name != "pt"] + gain_knobs
-        super()._setup_da_maps(mad)
-        #: Number of magnet knobs; ``n_knobs`` also counts the gain knobs.
-        self.n_q = self.n_knobs - len(gain_knobs)
         #: The correctors with a gain knob, in Jacobian column order (columns ``n_q`` onwards).
         self._correctors = correctors
+        return [corrector_gain_knob_name(corrector) for corrector in correctors]
 
-    def _enter_state(self, mad: MAD, role: str, knob_updates: dict[str, float]) -> None:
+    def on_start(self, knobs: dict[str, float]) -> None:
+        super().on_start(knobs)
+        #: Number of magnet knobs; ``n_knobs`` also counts the gain knobs.
+        self.n_q = self.n_knobs - len(self._correctors)
+
+    def _enter_state(self, role: str, knob_updates: dict[str, float]) -> None:
         """Enter *role*'s state with every corrector kick ``k`` set to ``k * (1 + g + gain knob)``.
 
-        The gain knob is 0, so the value is ``k * (1 + g)``, and its Jacobian column is d(orbit)/d(g). The kick is a deferred
-        expression, like the magnet strengths, so it follows the knobs when they are made plain (``knobs_to_plain``).
+        The gain knob is 0, so the value is ``k * (1 + g)``, and its Jacobian column is d(orbit)/d(g).
         """
         state = self._states[role]
-        assign_state(mad, state)
+        self.engine.assign_state(state)
         spec = self.series[0].data.calibration
-        commands = []
+        scaled = []
         for name, kick in state.items():
             corrector = spec.corrector_of(name)
             if corrector in self._correctors and kick != 0.0:
                 gain = 1.0 + float(knob_updates.get(corrector_gain_name(corrector), 0.0))
-                knob = corrector_gain_knob_name(corrector)
-                commands.append(f"MADX['{name}'] = \\-> {kick:.15e} * ({gain:.15e} + loaded_sequence['{knob}'])")
-        if commands:
-            mad.send("\n".join(commands))
+                scaled.append((name, kick, gain, corrector_gain_knob_name(corrector)))
+        self.engine.scale_globals(scaled)
 
     def _loss_unit(self) -> float:
         return 1.0 / (self.weight_scale * self.normalisation_points)
 
-    def evaluate(self, mad: MAD, message: Evaluate) -> GradReply:
+    def evaluate(self, message: Evaluate) -> GradReply:
         if message.loss_only:
-            return self._loss_only(mad, message.knobs)
+            return self._loss_only(message.knobs)
         knob_updates = message.knobs
-        self.send_knobs(mad, knob_updates)
+        self.engine.set_knobs(knob_updates)
         spec = self.series[0].data.calibration
         n_g, n_b = len(spec.correctors), len(PLANES) * len(spec.bpms)
         blocks = CalibrationBlocks(self.n_q, n_g, n_b, self._shared_buffer(CalibrationBlocks.nbytes(self.n_q, n_g, n_b)))
         for series in self.series:
-            if not self._evaluate_calibrated(mad, series, knob_updates, spec, blocks):
+            if not self._evaluate_calibrated(series, knob_updates, spec, blocks):
                 return GradReply(self.worker_id, float("nan"), np.zeros(1), extra={})
         blocks.symmetrise()
         blocks.scale(1.0 / self.normalisation_points)
@@ -119,34 +112,31 @@ class CalibratedClosedOrbitWorker(ClosedOrbitWorker):
             self._shared.unlink()
             self._shared = None
 
-    def _loss_only(self, mad: MAD, knob_updates: dict[str, float]) -> GradReply:
+    def _loss_only(self, knob_updates: dict[str, float]) -> GradReply:
         """Data loss alone, from plain closed-orbit solves (no knob parameters, no Jacobian, no Hessian).
 
         The same loss as the blocks' ``loss`` of a full evaluation; the reply's ``extra`` is
         ``{"loss": normalised loss, "loss_unit": ...}``.
         """
-        self.send_knobs(mad, knob_updates)
+        self.engine.set_knobs(knob_updates)
         total = 0.0
-        mad.send("knobs_to_plain()")
-        try:
+        with self.engine.plain_knobs():
             for series in self.series:
-                part = self._evaluate_calibrated_loss(mad, series, knob_updates)
+                part = self._evaluate_calibrated_loss(series, knob_updates)
                 if part is None:
                     return GradReply(self.worker_id, float("nan"), np.zeros(1), extra={})
                 total += part
-        finally:
-            mad.send("knobs_to_param()")
         loss = total / self.normalisation_points
         return GradReply(self.worker_id, loss, np.zeros(1), extra={"loss": loss, "loss_unit": self._loss_unit()})
 
     def _evaluate_calibrated_loss(
-        self, mad: MAD, series: SeriesState, knob_updates: dict[str, float]
+        self, series: SeriesState, knob_updates: dict[str, float]
     ) -> float | None:
         """One series' ``sum w ((1 + b) * model - target)^2`` as in :func:`add_series`, from orbit values only."""
         loss = 0.0
         names = series.twiss_bpm_order
-        with self._in_series(mad, series):
-            for index, model in self._models(mad, series, knob_updates, self._orbit_plain):
+        with self._in_series(series):
+            for index, model in self._models(series, knob_updates, self._orbit_plain):
                 if model is None:
                     return None
                 observables, targets, weights, _raw = series.alignment[index]
@@ -158,13 +148,13 @@ class CalibratedClosedOrbitWorker(ClosedOrbitWorker):
         return loss
 
     def _evaluate_calibrated(
-        self, mad: MAD, series: SeriesState, knob_updates: dict[str, float], spec, blocks: CalibrationBlocks
+        self, series: SeriesState, knob_updates: dict[str, float], spec, blocks: CalibrationBlocks
     ) -> bool:
         """Add one series' blocks to ``blocks``; ``False`` if its closed orbit is lost."""
         bpm_index = {name: i for i, name in enumerate(spec.bpms)}
         corrector_indices = [spec.correctors.index(corrector) for corrector in self._correctors]
-        with self._in_series(mad, series):
-            for index, model in self._models(mad, series, knob_updates, self._model_and_jacobian):
+        with self._in_series(series):
+            for index, model in self._models(series, knob_updates, self._model_and_jacobian):
                 if model is None:
                     return False
                 values, jacobian = model

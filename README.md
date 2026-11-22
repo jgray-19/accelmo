@@ -1,7 +1,7 @@
 # accelmo
 
-[![Coverage Status](https://github.com/jgray-19/sgd-magnet-tuner/actions/workflows/coverage.yml/badge.svg)](https://github.com/jgray-19/sgd-magnet-tuner/actions/workflows/coverage.yml)
-[![codecov](https://codecov.io/github/jgray-19/sgd-magnet-tuner/graph/badge.svg?token=Y1KZACDFPL)](https://codecov.io/github/jgray-19/sgd-magnet-tuner)
+[![Coverage Status](https://github.com/jgray-19/accelmo/actions/workflows/coverage.yml/badge.svg)](https://github.com/jgray-19/accelmo/actions/workflows/coverage.yml)
+[![codecov](https://codecov.io/github/jgray-19/accelmo/graph/badge.svg?token=Y1KZACDFPL)](https://codecov.io/github/jgray-19/accelmo)
 
 Estimation of accelerator magnet errors (strengths, misalignments and tilts) from
 beam measurements, using gradient-based optimisation of MAD-NG models.
@@ -16,15 +16,15 @@ Two families of fit are provided:
 
 Supported machines: LHC, PSB, SPS and FCC.
 
-Full documentation: <https://jgray-19.github.io/sgd-magnet-tuner/>
+Full documentation: <https://jgray-19.github.io/accelmo/>
 
 ## Installation
 
 Requires Python 3.11 or later.
 
 ```bash
-git clone https://github.com/jgray-19/sgd-magnet-tuner.git
-cd sgd-magnet-tuner
+git clone https://github.com/jgray-19/accelmo.git
+cd accelmo
 pip install -e .
 ```
 
@@ -33,10 +33,8 @@ Optional dependency groups:
 | Extra | Contents |
 |---|---|
 | `tracking` | omc3, cpymad, pyarrow, psutil (required by the tracking workflows) |
-| `measurements` | tmom-recon (momentum reconstruction) |
 | `monitor` | Panel, for the live fit monitor (`python -m accelmo.monitor`) |
-| `cern` | nxcals (CERN logging database access) |
-| `test` | pytest, pytest-cov, pytest-xdist, xtrack-tools |
+| `test` | pytest, pytest-cov, pytest-xdist |
 | `docs` | Sphinx and theme |
 | `dev` | ruff, pre-commit |
 
@@ -46,17 +44,15 @@ pip install -e ".[test,docs,tracking]"
 
 ### Companion packages
 
-Several workflows depend on companion packages installed from GitHub:
+Companion packages:
 
 | Package | Purpose |
 |---|---|
-| [pymadng-utils](https://github.com/jgray-19/pymadng-utils) | Shared accelerator abstractions, dp/p and pt conversion, knob-file I/O |
-| [tmom-recon](https://github.com/jgray-19/tmom-recon) | Transverse momentum, AC-dipole and optics reconstruction |
+| [pymadng-utils](https://pypi.org/project/pymadng-utils/) | Shared accelerator abstractions, dp/p and pt conversion, knob-file I/O |
 | [xtrack_tools](https://github.com/jgray-19/xtrack_tools) | Tracking helpers and dataframe conversion (tests) |
 
 ```bash
-pip install git+https://github.com/jgray-19/pymadng-utils.git
-pip install git+https://github.com/jgray-19/tmom-recon.git
+pip install pymadng-utils
 pip install git+https://github.com/jgray-19/xtrack_tools.git
 ```
 
@@ -141,7 +137,7 @@ misalignments observable.
 Measured orbits are always absolute. A plane in `absolute_planes` is fitted as is; every
 other plane is fitted as the change from the fitter's own `machine_state` to the series'
 state, the fitter subtracting each measurement's `reference` orbit. `machine_state` accepts a
-dictionary, a knobs file or a TFS corrector table; `accelmo.machine.mad.merge_machine_states`
+dictionary, a knobs file or a TFS corrector table; `accelmo.machine.machine_state.merge_machine_states`
 combines several. Accepted iterations are recorded in `fitter.history`, and
 `fitter.close()` shuts down the MAD-NG process.
 

@@ -22,10 +22,10 @@ epochs the fit stopped).
      - Machine definition: sequence file, kinetic energy, BPM pattern and the knob
        families to fit (``errors``, ``misalignments``).
    * - :class:`~accelmo.config.OptimiserConfig`
-     - Optimiser type (``adam`` or ``lbfgs``), epoch count, learning-rate schedule and
-       convergence criterion.
+     - Optimiser type (``adam``, ``lbfgs`` or ``levenberg_marquardt``), epoch count,
+       learning-rate schedule and convergence criterion.
    * - :class:`~accelmo.config.SimulationConfig`
-     - Worker and batch counts, data and validation fractions, outlier screening.
+     - Worker and batch counts, data and validation fractions.
    * - :class:`~accelmo.fitting.config.SequenceConfig`
      - Magnet range exposed to MAD-NG and BPMs to exclude.
    * - :class:`~accelmo.tracking.config.models.MeasurementConfig`
@@ -54,6 +54,15 @@ Fitters
    * - :class:`~accelmo.tracking.fitter.KickerFitter`
      - Kicker marker
      - One worker, forward only, ``turns_after_kicker`` turns.
+   * - :class:`~accelmo.tracking.fitter.ACDSinusoidFitter`
+     - First flattop turn of each bunch
+     - Forward over ``n_run_turns`` turns through the model AC kickers.
+   * - :class:`~accelmo.tracking.fitter.ACDTurnSinusoidFitter`
+     - Fitted, one state per turn at the ``before`` marker
+     - Backward from ``before`` and forward from ``after``; needs ``fit_start_coords``.
+
+All fit families, the knob families of each machine and the solvers are listed in
+:doc:`fit_families`.
 
 ``KickerFitter`` also takes a
 :class:`KickerConfig(kicker_name, turns_after_kicker) <accelmo.tracking.config.models.KickerConfig>`.
@@ -121,17 +130,12 @@ FitterOptions
 ``loss_callback``
     Called each epoch with the loss values.
 
-Validation and screening
-~~~~~~~~~~~~~~~~~~~~~~~~
+Validation
+~~~~~~~~~~
 
 ``SimulationConfig.validation_fraction`` (default 0.1) holds out a disjoint set of turns
 per file. These are never used for training, so the validation loss is out-of-sample.
 ``data_fraction`` is applied to the remaining training turns.
-
-With ``enable_preloop_outlier_screening`` (default on), the workers are evaluated at
-the initial knobs before optimisation. BPMs and workers whose loss z-score exceeds
-``bpm_loss_outlier_sigma`` or ``worker_loss_outlier_sigma`` are masked. The same mask
-is applied to the validation workers.
 
 Closed-twiss fits
 -----------------
@@ -161,7 +165,7 @@ more :class:`~accelmo.poco.closed_orbit.ClosedOrbitSeries`.
     series was measured. They are fixed inputs and may differ between series.
     Varying the quadrupole strengths between series makes quadrupole misalignments
     observable. Accepted forms are a dictionary, a knobs file or a TFS corrector
-    table; :func:`accelmo.machine.mad.machine_state.merge_machine_states` combines several. Setting
+    table; :func:`accelmo.machine.machine_state.merge_machine_states` combines several. Setting
     ``machine_state`` on the fitter provides a default inherited by every series.
 ``absolute_planes``
     Planes fitted as absolute orbits. The remaining planes are fitted as the change

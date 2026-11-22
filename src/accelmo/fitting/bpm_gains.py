@@ -12,6 +12,9 @@ import numpy as np
 PREFIX = "bpmgain"
 PLANES = ("x", "y")
 
+#: Width of the prior that holds a zero-mean gain group's mean at 0 (a near-exact constraint).
+ZERO_MEAN_SIGMA = 1e-5
+
 
 def bpm_gain_name(plane: str, bpm: str) -> str:
     return f"{PREFIX}.{plane}.{bpm}"

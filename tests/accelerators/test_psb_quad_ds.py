@@ -15,7 +15,7 @@ import numpy as np
 import pytest
 
 from accelmo.machine.accelerators import PSB
-from accelmo.machine.mad.optimising_mad_interface import (
+from accelmo.backend.madng.optimising_mad_interface import (
     GenericMadInterface,
     GradientDescentMadInterface,
 )

@@ -6,7 +6,7 @@ import pytest
 import tfs
 
 from accelmo.machine.accelerators import PSB
-from accelmo.machine.mad.aba_mad_interface import AbaMadInterface
+from accelmo.backend.madng.aba_mad_interface import AbaMadInterface
 
 if TYPE_CHECKING:
     from pathlib import Path

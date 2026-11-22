@@ -30,7 +30,7 @@ class OptimiserConfig:
     max_lr: float
     min_lr: float
     gradient_converged_value: float
-    optimiser_type: str = field(default="adam")  # Options: "adam", "lbfgs"
+    optimiser_type: str = field(default="adam")  # "adam", "lbfgs" or "levenberg_marquardt"
 
     # Smoothing factor of the moving averages of the gradient norm and the
     # relative loss change that the stopping rules use.
@@ -48,7 +48,6 @@ class OptimiserConfig:
 
     # L-BFGS-specific parameters (ignored for adam)
     lbfgs_history_size: int = field(default=10)
-    lbfgs_max_grad_norm: float | None = field(default=1.0)
     lbfgs_max_step_norm: float | None = field(default=1.0)
     lbfgs_powell_damping: float = field(default=0.2)
 
@@ -116,16 +115,29 @@ class SimulationConfig:
     # None leaves the library default.
     worker_blas_threads: int | None = field(default=1)
 
-    # Probe the workers at the initial knobs before optimising and mask BPMs and
-    # workers whose loss z-score exceeds the thresholds below, so grossly bad
-    # data cannot dominate the fit. Disable to obtain the raw per-BPM behaviour.
-    enable_preloop_outlier_screening: bool = field(default=True)
-    bpm_loss_outlier_sigma: float = field(default=3.0)
-    worker_loss_outlier_sigma: float = field(default=3.0)
-
     # Tracking fit: fit one gain per BPM and plane on the positions, reading =
     # (1 + g) * position, with a Gaussian prior of this width. None fits no gains.
     bpm_gain_sigma: float | None = field(default=None)
+
+    # Tracking LM fit: zero-centred Gaussian prior widths, as POCO's knob_sigmas: keyed by knob
+    # name or terminal attribute (e.g. dk1l); a BPM gain named here overrides bpm_gain_sigma.
+    knob_sigmas: dict[str, float] | None = field(default=None)
+
+    # Tracking LM fit: also fit every particle's start x, px, y, py.
+    fit_start_coords: bool = field(default=False)
+
+    # Tracking LM fit: the starts are functions of the BPM gains, s(g) = s_ref + S (g - g_ref),
+    # given by the initial-conditions callback as a StartGainMap; the gains' gradient and
+    # Gauss-Newton blocks include the path through the starts (docs/start_gain_chain_rule.md).
+    starts_follow_gains: bool = field(default=False)
+
+    # Tracking LM fit: planes ("x", "y") whose mean BPM gain is held at 0, for a common scale the data leave free.
+    bpm_gain_zero_mean_planes: tuple[str, ...] = field(default=())
+
+    @property
+    def start_derivatives(self) -> bool:
+        """Whether the workers return the start-coordinate derivative blocks."""
+        return self.fit_start_coords or self.starts_follow_gains
 
     def __post_init__(self):
         if self.n_run_turns < 1:
@@ -139,6 +151,11 @@ class SimulationConfig:
                 "SimulationConfig.validation_fraction must be in [0, 1), "
                 f"got {self.validation_fraction}"
             )
+
+        if unknown := set(self.bpm_gain_zero_mean_planes) - {"x", "y"}:
+            raise ValueError(f"bpm_gain_zero_mean_planes takes 'x' and 'y', got {sorted(unknown)}")
+        if self.bpm_gain_zero_mean_planes and self.bpm_gain_sigma is None:
+            raise ValueError("bpm_gain_zero_mean_planes needs fitted gains (bpm_gain_sigma)")
 
     def log_state(self) -> None:
         """Log the current simulation config settings."""

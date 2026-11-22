@@ -18,7 +18,7 @@ import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 import numpy as np
 
-from aba_optimiser.config import PROJECT_ROOT
+from accelmo.config import PROJECT_ROOT
 
 logger = logging.getLogger("plot_arc_comparison")
 
@@ -148,10 +148,6 @@ def find_simulation_results(point_label: str = "0", beam: int = 1) -> Path | Non
         results_file = sim_dir / "results.txt"
         if results_file.exists():
             return results_file
-        # Also check for point-specific subdirectories for backward compatibility
-        point_dir = sim_dir / f"beam{beam}_{point_label}"
-        if point_dir.exists() and (point_dir / "results.txt").exists():
-            return point_dir / "results.txt"
 
     logger.warning(f"Could not find simulation results for Beam{beam} point {point_label}")
     return None

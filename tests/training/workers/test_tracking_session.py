@@ -8,13 +8,11 @@ import numpy as np
 
 from accelmo.config import SimulationConfig
 from accelmo.fitting.pool import WorkerPool
-from accelmo.fitting.protocol import STOP, Ack, CommandKind, LossReply
+from accelmo.fitting.protocol import STOP, Ack
 from accelmo.fitting.worker import KickPlane, WorkerConfig
 from accelmo.machine.accelerators import PSB
 from accelmo.tracking.config.tracking import TrackingPlan
 from accelmo.tracking.data_manager import FileTracks
-from accelmo.tracking.dispatch.payloads import WorkerPayloadBuilder
-from accelmo.tracking.dispatch.screening import OutlierScreener
 from accelmo.tracking.dispatch.setup import WorkerRuntimeMetadata, WorkerSetupHelper
 from accelmo.tracking.session import TrackingSession
 from accelmo.tracking.uncertainty import UncertaintyPart, drain_uncertainty
@@ -84,18 +82,6 @@ def _start_pipe_worker(child_conn: multiprocessing.connection.Connection, respon
     return thread
 
 
-def _start_recording_worker(sink: list[object]) -> multiprocessing.connection.Connection:
-    """Return a parent pipe end whose fake worker records one message and acks it."""
-    parent, child = multiprocessing.Pipe()
-
-    def _run() -> None:
-        sink.append(child.recv())
-        child.send(Ack(0))
-
-    threading.Thread(target=_run, daemon=True).start()
-    return parent
-
-
 BPMS = ["BR3.BPM1L3", "BR3.BPM2L3", "BR3.BPM3L3", "BR3.BPM4L3"]
 
 
@@ -128,10 +114,6 @@ def _make_setup_helper(
         python_logfile=None,
         tracking_plan=TrackingPlan(),
     )
-
-
-def _screener(tmp_path: Path) -> OutlierScreener:
-    return OutlierScreener(WorkerPayloadBuilder(_make_psb(tmp_path)))
 
 
 def _make_tracks(all_bpms: list[str], turns: list[int]) -> FileTracks:
@@ -194,100 +176,6 @@ def test_session_payloads_take_per_file_artifacts_from_the_file_turn_map(tmp_pat
     assert init_pts[0] != init_pts[1]
 
 
-def test_build_bpm_masks_from_diagnostics_aggregates_multi_turn_losses(tmp_path: Path) -> None:
-    metadata = [
-        WorkerRuntimeMetadata(
-            worker_id=0,
-            file_idx=0,
-            start_bpm="BPH.13208",
-            end_bpm="BPV.20108",
-            sdir=1,
-            kick_plane=KickPlane.XY,
-            n_run_turns=2,
-            bpm_names=["BPH.13208", "BPH.13608"],
-        )
-    ]
-
-    masks = _screener(tmp_path).build_bpm_masks_from_diagnostics(
-        diagnostics=[LossReply(0, 102.0, np.array([1.0, 50.0, 1.0, 50.0]))],
-        worker_metadata=metadata,
-        bpm_sigma_threshold=0.5,
-    )
-
-    assert len(masks) == 1
-    assert masks[0].tolist() == [True, False]
-
-
-def test_apply_screening_actions_expands_masks_across_turns(tmp_path: Path) -> None:
-    pool = WorkerPool()
-    received: list[list[object]] = [[], []]
-    pool.conns = [_start_recording_worker(sink) for sink in received]
-    pool.workers = [_FakeWorker(), _FakeWorker()]  # type: ignore[list-item]
-    pool.metadata = [
-        WorkerRuntimeMetadata(
-            worker_id=0,
-            file_idx=0,
-            start_bpm="BPH.13208",
-            end_bpm="BPV.20108",
-            sdir=1,
-            kick_plane=KickPlane.XY,
-            n_run_turns=2,
-            bpm_names=["BPH.13208", "BPH.13608"],
-        ),
-        WorkerRuntimeMetadata(
-            worker_id=1,
-            file_idx=1,
-            start_bpm="BPV.13308",
-            end_bpm="BPV.20108",
-            sdir=1,
-            kick_plane=KickPlane.XY,
-            n_run_turns=1,
-            bpm_names=["BPV.13308", "BPV.20108"],
-        ),
-    ]
-
-    _screener(tmp_path).apply_screening_actions(
-        pool,
-        bpm_masks=[np.array([True, False]), np.array([False, True])],
-        worker_disabled=[False, True],
-    )
-
-    for sink, mask, disabled in zip(
-        received, ([True, False, True, False], [False, True]), (False, True), strict=True
-    ):
-        (command,) = sink
-        assert command.kind is CommandKind.APPLY_MASK
-        assert command.payload["keep_bpm_mask"].tolist() == mask
-        assert command.payload["disable_worker"] is disabled
-
-def test_summarise_screening_losses_logs_pre_and_projected_loss(tmp_path: Path, caplog) -> None:
-    metadata = [
-        WorkerRuntimeMetadata(
-            worker_id=0,
-            file_idx=0,
-            start_bpm="BPH.13208",
-            end_bpm="BPV.20108",
-            sdir=1,
-            kick_plane=KickPlane.XY,
-            n_run_turns=2,
-            bpm_names=["BPH.13208", "BPH.13608"],
-        )
-    ]
-
-    with caplog.at_level("INFO"):
-        _screener(tmp_path).summarise_screening_losses(
-            diagnostics=[LossReply(0, 20.0, np.array([1.0, 9.0, 1.0, 9.0]))],
-            bpm_masks=[np.array([True, False])],
-            worker_disabled=[False],
-            worker_metadata=metadata,
-        )
-
-    assert "Pre-screening loss summary" in caplog.text
-    assert "Projected post-screening loss summary" in caplog.text
-    assert "total=2.000000e+01" in caplog.text
-    assert "total=2.000000e+00" in caplog.text
-
-
 def test_validation_worker_keeps_all_held_out_turns_with_nondividing_batch_count(
     tmp_path: Path,
 ) -> None:
@@ -304,7 +192,9 @@ def test_validation_worker_keeps_all_held_out_turns_with_nondividing_batch_count
         init_pts=np.zeros((n_tracks,), dtype=np.float64),
         reading_ids=np.zeros(shape, dtype=np.int64),
         init_reading_ids=np.zeros((n_tracks,), dtype=np.int64),
-        init_variances=np.ones((n_tracks, 2), dtype=np.float64),
+        init_variances=np.ones((n_tracks, 4), dtype=np.float64),
+
+        start_turn_offsets=np.zeros(n_tracks, dtype=np.int64),
         precomputed_weights=PrecomputedTrackingWeights(
             x=np.ones(shape, dtype=np.float64),
             y=np.ones(shape, dtype=np.float64),

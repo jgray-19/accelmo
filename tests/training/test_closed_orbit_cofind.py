@@ -41,8 +41,8 @@ import pytest
 from accelmo.config import SimulationConfig
 from accelmo.fitting.worker import WorkerConfig
 from accelmo.machine.accelerators import PSB
-from accelmo.machine.mad import GradientDescentMadInterface
-from accelmo.machine.mad.scripts import CLOSED_TWISS_INIT, PYTHON_IN_MAD
+from accelmo.backend.madng import GradientDescentMadInterface
+from accelmo.backend.madng.scripts import CLOSED_TWISS_INIT, PYTHON_IN_MAD
 from accelmo.poco.workers.closed_orbit import (
     ClosedOrbitMeasurementData,
     ClosedOrbitSeriesData,
@@ -52,7 +52,6 @@ from accelmo.poco.workers.closed_twiss import (
     ClosedTwissData,
     ClosedTwissWorker,
     Observable,
-    read_orbit_only,
 )
 
 from .test_closed_twiss_fitter import DELTAS, _fake_measurement, _fit, _knob_names
@@ -89,8 +88,15 @@ def _solve(mad: MAD, solver: str, n_knobs: int):
     mad.send(f"{solver}()")
     assert mad.recv(), f"{solver} failed"
     if solver == "compute_closed_orbit":
-        names, orbit, jac = read_orbit_only(mad, len(COORDS), n_knobs)
-        return names, dict(zip(COORDS, orbit)), dict(zip(COORDS, jac))
+        mad.send("send_orbit_only()")
+        names = list(mad.recv())
+        orbit, jac = {}, {}
+        for coord in COORDS:
+            orbit[coord] = np.asarray(mad.recv(), dtype=float).ravel()
+            jac[coord] = np.asarray(mad.recv(), dtype=float).reshape(len(names), max(n_knobs, 1))[
+                :, :n_knobs
+            ]
+        return names, orbit, jac
     frame = mad.closed_tbl.to_df(columns=["name", *COORDS])
     n_bpms = len(frame)
     mad.send("send_orbit_jacobian()")
@@ -198,7 +204,7 @@ def _observables(names: tuple[str, ...], n_bpms: int = 4) -> list[Observable]:
 def test_worker_picks_the_solver_from_its_observables(
     seq_psb: Path, names: tuple[str, ...], expected: str
 ) -> None:
-    """Only a fit with no optical function to normalise for skips twiss."""
+    """Only a fit with no optical function to normalise for skips twiss (``optics_names`` empty)."""
     bpms = ["BPM1", "BPM2", "BPM3", "BPM4"]
     data = ClosedTwissData(bpm_names=bpms, observables=_observables(names), pt=0.0)
     _parent, child = mp.Pipe()
@@ -209,7 +215,7 @@ def test_worker_picks_the_solver_from_its_observables(
         _worker_config(seq_psb),
         SimulationConfig(num_workers=1, num_batches=1),
     )
-    assert worker.closed_solver == expected
+    assert (not worker.optics_names) == (expected == "compute_closed_orbit()")
 
 
 def test_phase_only_orbit_series_keeps_twiss(seq_psb: Path) -> None:
@@ -225,7 +231,7 @@ def test_phase_only_orbit_series_keeps_twiss(seq_psb: Path) -> None:
         worker = ClosedOrbitWorker(
             child, 0, [series], _worker_config(seq_psb), SimulationConfig(num_workers=1, num_batches=1)
         )
-        assert worker.closed_solver == expected, names
+        assert (not worker.optics_names) == (expected == "compute_closed_orbit()"), names
 
 
 @pytest.mark.slow

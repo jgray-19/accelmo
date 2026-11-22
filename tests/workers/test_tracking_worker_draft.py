@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from accelmo.machine.mad.scripts import dump_debug_script
+from accelmo.backend.madng.scripts import dump_debug_script
 from accelmo.tracking.worker import TrackingWorker, active_observables
 
 
@@ -10,32 +10,31 @@ def _build_worker(*, include_momentum: bool = True) -> TrackingWorker:
     worker = object.__new__(TrackingWorker)
     worker.observables = active_observables("xy", include_momentum)
     worker.comparisons = {
-        "x": [np.array([[1.0, 5.0]])],
-        "y": [np.array([[2.0, 6.0]])],
-        "px": [np.array([[3.0, 7.0]])],
-        "py": [np.array([[4.0, 8.0]])],
+        "x": [np.array([[1.0]])],
+        "y": [np.array([[2.0]])],
+        "px": [np.array([[3.0]])],
+        "py": [np.array([[4.0]])],
     }
     worker.weights = {
-        "x": [np.array([[1.0, 10.0]])],
-        "y": [np.array([[2.0, 20.0]])],
-        "px": [np.array([[3.0, 30.0]])],
-        "py": [np.array([[4.0, 40.0]])],
+        "x": [np.array([[1.0]])],
+        "y": [np.array([[2.0]])],
+        "px": [np.array([[3.0]])],
+        "py": [np.array([[4.0]])],
     }
-    worker.keep_bpm_mask = np.array([True, False])
     return worker
 
 
 def test_tracking_worker_accumulates_all_configured_observables() -> None:
     worker = _build_worker()
     results = {
-        "x": np.array([[2.0, 100.0]]),
-        "y": np.array([[4.0, 100.0]]),
-        "px": np.array([[6.0, 100.0]]),
-        "py": np.array([[8.0, 100.0]]),
-        "dx_dk": np.array([[[1.0, 99.0]]]),
-        "dy_dk": np.array([[[1.0, 99.0]]]),
-        "dpx_dk": np.array([[[1.0, 99.0]]]),
-        "dpy_dk": np.array([[[1.0, 99.0]]]),
+        "x": np.array([[2.0]]),
+        "y": np.array([[4.0]]),
+        "px": np.array([[6.0]]),
+        "py": np.array([[8.0]]),
+        "dx_dk": np.array([[[1.0]]]),
+        "dy_dk": np.array([[[1.0]]]),
+        "dpx_dk": np.array([[[1.0]]]),
+        "dpy_dk": np.array([[[1.0]]]),
     }
 
     grad, loss = worker._compute_loss_and_gradients(results, batch=0)
@@ -47,10 +46,10 @@ def test_tracking_worker_accumulates_all_configured_observables() -> None:
 def test_position_only_tracking_worker_ignores_momentum_observables() -> None:
     worker = _build_worker(include_momentum=False)
     results = {
-        "x": np.array([[2.0, 100.0]]),
-        "y": np.array([[4.0, 100.0]]),
-        "dx_dk": np.array([[[1.0, 99.0]]]),
-        "dy_dk": np.array([[[1.0, 99.0]]]),
+        "x": np.array([[2.0]]),
+        "y": np.array([[4.0]]),
+        "dx_dk": np.array([[[1.0]]]),
+        "dy_dk": np.array([[[1.0]]]),
     }
 
     grad, loss = worker._compute_loss_and_gradients(results, batch=0)
@@ -63,10 +62,10 @@ def test_tracking_worker_supports_single_plane_observable_sets() -> None:
     worker = _build_worker()
     worker.observables = ("x", "px")
     results = {
-        "x": np.array([[2.0, 100.0]]),
-        "px": np.array([[6.0, 100.0]]),
-        "dx_dk": np.array([[[1.0, 99.0]]]),
-        "dpx_dk": np.array([[[1.0, 99.0]]]),
+        "x": np.array([[2.0]]),
+        "px": np.array([[6.0]]),
+        "dx_dk": np.array([[[1.0]]]),
+        "dpx_dk": np.array([[[1.0]]]),
     }
 
     grad, loss = worker._compute_loss_and_gradients(results, batch=0)

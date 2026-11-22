@@ -7,10 +7,9 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from accelmo.config import OptimiserConfig
 from accelmo.fitting.config import OutputConfig, SequenceConfig
 from accelmo.machine.accelerators import PSB
-from accelmo.machine.mad import merge_machine_states
+from accelmo.machine.machine_state import merge_machine_states
 from accelmo.tracking.config.helpers import create_arc_measurement_config
 from accelmo.tracking.config.models import KickerConfig
 from accelmo.tracking.fitter import FitterOptions, KickerFitter
@@ -18,12 +17,14 @@ from tests.training.controller_test_utils import (
     _generate_kicker_track,
     _make_simulation_config_quad,
     evaluate_controller_worker_loss,
+    make_lm_config,
+    relative_truth_errors,
 )
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from accelmo.machine.mad.aba_mad_interface import AbaMadInterface
+    from accelmo.backend.madng.aba_mad_interface import AbaMadInterface
 
 logger = logging.getLogger(__name__)
 pytestmark = pytest.mark.serial
@@ -46,14 +47,7 @@ def _build_kicker_controller(
         dpp_value=0.0,
         bpm_pattern=r"(?i)br3\.bpm.*",
     )
-    optimiser_config = OptimiserConfig(
-        max_epochs=500,
-        warmup_epochs=100,
-        warmup_lr_start=1e-4,
-        max_lr=1e-3,
-        min_lr=1e-4,
-        gradient_converged_value=5e-20,
-    )
+    optimiser_config = make_lm_config()
 
     ctrl = KickerFitter(
         PSB(
@@ -143,27 +137,10 @@ def test_controller_quad_opt_with_kicker(
         )
         return
 
-    initial_sum_true_diff = sum(
-        abs(ctrl.machine.initial_knobs[magnet] - magnet_strengths[magnet])
-        for magnet in magnet_strengths
-    )
     estimate = ctrl.run().knobs
-    final_sum_true_diff = sum(
-        abs(estimate[magnet] - magnet_strengths[magnet])
-        for magnet in magnet_strengths
+    rel_error, rel_improvement = relative_truth_errors(
+        estimate, magnet_strengths, ctrl.machine.initial_knobs
     )
-    final_ctrl, _ = _build_kicker_controller(
-        tmp_path=tmp_path,
-        seq_psb=seq_psb,
-        loaded_psb_interface=loaded_psb_interface,
-    )
-    final_loss = evaluate_controller_worker_loss(final_ctrl, estimate)
-
-    assert final_loss < initial_loss * 0.05, (
-        "Kicker optimisation should reduce the worker loss substantially "
-        f"(initial={initial_loss:.3e}, final={final_loss:.3e})"
-    )
-    assert final_sum_true_diff < initial_sum_true_diff, (
-        "Kicker optimisation should move the estimate closer to the true strengths "
-        f"(initial diff={initial_sum_true_diff:.3e}, final diff={final_sum_true_diff:.3e})"
-    )
+    # measured 2026-11-12: rel error = rel improvement = 5.2e-3 (one weak knob, 10 turns)
+    assert rel_error < 1e-2
+    assert rel_improvement < 1e-2

@@ -121,6 +121,42 @@ def test_corrector_kick_gain_is_recovered(seq_k: Path) -> None:
     assert gains["corrgain.DHZ2L4"] - gains["corrgain.DHZ8L1"] == pytest.approx(0.1, abs=0.03)
 
 
+def test_corrector_gain_pattern_fits_only_matching_correctors(seq_k: Path) -> None:
+    """Only DHZ2L4 gets a gain; DHZ8L1's exact kicks fix the BPM scale, so its 10% gain comes back absolutely."""
+    truth = _truth(seq_k, seed=8)
+    labels = ("nominal", "both", "opposite", "focusing-up", "defocusing-down")
+    series = [_series(seq_k, truth, label, "k_dhz2l4", gain=0.1) for label in labels]
+    series += [_series(seq_k, truth, label, "k_dhz8l1") for label in labels]
+
+    fitter = _fitter(seq_k, series, sigma_corrector=0.5, corrector_gain_pattern="DHZ2L4")
+    try:
+        fitter.run()
+    finally:
+        fitter.close()
+
+    assert fitter.calibration_spec.correctors == ("DHZ2L4",)
+    gains = fitter.calibration_result
+    assert "corrgain.DHZ8L1" not in gains
+    assert gains["corrgain.DHZ2L4"] == pytest.approx(0.1, abs=0.01)
+
+def test_zero_mean_gain_pattern_moves_the_common_scale_to_the_bpms(seq_k: Path) -> None:
+    """Both correctors kick 10% high: with their mean gain held at 0, the x BPM gains take the common +10%."""
+    truth = _truth(seq_k, seed=8)
+    labels = ("nominal", "both", "opposite", "focusing-up", "defocusing-down")
+    series = [_series(seq_k, truth, label, corrector, gain=0.1) for label in labels for corrector in ("k_dhz2l4", "k_dhz8l1")]
+
+    fitter = _fitter(seq_k, series, sigma_corrector=0.5, sigma_bpm=0.5, zero_mean_gain_pattern="DHZ.*")
+    try:
+        fitter.run()
+    finally:
+        fitter.close()
+
+    gains = fitter.calibration_result
+    assert gains["corrgain.DHZ2L4"] + gains["corrgain.DHZ8L1"] == pytest.approx(0.0, abs=1e-4)
+    assert gains["corrgain.DHZ2L4"] == pytest.approx(0.0, abs=0.01)
+    bpm_x = [value for name, value in gains.items() if name.startswith("bpmgain.x.")]
+    assert np.mean(bpm_x) == pytest.approx(0.1, abs=0.01)
+
 def test_off_momentum_series_without_a_kick_joins_a_gain_fit(seq_k: Path) -> None:
     """The dispersion orbit has no corrector in its state; it constrains the magnets and leaves the gain fit working.
 

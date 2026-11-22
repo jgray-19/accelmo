@@ -42,6 +42,7 @@ class SPS(Accelerator):
         misalignments: Mapping[str, Iterable[str]] | None = None,
         optimise_energy: bool = False,
         custom_knobs_to_optimise: list[str] | None = None,
+        backend: str = "madng",
     ):
         super().__init__(
             sequence_file=sequence_file,
@@ -51,6 +52,7 @@ class SPS(Accelerator):
             misalignments=misalignments,
             optimise_energy=optimise_energy,
             custom_knobs_to_optimise=custom_knobs_to_optimise,
+            backend=backend,
         )
 
     def copy_with(self, **overrides) -> SPS:

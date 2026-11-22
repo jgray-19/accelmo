@@ -25,7 +25,7 @@ import pytest
 from accelmo.config import OptimiserConfig, SimulationConfig
 from accelmo.fitting.config import OutputConfig, SequenceConfig
 from accelmo.fitting.uncertainty import sandwich_uncertainties
-from accelmo.machine.mad import merge_machine_states
+from accelmo.machine.machine_state import merge_machine_states
 from accelmo.tracking.config.helpers import create_arc_measurement_config
 from accelmo.tracking.config.models import MeasurementConfig
 from accelmo.tracking.fitter import ArcByArcFitter, FitterOptions
@@ -40,7 +40,7 @@ from tests.training.controller_test_utils import (
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from accelmo.machine.mad.aba_mad_interface import AbaMadInterface
+    from accelmo.backend.madng.aba_mad_interface import AbaMadInterface
 
 pytestmark = [pytest.mark.slow, pytest.mark.serial]
 

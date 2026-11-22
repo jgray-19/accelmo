@@ -8,7 +8,7 @@ import pytest
 import tfs
 
 from accelmo.machine.accelerators import LHC
-from accelmo.machine.mad.optimising_mad_interface import GenericMadInterface
+from accelmo.backend.madng.optimising_mad_interface import GenericMadInterface
 
 if TYPE_CHECKING:
     from pathlib import Path

@@ -20,7 +20,7 @@ from accelmo.fitting.uncertainty import hessian_uncertainties, warn_if_singular
 from accelmo.fitting.weights import global_weight_scale, variance_to_weight
 from accelmo.fitting.worker import WorkerConfig
 from accelmo.optimisers.levenberg_marquardt import LevenbergMarquardtConfig
-from accelmo.poco.lm_loop import LMPoint, run_levenberg_marquardt
+from accelmo.fitting.lm_loop import LMPoint, run_levenberg_marquardt
 from accelmo.poco.prior import (
     apply_prior,
     prior_alphas,
@@ -43,8 +43,8 @@ logger = logging.getLogger(__name__)
 
 
 #: Measurement columns backing each fittable observable, as
-#: ``observable -> (value column, error column)`` in the frame produced by
-#: ``tmom_recon.build_twiss_from_measurements``.
+#: ``observable -> (value column, error column)`` in the measured
+#: optics frame.
 #:
 #: ``mu1``/``mu2`` are special: the measured frame carries the *cumulative* phase
 #: and its cumulative variance, which are differenced into per-interval advances
@@ -269,7 +269,7 @@ class ClosedTwissFitter(LMFitter):
         self,
         accelerator: Accelerator,
         sequence_config: SequenceConfig,
-        measurements: dict[float, str | Path | pd.DataFrame],
+        measurements: dict[float, pd.DataFrame],
         observables: tuple[str, ...] = DEFAULT_OBSERVABLES,
         lm_config: LevenbergMarquardtConfig | None = None,
         initial_knob_strengths: dict[str, float] | None = None,
@@ -303,8 +303,8 @@ class ClosedTwissFitter(LMFitter):
             output_config=output_config,
         )
         self.measurements = {
-            float(pt): load_measurement(source, observables)
-            for pt, source in measurements.items()
+            float(pt): load_measurement(frame, observables)
+            for pt, frame in measurements.items()
         }
         interface_options = {} if machine_state is None else {"machine_state": machine_state}
         self.worker_payloads = create_worker_payloads(
@@ -337,36 +337,21 @@ def _hessian_uncertainties(
     return dict(zip(knob_names, (float(s) for s in sigmas), strict=False))
 
 
-def load_measurement(
-    source: str | Path | pd.DataFrame, observables: tuple[str, ...]
-) -> pd.DataFrame:
-    """Load a measured optics set as a DataFrame indexed by BPM name.
+def load_measurement(measurement: pd.DataFrame, observables: tuple[str, ...]) -> pd.DataFrame:
+    """Validate a measured optics set (DataFrame indexed by BPM name) for the fit.
 
     Args:
-        source: Either an omc3 measurement folder or a DataFrame already carrying
-            the columns listed in :data:`MEASUREMENT_COLUMNS`.
+        measurement: DataFrame carrying the columns listed in :data:`MEASUREMENT_COLUMNS`.
         observables: Observable names that must be present.
 
     Returns:
-        DataFrame indexed by BPM name. Missing error columns are filled with NaN.
+        Copy of ``measurement``. Missing error columns are filled with NaN.
         Individual NaN errors drop their own points; an observable whose errors
         are *all* unusable is rejected by :func:`_build_observable` unless the
         caller passes ``use_errors=False``, because a family with no variances
         cannot be weighted commensurably against families that have them.
     """
-    if isinstance(source, pd.DataFrame):
-        measurement = source.copy()
-    else:
-        from tmom_recon import build_twiss_from_measurements
-
-        logger.info("Loading optics from measurement folder %s", source)
-        measurement, has_dispersion = build_twiss_from_measurements(
-            Path(source), include_errors=True
-        )
-        if not has_dispersion and any(name in ("dx", "dy") for name in observables):
-            raise ValueError(
-                f"Dispersion observables requested but {source} carries no dispersion data"
-            )
+    measurement = measurement.copy()
 
     missing = [
         MEASUREMENT_COLUMNS[name][0]

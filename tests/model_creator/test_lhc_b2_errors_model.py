@@ -22,7 +22,7 @@ from pymadng_utils.io.utils import save_knobs
 from pymadng_utils.madx.make_sequence import make_madx_sequence
 
 from accelmo.machine.accelerators import LHC
-from accelmo.machine.mad.optimising_mad_interface import GenericMadInterface
+from accelmo.backend.madng.optimising_mad_interface import GenericMadInterface
 
 BEAM = 1
 ENERGY_GEV = 6800.0

@@ -60,8 +60,8 @@ from accelmo.fitting.pool import WorkerPool
 from accelmo.fitting.protocol import Start
 from accelmo.fitting.reduction import reduce_replies
 from accelmo.machine.accelerators import PSB
-from accelmo.machine.mad import GradientDescentMadInterface
-from accelmo.machine.mad.scripts import CLOSED_TWISS_INIT, PYTHON_IN_MAD
+from accelmo.backend.madng import GradientDescentMadInterface
+from accelmo.backend.madng.scripts import CLOSED_TWISS_INIT, PYTHON_IN_MAD
 from accelmo.poco import (
     DEFAULT_OBSERVABLES,
     ClosedTwissFitter,

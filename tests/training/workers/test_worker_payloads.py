@@ -183,7 +183,9 @@ def _weight_payload(accelerator, position_var, momentum_var, kick_plane=KickPlan
         init_pts=np.array([0.01]),
         reading_ids=np.zeros((1, 1), dtype=np.int64),
         init_reading_ids=np.zeros(1, dtype=np.int64),
-        init_variances=np.ones((1, 2)),
+        init_variances=np.ones((1, 4)),
+
+        start_turn_offsets=np.zeros(1, dtype=np.int64),
         precomputed_weights=None,
     )
     config = WorkerConfig(
@@ -223,14 +225,3 @@ def test_position_only_runs_do_not_let_momenta_set_the_normalisation(tmp_path) -
     assert np.allclose(weights.y, [[1.0]])
     assert np.allclose(weights.px, [[1e4]])
     assert np.allclose(weights.py, [[1e4]])
-
-
-def test_diagnostic_loss_per_bpm_sums_over_tracked_turns() -> None:
-    per_bpm = WorkerPayloadBuilder.diagnostic_loss_per_bpm(
-        loss_per_point=np.array([1.0, 2.0, 3.0, 4.0]),
-        bpm_names=MARKERS[:2],
-        n_run_turns=2,
-        worker_id=0,
-    )
-
-    assert per_bpm.tolist() == [4.0, 6.0]

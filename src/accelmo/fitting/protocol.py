@@ -11,8 +11,7 @@ from __future__ import annotations
 
 import os
 import resource
-from dataclasses import dataclass, field
-from enum import Enum, auto
+from dataclasses import dataclass
 from multiprocessing.connection import wait
 from multiprocessing.reduction import ForkingPickler
 from typing import TYPE_CHECKING, Any, NoReturn
@@ -44,36 +43,54 @@ class Evaluate:
     ``batch`` selects a tracking worker's particle batch. ``loss_only`` asks a
     closed-orbit worker for the loss alone, from plain closed-orbit solves without
     knob derivatives (about 6x cheaper); the LM fit uses it for trial points.
+    ``curvature`` asks a tracking worker for the Gauss-Newton Hessian too, with loss,
+    gradient and Hessian all per particle and point (the tracking LM fit).
     """
 
     knobs: dict[str, float]
     batch: int = 0
     loss_only: bool = False
-
-
-class CommandKind(Enum):
-    """Control commands a tracking worker answers between evaluations."""
-
-    #: Total and per-point loss at ``payload["knobs"]``; answered with a :class:`LossReply`.
-    DIAGNOSE = auto()
-    #: Held-out loss at ``payload["knobs"]``; answered with a :class:`LossReply`.
-    VALIDATE = auto()
-    #: Install ``payload["keep_bpm_mask"]`` and ``payload["disable_worker"]``.
-    APPLY_MASK = auto()
-    #: Load ``payload["knobs"]`` into the model without evaluating.
-    SET_KNOBS = auto()
-    #: Replace the start coordinates ``payload["x" | "px" | "y" | "py"]``.
-    UPDATE_INIT_COORDS = auto()
-    #: Whether to propagate uncertainty on :class:`Stop` (``payload["enabled"]``).
-    SET_UNCERTAINTY_MODE = auto()
+    curvature: bool = False
 
 
 @dataclass(frozen=True)
-class Command:
-    """A control command and its arguments."""
+class Validate:
+    """Held-out loss at ``knobs``; answered with a :class:`LossReply`."""
 
-    kind: CommandKind
-    payload: dict[str, Any] = field(default_factory=dict)
+    knobs: dict[str, float]
+
+
+@dataclass(frozen=True)
+class Diagnose:
+    """Training loss at ``knobs``, summed over batches and per BPM point; a :class:`LossReply`."""
+
+    knobs: dict[str, float]
+
+
+@dataclass(frozen=True)
+class SetKnobs:
+    """Load ``knobs`` into the model without evaluating."""
+
+    knobs: dict[str, float]
+
+
+@dataclass(frozen=True)
+class UpdateInitCoords:
+    """Replace the start coordinates; ``coords`` has shape ``(particles, 4)``: x, px, y, py."""
+
+    coords: np.ndarray
+
+
+@dataclass(frozen=True)
+class SetUncertaintyMode:
+    """Whether to propagate uncertainty on :class:`Stop`."""
+
+    enabled: bool
+
+
+#: Control commands a tracking worker answers between evaluations with an :class:`Ack`
+#: or, for :class:`Validate` and :class:`Diagnose`, a :class:`LossReply`.
+Command = Validate | Diagnose | SetKnobs | UpdateInitCoords | SetUncertaintyMode
 
 
 @dataclass(frozen=True)
@@ -110,11 +127,10 @@ class GradReply:
 
 @dataclass
 class LossReply:
-    """A loss without derivatives; ``loss`` is ``None`` for a worker disabled by screening."""
+    """A loss without derivatives."""
 
     worker_id: int
-    loss: float | None
-    per_point: np.ndarray | None = None
+    loss: float
 
 
 @dataclass(frozen=True)
@@ -221,7 +237,7 @@ class WorkerChannels:
         self.send_all(command)
         for reply in self.recv_all():
             if not isinstance(reply, Ack):
-                raise RuntimeError(f"Unexpected reply to {command.kind.name}: {reply!r}")
+                raise RuntimeError(f"Unexpected reply to {type(command).__name__}: {reply!r}")
 
 
 #: pymadng waits on each MAD process with ``select()``, which rejects fd numbers >= 1024.

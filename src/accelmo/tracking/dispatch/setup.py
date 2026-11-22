@@ -46,7 +46,7 @@ class WorkerObservationPlan:
 
 @dataclass(frozen=True)
 class WorkerRuntimeMetadata:
-    """Fitter-side metadata retained for screening and diagnostics."""
+    """Fitter-side metadata of one worker."""
 
     worker_id: int
     file_idx: int
@@ -264,6 +264,7 @@ class WorkerSetupHelper:
                 self.tracking_plan.observed_tracking_anchor_markers
             ),
             cycle_marker=self.tracking_plan.cycle_marker,
+            named_marker_range=self.tracking_plan.named_marker_range,
         )
 
     @staticmethod

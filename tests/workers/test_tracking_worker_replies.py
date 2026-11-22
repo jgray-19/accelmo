@@ -25,7 +25,9 @@ def _worker(tmp_path, conn) -> TrackingWorker:
         init_pts=np.zeros(2),
         reading_ids=np.zeros(shape, dtype=np.int64),
         init_reading_ids=np.zeros(2, dtype=np.int64),
-        init_variances=np.ones((2, 2)),
+        init_variances=np.ones((2, 4)),
+
+        start_turn_offsets=np.zeros(2, dtype=np.int64),
         precomputed_weights=PrecomputedTrackingWeights(
             x=np.ones(shape), y=np.ones(shape), px=np.ones(shape), py=np.ones(shape), scale=1.0
         ),
@@ -44,6 +46,6 @@ def test_failed_training_worker_sends_no_uncertainty_part(tmp_path) -> None:
     parent, child = mp.Pipe()
     worker = _worker(tmp_path, child)
     worker.n_reply_knobs = 2  # set by ``on_start``, which needs MAD-NG
-    worker.on_stop(None, failed=True)
+    worker.on_stop(failed=True)
 
     assert not parent.poll(0.1)

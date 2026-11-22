@@ -12,8 +12,6 @@ import pandas as pd
 import pytest
 import xtrack as xt
 
-pytest.importorskip("tmom_recon")
-pytest.importorskip("xtrack_tools")
 from pymadng_utils.io.utils import save_knobs
 from xtrack_tools.coordinates import create_initial_conditions
 from xtrack_tools.kicker import _insert_exciter_at, _knl_ksl
@@ -26,9 +24,8 @@ from xtrack_tools.tracking import run_tracking, run_tracking_without_ac_dipole
 
 from accelmo.config import OptimiserConfig, SimulationConfig
 from accelmo.fitting.config import OutputConfig, SequenceConfig
-from accelmo.machine.mad import merge_machine_states
+from accelmo.machine.machine_state import merge_machine_states
 from accelmo.tracking.config.helpers import create_arc_measurement_config
-from accelmo.tracking.dispatch.screening import OutlierScreener
 from accelmo.tracking.fitter import ArcByArcFitter, FitterOptions, TrackingFitter
 from tests.training.helpers import TRACK_COLUMNS, generate_xsuite_env_with_errors
 
@@ -96,7 +93,7 @@ if TYPE_CHECKING:
 
     import xtrack as xt
 
-    from accelmo.machine.mad.aba_mad_interface import AbaMadInterface
+    from accelmo.backend.madng.aba_mad_interface import AbaMadInterface
 
 
 def _load_mad_twiss_for_tracking(
@@ -287,6 +284,7 @@ def _generate_kicker_track(
     magnet_strengths: dict[str, float] | None = None,
     bpms: list[str] | None = None,
     correctors: list[str] | None = None,
+    rel_error: float | None = None,
 ) -> tuple[Path | None, dict[str, float], Path | None, str]:
     """Generate a parquet file containing kicker tracking data with x/px/y/py.
 
@@ -313,6 +311,7 @@ def _generate_kicker_track(
         target_qy=target_qy,
         bpms=bpms,
         correctors=correctors,
+        rel_error=rel_error,
     )
     magnet_strengths = magnet_strengths or generated_strengths
     save_knobs(matched_tunes, tune_knobs)
@@ -487,6 +486,33 @@ def _run_energy_optimisation_case(
     return ctrl.run()
 
 
+def make_lm_config(max_iterations: int = 30) -> OptimiserConfig:
+    """Levenberg-Marquardt tracking fit; stops at the gradient floor or ``max_iterations``."""
+    return OptimiserConfig(
+        max_epochs=max_iterations,
+        warmup_epochs=0,
+        warmup_lr_start=0.0,
+        max_lr=0.0,
+        min_lr=0.0,
+        gradient_converged_value=1e-13,
+        optimiser_type="levenberg_marquardt",
+    )
+
+
+def relative_truth_errors(
+    estimate: dict[str, float],
+    truth: dict[str, float],
+    start: dict[str, float],
+    skip: set[str] = frozenset(),
+) -> tuple[float, float]:
+    """Worst ``|est - true| / |true|`` and worst ``|est - true| / |start - true|`` over the fitted knobs."""
+    names = [k for k in estimate if k not in skip]
+    error = {k: abs(estimate[k] - truth[k]) for k in names}
+    rel_error = max(error[k] / abs(truth[k]) for k in names)
+    rel_improvement = max(error[k] / abs(start[k] - truth[k]) for k in names)
+    return rel_error, rel_improvement
+
+
 def _make_optimiser_config_quad() -> OptimiserConfig:
     return OptimiserConfig(
         max_epochs=300,
@@ -502,7 +528,6 @@ def _make_simulation_config_quad() -> SimulationConfig:
     return SimulationConfig(
         num_workers=8,
         num_batches=2,
-        bpm_loss_outlier_sigma=4,
     )
 
 
@@ -531,9 +556,7 @@ def evaluate_controller_worker_losses(
     try:
         losses = []
         for knobs in knobs_list:
-            screener = OutlierScreener(session.payload_builder)
-            diags = screener.request_worker_diagnostics(session.training.channels, knobs)
-            losses.append(sum(float(d.loss) for d in diags))
+            losses.append(sum(session.training_losses(knobs)))
     finally:
         session.terminate()
     return losses

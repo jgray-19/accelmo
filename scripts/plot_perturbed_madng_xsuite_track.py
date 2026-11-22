@@ -26,8 +26,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from aba_optimiser.accelerators import LHC, SPS  # noqa: E402
-from aba_optimiser.mad.aba_mad_interface import AbaMadInterface  # noqa: E402
+from accelmo.machine.accelerators import LHC, SPS  # noqa: E402
+from accelmo.backend.madng.aba_mad_interface import AbaMadInterface  # noqa: E402
 from tests.training.controller_test_utils import _run_track_with_model  # noqa: E402
 from tests.training.helpers import generate_xsuite_env_with_errors  # noqa: E402
 

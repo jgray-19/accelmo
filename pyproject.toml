@@ -4,10 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "accelmo"
-version = "0.1.0"
-description = "Knob strength optimisation using PyMAD-NG"
+version = "0.0.1"
+description = "Accelerator Effective Lattice Modelling and Optimisation"
 authors = [
-    { name="Your Name", email="you@example.com" },
+    { name = "Joshua Gray" },
 ]
 readme = "README.md"
 license = { text = "MIT" }
@@ -21,20 +21,20 @@ dependencies = [
     "pymadng-utils",
     "matplotlib",
     "uncertainties",
+    "scipy>=1.17.1",
 ]
+
+[project.urls]
+Repository = "https://github.com/jgray-19/accelmo"
 
 [project.scripts]
 accelmo-monitor = "accelmo.monitor.__main__:main"
 
 [project.optional-dependencies]
-measurements = [
-    "tmom-recon",
-]
 test = [
     "pytest",
     "pytest-cov",
     "pytest-xdist",
-    "xtrack-tools",
 ]
 docs = [
     "sphinx>=7.0",
@@ -47,9 +47,6 @@ tracking = [
     "cpymad",
     "pyarrow",
     "psutil",
-]
-cern = [
-    "nxcals",
 ]
 monitor = [
     "panel>=1.5",
@@ -70,17 +67,17 @@ all = [
     "cpymad",
     "pyarrow",
     "psutil",
-    "nxcals",
     "pre-commit",
     "ruff",
-    "tmom-recon",
+]
+
+[dependency-groups]
+dev = [
     "xtrack-tools",
 ]
 
 [tool.uv.sources]
-pymadng-utils = { path = "../pymadng-utils", editable = true }
-tmom-recon = { path = "../tmom-recon", editable = true }
-xtrack-tools = { path = "../xtrack-tools", editable = true }
+xtrack-tools = { git = "https://github.com/jgray-19/xtrack_tools", rev = "0e6779d35546db12182a99d25c1cba60d395c90e" }
 
 
 [tool.setuptools]
@@ -89,6 +86,7 @@ package-dir = {"" = "src"}
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["accelmo*"]
+exclude = ["accelmo.measurements*"]
 
 [tool.coverage.run]
 # Use the importable package name so coverage can map executed files correctly

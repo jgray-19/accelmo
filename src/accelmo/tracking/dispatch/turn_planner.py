@@ -127,6 +127,8 @@ class WorkerTurnPlanner:
         # exceed the number of available training turns.
         worker_turn_batches = max(1, num_workers // max(1, range_specs_per_batch))
         total_turns = sum(len(turns) for turns in turns_by_file.values())
+        if self.tracking_plan.one_start_per_worker:
+            worker_turn_batches = total_turns
         num_turn_batches = min(worker_turn_batches, total_turns)
         # Every batch comes from one file, so fewer batches than files would leave
         # whole files untrained (lowest file ids win). Never drop data to honour the

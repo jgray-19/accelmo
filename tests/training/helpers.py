@@ -11,11 +11,11 @@ import tfs
 from xtrack_tools.env import initialise_env
 
 from accelmo.machine.accelerators import LHC
-from accelmo.machine.mad import (
+from accelmo.machine.machine_state import merge_machine_states
+from accelmo.backend.madng import (
     AbaMadInterface,
     GenericMadInterface,
     GradientDescentMadInterface,
-    merge_machine_states,
 )
 
 if TYPE_CHECKING:

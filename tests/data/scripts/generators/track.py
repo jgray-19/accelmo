@@ -30,7 +30,7 @@ from xtrack_tools import (
 )
 
 from accelmo.machine.accelerators import LHC
-from accelmo.machine.mad.aba_mad_interface import AbaMadInterface
+from accelmo.backend.madng.aba_mad_interface import AbaMadInterface
 
 # Setup logging
 logging.basicConfig(

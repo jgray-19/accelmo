@@ -1,1 +1,1 @@
-"""Test package for sgd-magnet-tuner."""
+"""Test package for accelmo."""

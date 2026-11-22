@@ -6,29 +6,30 @@ import logging
 import re
 from typing import TYPE_CHECKING
 
+import numpy as np
+import pandas as pd
 import pytest
 import xtrack as xt
 
-from accelmo.config import OptimiserConfig
+from accelmo.config import SimulationConfig
 from accelmo.fitting.config import OutputConfig, SequenceConfig
 from accelmo.machine.accelerators import PSB
-from accelmo.machine.mad import merge_machine_states
+from accelmo.machine.machine_state import merge_machine_states
 from accelmo.tracking.config.helpers import create_arc_measurement_config
 from accelmo.tracking.fitter import ACDMarkerFitter, FitterOptions
 from tests.training.controller_test_utils import (
     _load_mad_twiss_for_tracking,
     _make_simulation_config_quad,
     evaluate_controller_worker_loss,
+    make_lm_config,
+    relative_truth_errors,
     strip_inline_flags,
 )
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from accelmo.machine.mad.aba_mad_interface import AbaMadInterface
-
-pytest.importorskip("tmom_recon")
-pytest.importorskip("xtrack_tools")
+    from accelmo.backend.madng.aba_mad_interface import AbaMadInterface
 
 from pymadng_utils.io.utils import save_knobs
 from xtrack_tools.monitors import get_monitor_names_at_pattern, process_tracking_data
@@ -52,6 +53,8 @@ def _generate_acd_track(
     apply_orbit_correction: bool = True,
     target_qx: float = 0.17,
     target_qy: float = 0.23,
+    rel_error: float = 0.02,
+    ramp_up_turns: int = 3,
 ) -> tuple[Path | None, dict[str, float], Path | None]:
     """Generate a parquet file with ACD-style tracking data (pre/post-kick markers)."""
     corrector_file: Path | None = None
@@ -68,7 +71,7 @@ def _generate_acd_track(
         apply_orbit_correction=apply_orbit_correction,
         target_qx=target_qx,
         target_qy=target_qy,
-        rel_error=0.02,
+        rel_error=rel_error,
     )
     save_knobs(matched_tunes, tune_knobs)
 
@@ -109,7 +112,10 @@ def _generate_acd_track(
     acd_line.env.elements[acd_before] = xt.Marker()
     acd_line.insert(acd_line.env.place(acd_before, at=s_before))
 
-    driven_tunes = (0.16, 0.24)  # Choose driven tunes to be close to but distinct from the natural tunes
+    driven_tunes = (
+        0.16,
+        0.24,
+    )  # Choose driven tunes to be close to but distinct from the natural tunes
     qxd_qx = driven_tunes[0] - tws["qx"] % 1
     qyd_qx = driven_tunes[1] - tws["qy"] % 1
     logger.info(f"Qxd/Qx: {qxd_qx}, Qyd/Qx: {qyd_qx}")
@@ -118,7 +124,6 @@ def _generate_acd_track(
     # turn always sees zero kick (the beam starts on the closed orbit) and the pre-kick
     # 'before' marker lags a further turn behind, so these warm-up turns are discarded
     # below; only the fully-driven flattop turns are kept.
-    ramp_up_turns = 3
     ramp_profile = [
         0,
         ramp_up_turns,
@@ -177,10 +182,12 @@ def _generate_acd_track(
 
     # process_tracking_data uppercases names; rename ACD markers back to lowercase
     # to match MAD-NG's naming convention (acd_marker_name returns lowercase suffix)
-    tracking_df["name"] = tracking_df["name"].replace({
-        acd_before.upper(): acd_before,
-        acd_after.upper(): acd_after,
-    })
+    tracking_df["name"] = tracking_df["name"].replace(
+        {
+            acd_before.upper(): acd_before,
+            acd_after.upper(): acd_after,
+        }
+    )
 
     if acd_after not in set(tracking_df["name"]):
         raise ValueError(f"ACD 'after' marker {acd_after!r} missing from tracking output")
@@ -211,14 +218,7 @@ def _build_acd_controller(
         bpm_pattern=r"(?i)br3\.bpm.*",
     )
 
-    optimiser_config = OptimiserConfig(
-        max_epochs=500,
-        warmup_epochs=100,
-        warmup_lr_start=1e-5,
-        max_lr=1e-3,
-        min_lr=1e-4,
-        gradient_converged_value=1e-12,
-    )
+    optimiser_config = make_lm_config()
 
     ctrl = ACDMarkerFitter(
         PSB(
@@ -276,27 +276,115 @@ def test_controller_quad_opt_with_acd(
         )
         return
 
-    initial_sum_true_diff = sum(
-        abs(ctrl.machine.initial_knobs[magnet] - magnet_strengths[magnet])
-        for magnet in magnet_strengths
-    )
     estimate = ctrl.run().knobs
-    final_sum_true_diff = sum(
-        abs(estimate[magnet] - magnet_strengths[magnet])
-        for magnet in magnet_strengths
+    rel_error, rel_improvement = relative_truth_errors(
+        estimate, magnet_strengths, ctrl.machine.initial_knobs
     )
-    final_ctrl, _ = _build_acd_controller(
-        tmp_path=tmp_path,
-        seq_psb=seq_psb,
-        loaded_psb_interface=loaded_psb_interface,
-    )
-    final_loss = evaluate_controller_worker_loss(final_ctrl, estimate)
+    # measured 2026-11-12: rel error = rel improvement = 2.5e-6 (knobs start at 0)
+    assert rel_error < 1e-5
+    assert rel_improvement < 1e-5
 
-    assert final_loss < initial_loss * 0.05, (
-        "ACD optimisation should reduce the worker loss substantially "
-        f"(initial={initial_loss:.3e}, final={final_loss:.3e})"
+
+GAINS = {"BR3.BPM1L3": 0.03, "BR3.BPM4L3": -0.02}
+
+
+def test_lm_gain_prior_does_not_depend_on_particles_per_worker(
+    tmp_path: Path, seq_psb: Path, loaded_psb_interface: AbaMadInterface
+) -> None:
+    """Same noise-free ACD data and gain prior on 2 workers (40 training turns each) or 8 workers
+    (10 each, an even split): the chi-square is the same, so the fitted gains must be too."""
+    data = tmp_path / "track_acd_gains.parquet"
+    corrector_file, strengths, tune_knobs = _generate_acd_track(
+        loaded_psb_interface, 42, data, dpp_value=0.0, bpm_pattern=r"(?i)br3\.bpm.*"
     )
-    assert final_sum_true_diff < initial_sum_true_diff, (
-        "ACD optimisation should move the estimate closer to the true strengths "
-        f"(initial diff={initial_sum_true_diff:.3e}, final diff={final_sum_true_diff:.3e})"
+    frame = pd.read_parquet(data)
+    for bpm, gain in GAINS.items():  # the BPMs report (1 + g) x position
+        frame.loc[frame["name"] == bpm, ["x", "y"]] *= 1.0 + gain
+    frame.to_parquet(data, index=False)
+
+    def fitted_gains(num_workers: int) -> dict[str, float]:
+        ctrl = ACDMarkerFitter(
+            PSB(
+                ring=3,
+                kinetic_energy=loaded_psb_interface.accelerator.kinetic_energy,
+                sequence_file=seq_psb,
+                errors={"quad": {"k1"}},
+            ),
+            make_lm_config(),
+            SimulationConfig(
+                num_workers=num_workers,
+                num_batches=1,
+                validation_fraction=0.0,
+                bpm_gain_sigma=0.01,
+            ),
+            SequenceConfig(magnet_range="$start/$end"),
+            create_arc_measurement_config(
+                data, machine_state=merge_machine_states(corrector_file, tune_knobs)
+            ),
+            options=FitterOptions(
+                initial_knob_strengths=strengths,
+                output_config=OutputConfig(mad_logfile=tmp_path / "mad.log", write_run_log=False),
+            ),
+        )
+        return ctrl.run().extra
+
+    few, many = fitted_gains(2), fitted_gains(8)
+    for plane in ("x", "y"):
+        for bpm, gain in GAINS.items():
+            name = f"bpmgain.{plane}.{bpm}"
+            print(
+                f"{name}: truth {gain:+.4e} 2 workers {few[name]:+.6e} 8 workers {many[name]:+.6e}"
+            )
+            assert few[name] == pytest.approx(many[name], rel=1e-6)
+
+
+def test_lm_knob_prior_shifts_a_knob_by_the_gaussian_posterior_mean(
+    tmp_path: Path, seq_psb: Path, loaded_psb_interface: AbaMadInterface
+) -> None:
+    """Gaussian posterior: a zero-centred prior of width s on a knob fitted at v0 with data width
+    h = sqrt((A^-1)_kk) (A = J^T W J in chi-square units) shifts it by v0 h^2 / (s^2 + h^2).
+    s = 30 h keeps the shift (0.4 h) linear. Checks the prior is in the data's chi-square units,
+    on 2 and 8 workers."""
+    data = tmp_path / "track_acd_prior.parquet"
+    corrector_file, strengths, tune_knobs = _generate_acd_track(
+        loaded_psb_interface, 42, data, dpp_value=0.0, bpm_pattern=r"(?i)br3\.bpm.*"
     )
+
+    def fitter(num_workers: int, prior: dict[str, float] | None) -> ACDMarkerFitter:
+        return ACDMarkerFitter(
+            PSB(
+                ring=3,
+                kinetic_energy=loaded_psb_interface.accelerator.kinetic_energy,
+                sequence_file=seq_psb,
+                errors={"quad": {"k1"}},
+            ),
+            make_lm_config(),
+            SimulationConfig(
+                num_workers=num_workers,
+                num_batches=1,
+                validation_fraction=0.0,
+                knob_sigmas=prior,
+            ),
+            SequenceConfig(magnet_range="$start/$end"),
+            create_arc_measurement_config(
+                data, machine_state=merge_machine_states(corrector_file, tune_knobs)
+            ),
+            options=FitterOptions(
+                initial_knob_strengths=strengths,
+                output_config=OutputConfig(mad_logfile=tmp_path / "mad.log", write_run_log=False),
+            ),
+        )
+
+    knobs = fitter(2, None).run().knobs
+    normal, names = fitter(2, None).build_initial_normal_matrix(knobs)  # A at the fit
+    widths = np.sqrt(np.diag(np.linalg.inv(normal)))
+    k = max(range(len(names)), key=lambda i: abs(knobs[names[i]]) / widths[i])
+    name, v0, h = names[k], knobs[names[k]], float(widths[k])
+    sigma = 30.0 * h
+    expected = v0 * h**2 / (sigma**2 + h**2)
+    for workers in (2, 8):
+        shift = v0 - fitter(workers, {name: sigma}).run().knobs[name]
+        print(
+            f"{name}: v0 {v0:+.6e} h {h:.3e}, {workers} workers shift {shift:+.6e} expected {expected:+.6e}"
+        )
+        assert shift == pytest.approx(expected, rel=1e-3)

@@ -55,7 +55,7 @@ from pymadng_utils.io.utils import save_knobs
 
 from accelmo.fitting.config import SequenceConfig
 from accelmo.machine.accelerators import PSB
-from accelmo.machine.mad import GradientDescentMadInterface
+from accelmo.backend.madng import GradientDescentMadInterface
 from accelmo.poco import (
     ClosedOrbitFitter,
     ClosedOrbitMeasurement,

@@ -56,8 +56,8 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from accelmo.fitting.config import SequenceConfig
-from accelmo.machine.mad import GradientDescentMadInterface
-from accelmo.machine.mad.machine_state import resolve_machine_state
+from accelmo.backend import get_backend
+from accelmo.machine.machine_state import resolve_machine_state
 from accelmo.poco import (
     ClosedTwissFitter,
     LevenbergMarquardtConfig,
@@ -144,21 +144,9 @@ def closed_orbit_at(
     ``pt`` is pinned on the initial condition, so this is the periodic solution at
     that momentum rather than an on-momentum orbit with a momentum offset added.
     """
-    iface = GradientDescentMadInterface(
-        accelerator,
-        machine_state=machine_state,
+    return get_backend(accelerator.backend).closed_orbit_table(
+        accelerator, magnet_strengths, pt, machine_state, REFERENCE_COLUMNS
     )
-    try:
-        if magnet_strengths:
-            iface.update_knob_values(dict(magnet_strengths))
-        iface.mad.send(
-            f"moref = twiss{{sequence=loaded_sequence, observe=1, "
-            f"X0={{pt={float(pt):.15e}}}, coupling=true}}"
-        )
-        frame = iface.mad.moref.to_df(columns=["name", *REFERENCE_COLUMNS])
-    finally:
-        iface.close()
-    return frame.set_index("name")[list(REFERENCE_COLUMNS)]
 
 
 def _check_observable_knob_match(

@@ -11,19 +11,21 @@ import pytest
 from accelmo.config import OptimiserConfig
 from accelmo.fitting.config import OutputConfig, SequenceConfig
 from accelmo.machine.accelerators import PSB
-from accelmo.machine.mad import merge_machine_states
+from accelmo.machine.machine_state import merge_machine_states
 from accelmo.tracking.config.helpers import create_arc_measurement_config
 from accelmo.tracking.fitter import ArcByArcFitter, FitterOptions
 from tests.training.controller_test_utils import (
     _generate_nonoise_track,
     _make_simulation_config_quad,
     evaluate_controller_worker_loss,
+    make_lm_config,
+    relative_truth_errors,
 )
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from accelmo.machine.mad.aba_mad_interface import AbaMadInterface
+    from accelmo.backend.madng.aba_mad_interface import AbaMadInterface
 
 
 PSB_TARGET_QX = 0.17
@@ -58,8 +60,6 @@ def _build_psb_arc_quad_controller(
         _make_simulation_config_quad(),
         num_workers=4,
         num_batches=1,
-        bpm_loss_outlier_sigma=20,
-        worker_loss_outlier_sigma=20,
     )
     ctrl = ArcByArcFitter(
         PSB(
@@ -168,21 +168,8 @@ def test_controller_quad_opt_psb_ring3(
         base_sim,
         num_workers=4,
         num_batches=4,
-        bpm_loss_outlier_sigma=20,
-        worker_loss_outlier_sigma=20,
     )
-    optimiser_config = OptimiserConfig(
-        max_epochs=300,
-        warmup_epochs=40,
-        warmup_lr_start=1e-6,
-        max_lr=1e-3,
-        min_lr=1e-4,
-        gradient_converged_value=1e-13,
-        optimiser_type="adam",
-        # Gradients are ~1e-10, far below Adam's default eps (1e-8), which would
-        # otherwise set the step size and stall the fit.
-        adam_eps=1e-16,
-    )
+    optimiser_config = make_lm_config()
 
     sequence_config = SequenceConfig("$start/$end")
     measurement_config = create_arc_measurement_config(off_magnet_path, machine_state=merge_machine_states(corrector_file, tune_knobs))
@@ -218,20 +205,13 @@ def test_controller_quad_opt_psb_ring3(
     result = ctrl.run()
     estimate, unc = result.knobs, result.uncertainties
 
-    psb_abs_tol = 1e-4
-    # These knobs sit outside the recorded BPM response for the tracked turn, so their
-    # kicks never reach an observation point. They remain valid knobs, but the optimiser
-    # cannot recover them from this measurement layout.
+    # Their kicks never reach an observation point in this measurement layout.
     unobservable = {"BR.QFO11.dk1l", "BR.QDE16.dk1l", "BR.QFO162.dk1l"}
     assert set(estimate) == set(magnet_strengths)
     assert set(unc) == set(magnet_strengths)
-    for magnet, true_value in magnet_strengths.items():
-        if magnet in unobservable:
-            continue
-        est_value = estimate[magnet]
-        abs_diff = abs(est_value - true_value)
-        rel_diff = abs_diff / abs(true_value) if true_value != 0 else abs(est_value)
-        assert abs_diff <= psb_abs_tol or rel_diff < 5e-3, (
-            f"Relative difference for {magnet} is too high: {rel_diff:.2%} "
-            f"(abs diff {abs_diff:.3e})"
-        )
+    rel_error, rel_improvement = relative_truth_errors(
+        estimate, magnet_strengths, ctrl.machine.initial_knobs, unobservable
+    )
+    # measured 2026-11-12: rel error = rel improvement = 1.2e-5
+    assert rel_error < 5e-5
+    assert rel_improvement < 5e-5

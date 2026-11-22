@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from multiprocessing import resource_tracker, shared_memory
@@ -13,7 +14,7 @@ import numpy as np
 
 from accelmo.fitting.bpm_gains import PLANES, bpm_gain_names
 from accelmo.fitting.protocol import Evaluate, GradReply, distribute
-from accelmo.machine.mad.machine_state import resolve_machine_state
+from accelmo.machine.machine_state import resolve_machine_state
 from accelmo.poco.calibration import (
     CalibrationBlocks,
     CalibrationSpec,
@@ -24,7 +25,7 @@ from accelmo.poco.calibration import (
     reduce_blocks,
 )
 from accelmo.poco.closed_orbit import CLOSED_ORBIT_OBSERVABLES, ClosedOrbitFitter
-from accelmo.poco.lm_loop import LMPoint, run_levenberg_marquardt
+from accelmo.fitting.lm_loop import LMPoint, run_levenberg_marquardt
 from accelmo.poco.workers.calibrated import CalibratedClosedOrbitWorker
 
 if TYPE_CHECKING:
@@ -51,7 +52,9 @@ class CalibratedClosedOrbitFitter(ClosedOrbitFitter):
 
     With ``fit_corrector_gains=False`` only the BPM gains are fitted: no kick is scaled and ``sigma_corrector`` is unused. This is the
     mode for absolute orbits, where every corrector's standing kick is part of the orbit and only the correctors some series sets could
-    be given a gain.
+    be given a gain. ``corrector_gain_pattern`` (regex, full match on the upper-case corrector name) gives a gain only to the
+    correctors it matches; the others' kicks are taken as exact. ``zero_mean_gain_pattern`` holds the mean gain of the fitted
+    correctors it matches at 0, removing the common scale those correctors share with the BPM gains (it goes to the BPMs).
     """
 
     worker_class = CalibratedClosedOrbitWorker
@@ -77,9 +80,13 @@ class CalibratedClosedOrbitFitter(ClosedOrbitFitter):
         loss_only_trials: bool = True,
         kick_prefix: str = "k_",
         fit_corrector_gains: bool = True,
+        corrector_gain_pattern: str | None = None,
+        zero_mean_gain_pattern: str | None = None,
     ) -> None:
         self.kick_prefix = kick_prefix
         self.fit_corrector_gains = bool(fit_corrector_gains)
+        self.corrector_gain_pattern = corrector_gain_pattern
+        self.zero_mean_gain_pattern = zero_mean_gain_pattern
         self.knob_sigmas = {name.lower(): float(sigma) for name, sigma in (knob_sigmas or {}).items()}
         if any(sigma <= 0 for sigma in self.knob_sigmas.values()):
             raise ValueError("knob_sigmas must be > 0")
@@ -123,7 +130,9 @@ class CalibratedClosedOrbitFitter(ClosedOrbitFitter):
                 if name.startswith(self.kick_prefix)
             )
             correctors = tuple(
-                dict.fromkeys(name[len(self.kick_prefix) :].upper() for name in kicks)
+                corrector
+                for corrector in dict.fromkeys(name[len(self.kick_prefix) :].upper() for name in kicks)
+                if self.corrector_gain_pattern is None or re.fullmatch(self.corrector_gain_pattern, corrector)
             )
         self.calibration_spec = CalibrationSpec(bpms, correctors, self.kick_prefix)
         for _, data in payloads:
@@ -219,6 +228,11 @@ class CalibratedClosedOrbitFitter(ClosedOrbitFitter):
         u[:n_q] = [float(self.machine.initial_knobs[name]) for name in knob_names]
         #: The BPM gains: eliminated from each solve, then back-substituted from the best point's blocks.
         gains = {"b": np.zeros(n_b), "best_b": np.zeros(n_b), "best_blocks": None, "unit": 1.0}
+        zero_mean = None
+        if self.zero_mean_gain_pattern is not None:
+            zero_mean = np.array([i for i, c in enumerate(spec.correctors) if re.fullmatch(self.zero_mean_gain_pattern, c)], dtype=int)
+            if not len(zero_mean):
+                raise ValueError(f"zero_mean_gain_pattern {self.zero_mean_gain_pattern!r} matches no fitted corrector")
 
         def knobs_at(params: np.ndarray) -> dict[str, float]:
             values = np.concatenate([params, gains["b"]]).tolist()
@@ -229,7 +243,9 @@ class CalibratedClosedOrbitFitter(ClosedOrbitFitter):
             if trial is None:
                 return None
             shell = SimpleNamespace(loss=trial[0], n_q=n_q)
-            apply_prior(shell, params, gains["b"], self.sigma_corrector, self.sigma_bpm, trial[1], sigma_q, loss_only=True)
+            apply_prior(
+                shell, params, gains["b"], self.sigma_corrector, self.sigma_bpm, trial[1], sigma_q, zero_mean=zero_mean, loss_only=True
+            )
             return shell.loss
 
         def evaluate(params: np.ndarray, iteration: int) -> LMPoint:
@@ -239,7 +255,7 @@ class CalibratedClosedOrbitFitter(ClosedOrbitFitter):
                 return LMPoint(float("nan"), np.zeros(n_q + n_g), np.zeros((n_q + n_g,) * 2), failed=True)
             blocks, unit = collected
             gains["unit"] = unit
-            apply_prior(blocks, params, gains["b"], self.sigma_corrector, self.sigma_bpm, unit, sigma_q)
+            apply_prior(blocks, params, gains["b"], self.sigma_corrector, self.sigma_bpm, unit, sigma_q, zero_mean=zero_mean)
             grad, hess = reduce_blocks(blocks)
             return LMPoint(blocks.loss, grad, hess, extra=blocks)
 

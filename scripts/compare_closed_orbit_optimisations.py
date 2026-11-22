@@ -17,9 +17,10 @@ import numpy as np
 import pandas as pd
 from pymadng_utils.io.utils import read_knobs
 
-from aba_optimiser.accelerators import LHC
-from aba_optimiser.config import PROJECT_ROOT
-from aba_optimiser.mad import GenericMadInterface, merge_machine_states
+from accelmo.config import PROJECT_ROOT
+from accelmo.machine.accelerators import LHC
+from accelmo.backend.madng import GenericMadInterface
+from accelmo.machine.machine_state import merge_machine_states
 
 PC = 6800  # Beam energy in GeV
 logging.basicConfig(level=logging.INFO)

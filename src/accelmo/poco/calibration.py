@@ -16,6 +16,7 @@ from dataclasses import dataclass
 import numpy as np
 from scipy.linalg.blas import dsyrk
 
+from accelmo.fitting.bpm_gains import ZERO_MEAN_SIGMA
 from accelmo.fitting.uncertainty import covariance
 
 
@@ -160,13 +161,15 @@ def apply_prior(
     c: float,
     sigma_q: np.ndarray | None = None,
     *,
+    zero_mean: np.ndarray | None = None,
     loss_only: bool = False,
 ):
     """Gaussian priors ``c * g²/σ_g²``, ``c * b²/σ_b²`` and ``c * q²/σ_q²`` (``c`` converts χ² units to the normalised loss).
 
     ``sigma_q`` holds one absolute width per magnet knob (the knob's units); an entry of 0 leaves that knob free.
     ``loss_only`` adds the priors to ``blocks.loss`` alone (``blocks`` then needs only ``loss`` and ``n_q``): a loss-only trial
-    evaluation has no gradient or Hessian blocks.
+    evaluation has no gradient or Hessian blocks. ``zero_mean`` (indices into ``g``) holds the mean of those gains at 0
+    with width :data:`ZERO_MEAN_SIGMA`.
     """
     n_q = blocks.n_q
     if sigma_q is not None:
@@ -183,6 +186,15 @@ def apply_prior(
         if not loss_only:
             blocks.grad_u[n_q:] += 2.0 * c * g / sigma_g**2
             blocks.hess_uu[n_q:, n_q:] += np.eye(blocks.n_g) * 2.0 * c / sigma_g**2
+    if zero_mean is not None and len(zero_mean):
+        a = np.zeros(len(u) - n_q)
+        a[zero_mean] = 1.0 / len(zero_mean)
+        mean = float(a @ u[n_q:])
+        w = c / ZERO_MEAN_SIGMA**2
+        blocks.loss += w * mean**2
+        if not loss_only:
+            blocks.grad_u[n_q:] += 2.0 * w * mean * a
+            blocks.hess_uu[n_q:, n_q:] += 2.0 * w * np.outer(a, a)
     if sigma_b > 0:
         blocks.loss += c * float(b @ b) / sigma_b**2
         if not loss_only:

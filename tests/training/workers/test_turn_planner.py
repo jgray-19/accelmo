@@ -10,6 +10,8 @@ from accelmo.tracking.dispatch.turn_planner import WorkerTurnPlanner
 class _TwoSpecPlan:
     """A tracking plan fanning each turn batch over 2 range specs (as ACD markers)."""
 
+    one_start_per_worker = False
+
     def range_specs_per_batch(self, **_kwargs):
         return 2, "forward + backward"
 

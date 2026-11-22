@@ -2,7 +2,7 @@
 
 A :class:`TrackingSession` builds the worker payloads, spawns the training and
 held-out validation :class:`~accelmo.fitting.pool.WorkerPool` s, and talks
-to them until they are stopped: outlier screening, initial-condition updates, the
+to them until they are stopped: initial-condition updates, the
 validation loss and the uncertainty drain. Worker ranges come from
 :mod:`~accelmo.tracking.dispatch.setup`, payload arrays from
 :mod:`~accelmo.tracking.dispatch.payloads`.
@@ -17,9 +17,15 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from accelmo.fitting.pool import WorkerPool
-from accelmo.fitting.protocol import Command, CommandKind, LossReply, Start
+from accelmo.fitting.protocol import (
+    Diagnose,
+    LossReply,
+    SetKnobs,
+    Start,
+    UpdateInitCoords,
+    Validate,
+)
 from accelmo.tracking.dispatch.payloads import WorkerPayloadBuilder
-from accelmo.tracking.dispatch.screening import OutlierScreener
 from accelmo.tracking.uncertainty import drain_uncertainty
 from accelmo.tracking.worker import TrackingWorker
 
@@ -215,31 +221,15 @@ class TrackingSession:
             )
         return pool
 
-    def screen_outliers(
-        self,
-        initial_knobs: dict[str, float],
-        bpm_sigma_threshold: float = 2.0,
-        worker_sigma_threshold: float = 2.0,
-    ) -> None:
-        """Mask outlier BPMs and workers before optimisation starts."""
-        screener = OutlierScreener(self.payload_builder)
-        result = screener.screen(
-            self.training,
-            initial_knobs=initial_knobs,
-            bpm_sigma_threshold=bpm_sigma_threshold,
-            worker_sigma_threshold=worker_sigma_threshold,
-        )
-        # The same decisions must reach the validation workers: they partition
-        # the same measurement files, so leaving them unscreened makes the
-        # held-out loss score precisely the data the fit was told to ignore.
-        if result is not None and self.validation:
-            masks, disabled = screener.build_validation_screening(
-                self.training.metadata,
-                result.bpm_masks,
-                result.worker_disabled,
-                self.validation.metadata,
-            )
-            screener.apply_screening_actions(self.validation, masks, disabled)
+    def training_losses(self, knobs: dict[str, float]) -> list[float]:
+        """Each training worker's loss per BPM point at ``knobs``."""
+        channels = self.training.channels
+        channels.send_all(Diagnose(knobs))
+        replies = channels.recv_all()
+        for reply in replies:
+            if not isinstance(reply, LossReply):
+                raise RuntimeError(f"Unexpected loss reply from worker: {reply!r}")
+        return [reply.loss for reply in replies]
 
     def send_init_condition_updates(self, new_coords: np.ndarray) -> None:
         """Push updated initial ``x, px, y, py`` to every training and validation worker.
@@ -269,15 +259,7 @@ class TrackingSession:
         for pool in pools:
             for conn, n in zip(pool.conns, pool.particle_counts):
                 chunk = new_coords[offset : offset + n]
-                conn.send(
-                    Command(
-                        CommandKind.UPDATE_INIT_COORDS,
-                        {
-                            name: chunk[:, [column]]
-                            for column, name in enumerate(("x", "px", "y", "py"))
-                        },
-                    )
-                )
+                conn.send(UpdateInitCoords(chunk))
                 offset += n
             pool.channels.recv_all()
 
@@ -304,24 +286,13 @@ class TrackingSession:
             return None
 
         channels = self.validation.channels
-        channels.send_all(Command(CommandKind.VALIDATE, {"knobs": knobs}))
+        channels.send_all(Validate(knobs))
         results = channels.recv_all()
         losses: list[float] = []
         for result in results:
             if not isinstance(result, LossReply):
                 raise RuntimeError(f"Unexpected validation reply from worker: {result!r}")
-            # A worker screened out before the loop holds no usable data.
-            if result.loss is not None:
-                losses.append(float(result.loss))
-
-        if not losses:
-            if results:
-                LOGGER.warning(
-                    "All %d validation workers were disabled by screening; no held-out "
-                    "loss is available and early stopping falls back to the training loss.",
-                    len(results),
-                )
-            return None
+            losses.append(float(result.loss))
 
         # Each validation worker already reports a per-turn, per-BPM-point loss, so
         # combine them with an unweighted mean over workers -- the same reduction the
@@ -330,7 +301,7 @@ class TrackingSession:
 
     def set_training_knobs(self, knobs: dict[str, float]) -> None:
         """Load ``knobs`` into every training worker, e.g. the best knobs before the uncertainty."""
-        self.training.channels.ack_all(Command(CommandKind.SET_KNOBS, {"knobs": knobs}))
+        self.training.channels.ack_all(SetKnobs(knobs))
 
     def stop_and_collect_uncertainty(
         self, n_knobs: int, propagate_uncertainty: bool = True

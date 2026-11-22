@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from accelmo.fitting.protocol import Evaluate, GradReply, distribute, machine_worker_limit
-from accelmo.machine.mad.machine_state import resolve_machine_state
+from accelmo.machine.machine_state import resolve_machine_state
 from accelmo.poco.fitter import (
     MEASUREMENT_COLUMNS,
     LevenbergMarquardtConfig,

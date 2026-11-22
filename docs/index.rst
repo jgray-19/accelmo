@@ -36,8 +36,8 @@ Python 3.11 or later is required.
 
 .. code-block:: bash
 
-   git clone https://github.com/jgray-19/sgd-magnet-tuner.git
-   cd sgd-magnet-tuner
+   git clone https://github.com/jgray-19/accelmo.git
+   cd accelmo
    pip install -e ".[test,docs,tracking]"
 
 Optional dependency groups:
@@ -50,14 +50,10 @@ Optional dependency groups:
      - Contents
    * - ``tracking``
      - omc3, cpymad, pyarrow, psutil (required by the tracking workflows)
-   * - ``measurements``
-     - tmom-recon (momentum reconstruction)
    * - ``monitor``
      - Panel, for the live fit monitor (``python -m accelmo.monitor``)
-   * - ``cern``
-     - nxcals (CERN logging database access)
    * - ``test``
-     - pytest, pytest-cov, pytest-xdist, xtrack-tools
+     - pytest, pytest-cov, pytest-xdist
    * - ``docs``
      - Sphinx and theme
    * - ``dev``
@@ -82,17 +78,14 @@ Companion packages
    * - `pymadng-utils <https://jgray-19.github.io/pymadng-utils/>`_
      - Shared accelerator abstractions, dp/p and pt conversion
        (``pymadng_utils.physics``), knob-file I/O.
-   * - `tmom-recon <https://jgray-19.github.io/tmom-recon/>`_
-     - Transverse momentum, AC-dipole and optics reconstruction.
    * - `xtrack_tools <https://jgray-19.github.io/xtrack_tools/>`_
      - Tracking helpers and dataframe conversion, used by the tests.
 
-Install them from GitHub:
+Install them with:
 
 .. code-block:: bash
 
-   pip install git+https://github.com/jgray-19/pymadng-utils.git
-   pip install git+https://github.com/jgray-19/tmom-recon.git
+   pip install pymadng-utils
    pip install git+https://github.com/jgray-19/xtrack_tools.git
 
 The measurement and campaign workflows built on this package are maintained in
@@ -104,7 +97,9 @@ and ``fcc_loco``) and are not documented here.
    :caption: Contents
 
    user_guide
+   fit_families
    tracking_tour
    architecture
-   measurements
+   replacing_madng
+   start_gain_chain_rule
    api_reference

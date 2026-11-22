@@ -12,7 +12,7 @@ from accelmo.config import SimulationConfig
 from accelmo.fitting.protocol import Evaluate, GradReply
 from accelmo.fitting.worker import WorkerConfig
 from accelmo.machine.accelerators import PSB
-from accelmo.machine.mad import GradientDescentMadInterface
+from accelmo.backend.madng import GradientDescentMadInterface
 from accelmo.poco import (
     ClosedOrbitMeasurement,
     ClosedOrbitSeries,
@@ -147,11 +147,11 @@ def test_measurements_in_one_series_add_up_like_separate_series(seq_psb: Path) -
     def evaluate(*measurements: ClosedOrbitMeasurementData) -> GradReply:
         series = ClosedOrbitSeriesData(bpm_names=bpms, measurements=list(measurements))
         worker = ClosedOrbitWorker(None, 0, [series], config, SimulationConfig(num_workers=1, num_batches=1))
-        mad = worker.on_start(knobs)
+        worker.on_start(knobs)
         try:
-            return worker.evaluate(mad, Evaluate(knobs))
+            return worker.evaluate(Evaluate(knobs))
         finally:
-            mad.send("shush()")
+            worker.engine.close()
 
     low, high = measurement(1e-3, 1e-4), measurement(2e-3, -2e-4)
     together = evaluate(low, high)

@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 from accelmo.optimisers.lbfgs import LBFGSOptimiser
 
@@ -9,19 +10,11 @@ class TestLBFGSOptimiser:
             history_size=10,
             eps=1e-12,
             weight_decay=0.0,
-            use_adaptive_lr=True,
-            bb_clip=(1e-2, 1e2),
-            ema_beta=0.8,
-            eta_init=1.0,
         )
         assert optim.history_size == 10
         assert optim.eps == 1e-12
         assert optim.weight_decay == 0.0
-        assert optim.use_adaptive_lr is True
-        assert optim.bb_min == 1e-2
-        assert optim.bb_max == 1e2
-        assert optim.ema_beta == 0.8
-        assert optim.eta_ema == 1.0
+        assert optim.grad_scale is None
         assert optim.t == 0
         assert optim.prev_params is None
         assert optim.prev_grads is None
@@ -30,23 +23,23 @@ class TestLBFGSOptimiser:
         assert len(optim.RHO) == 0
 
     def test_step_first_step(self):
-        optim = LBFGSOptimiser(max_grad_norm=None, max_step_norm=None)
+        optim = LBFGSOptimiser(max_step_norm=None)
         params = np.array([1.0, 2.0])
         grads = np.array([2.0, 4.0])
         lr = 0.01
 
         new_params = optim.step(params, grads, lr)
 
-        # First step, no history, so direction is -g
-        expected_update = lr * optim.eta_ema * (-grads)
+        # First step, no history: direction -g, normalised by the first gradient's norm
+        expected_update = -lr * grads / np.linalg.norm(grads)
         expected_new_params = params + expected_update
         assert np.allclose(new_params, expected_new_params)
         assert optim.t == 1
         assert np.array_equal(optim.prev_params, params)
-        assert np.array_equal(optim.prev_grads, grads)
+        assert np.allclose(optim.prev_grads, grads / np.linalg.norm(grads))
 
     def test_step_with_history(self):
-        optim = LBFGSOptimiser(history_size=5, max_grad_norm=None, max_step_norm=None)
+        optim = LBFGSOptimiser(history_size=5, max_step_norm=None)
         params = np.array([1.0])
         grads = np.array([2.0])
         lr = 0.1
@@ -65,56 +58,8 @@ class TestLBFGSOptimiser:
         assert len(optim.Y) == 1
         assert len(optim.RHO) == 1
 
-    def test_adaptive_lr_bb1_calculation(self):
-        """Test that BB1 multiplier is calculated correctly."""
-        optim = LBFGSOptimiser(
-            use_adaptive_lr=True,
-            bb_clip=(0.0, float("inf")),
-            ema_beta=0.0,
-            max_grad_norm=None,
-            max_step_norm=None,
-        )  # Immediate update
-        params = np.array([2.0])  # Start further from optimum
-        grads = np.array([4.0])  # grad = 2*x for f=0.5*x^2
-        lr = 0.5  # Larger lr
-
-        # First step
-        params = optim.step(params, grads, lr)  # Should move towards 0
-
-        # Second step
-        grads2 = np.array([2 * params[0]])  # New gradient
-        optim.step(params, grads2, lr)
-
-        # Calculate expected BB1
-        s = params - 2.0  # Change in params
-        y = grads2 - grads  # Change in grads
-        sy_dot = np.dot(s, y)
-        if sy_dot > 0:
-            expected_bb1 = np.dot(s, s) / sy_dot
-            assert np.isclose(optim.eta_ema, expected_bb1, rtol=1e-10)
-        else:
-            # If curvature poor, should keep previous eta_ema
-            assert optim.eta_ema == 1.0
-
-    def test_no_adaptive_lr(self):
-        optim = LBFGSOptimiser(
-            use_adaptive_lr=False,
-            eta_init=2.0,
-            max_grad_norm=None,
-            max_step_norm=None,
-        )
-        params = np.array([1.0])
-        grads = np.array([2.0])
-        lr = 0.01
-
-        optim.step(params, grads, lr)
-        optim.step(params, grads, lr)
-
-        # eta_ema should remain 2.0
-        assert optim.eta_ema == 2.0
-
     def test_weight_decay(self):
-        optim = LBFGSOptimiser(weight_decay=0.1, max_grad_norm=None, max_step_norm=None)
+        optim = LBFGSOptimiser(weight_decay=0.1, max_step_norm=None)
         params = np.array([1.0])
         grads = np.array([2.0])
         lr = 0.01
@@ -123,12 +68,12 @@ class TestLBFGSOptimiser:
 
         # Effective grads = grads + weight_decay * params
         effective_grads = grads + 0.1 * params
-        expected_update = lr * optim.eta_ema * (-effective_grads)
+        expected_update = -lr * effective_grads / np.linalg.norm(effective_grads)
         expected_new_params = params + expected_update
         assert np.allclose(new_params, expected_new_params)
 
     def test_convergence_quadratic(self):
-        optim = LBFGSOptimiser(history_size=10, max_grad_norm=None, max_step_norm=None)
+        optim = LBFGSOptimiser(history_size=10, max_step_norm=None)
         params = np.array([10.0])
         lr = 1.0  # Use lr=1.0 to see pure quasi-Newton effect
 
@@ -147,7 +92,7 @@ class TestLBFGSOptimiser:
         assert abs(params[0]) < 0.1
 
     def test_history_limit(self):
-        optim = LBFGSOptimiser(history_size=2, max_grad_norm=None, max_step_norm=None)
+        optim = LBFGSOptimiser(history_size=2, max_step_norm=None)
         params = np.array([-1.0])  # start negative
 
         for i in range(5):
@@ -201,3 +146,26 @@ class TestLBFGSOptimiser:
         restored_next = restored.step(params_after_second, grads3, lr)
 
         assert np.allclose(restored_next, expected_next)
+
+
+LOSS_SCALES = (1.0, 1e-9)  # 1e-9: the PSB kicker tracking loss at the nominal model
+
+
+def _quadratic_run(scale: float, steps: int = 300, lr: float = 0.5) -> float:
+    """Minimise scale * 0.5 (x - x*)^T A (x - x*) with production settings; return |x - x*|."""
+    rng = np.random.default_rng(1)
+    q, _ = np.linalg.qr(rng.normal(size=(8, 8)))
+    hess = scale * q @ np.diag(np.geomspace(1.0, 1e2, 8)) @ q.T
+    target = rng.normal(scale=0.05, size=8)
+    optim = LBFGSOptimiser(history_size=10, eps=1e-12, max_step_norm=1.0,
+                           powell_damping=0.2)
+    x = np.zeros(8)
+    for _ in range(steps):
+        x = optim.step(x, hess @ (x - target), lr)
+    return float(np.linalg.norm(x - target) / np.linalg.norm(target))
+
+
+@pytest.mark.parametrize("scale", LOSS_SCALES)
+def test_converges_independent_of_loss_scale(scale):
+    """A quasi-Newton step is invariant to a constant factor on the loss."""
+    assert _quadratic_run(scale) < 1e-8

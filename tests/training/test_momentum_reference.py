@@ -27,7 +27,7 @@ import pandas as pd
 import pytest
 
 from accelmo.machine.accelerators import PSB
-from accelmo.machine.mad import GradientDescentMadInterface
+from accelmo.backend.madng import GradientDescentMadInterface
 from accelmo.momentum_reference import (
     ORBIT_AND_PHASE,
     closed_orbit_at,

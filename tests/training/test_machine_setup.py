@@ -57,7 +57,7 @@ def test_true_strengths_default_to_the_initial_knobs(lhc) -> None:
 def test_values_outside_the_fit_are_kept_as_model_values(lhc) -> None:
     setup = _setup(lhc, initial_knob_strengths={KNOB: 1e-4, OUTSIDE: 2e-4, "deltap": 1e-3})
     try:
-        pt = setup.mad_iface.dp2pt(1e-3)
+        pt = setup.accelerator.dp2pt(1e-3)
         # The optimiser only sees this fit's knobs; every value reaches the workers.
         assert OUTSIDE not in setup.initial_knobs
         assert setup.initial_model_values == {KNOB: 1e-4, OUTSIDE: 2e-4, "pt": pt}

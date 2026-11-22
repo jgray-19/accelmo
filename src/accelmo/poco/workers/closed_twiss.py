@@ -1,22 +1,8 @@
 """Closed-twiss worker: fit knobs to a measured periodic optics solution.
 
-Runs one MAD-NG ``twiss`` per iteration with the optimisation knobs installed as
-TPSA parameters on the sequence. twiss finds the parametric closed orbit with
-``cofind`` and normalises the parametric one-turn map, so the closed orbit, beta,
-alpha, phase and dispersion at every BPM are the *periodic* solution of the ring
-as a function of the knobs.
-
-When only orbit coordinates are observed the normal form is dead weight, so the
-worker calls ``cofind`` and a single parametric ``track`` instead
-(``compute_closed_orbit`` in ``run_closed_twiss_init.mad``), on a first-order map.
-It returns the same orbit and Jacobian as twiss.
-
-The optical functions and their knob derivatives are requested through twiss's
-own ``trkopt`` list, which fills one mtable column per requested name; the knob
-monomial is encoded in the name, so ``beta11_`` is the value and
-``beta11_0..010..0`` is its derivative with respect to knob ``i``. The closed
-orbit is the exception - ``x``/``y`` are not optical functions, so their scalar
-comes from the ordinary twiss column and their Jacobian from the saved map.
+One closed-orbit engine solve per iteration (:class:`~accelmo.backend.protocol.ClosedOrbitEngine`)
+gives the *periodic* closed orbit, beta, alpha, phase and dispersion at every BPM and
+their knob derivatives.
 
 Nothing is seeded from the measurement. There is no starting point to propagate
 from, so no measurement noise enters as an initial condition and no error can be
@@ -35,18 +21,13 @@ import numpy as np
 from accelmo.fitting.protocol import GradReply
 from accelmo.fitting.weights import variance_to_weight
 from accelmo.fitting.worker import AbstractWorker
-from accelmo.machine.mad.scripts import CLOSED_TWISS_INIT
 
 if TYPE_CHECKING:
-    from pymadng import MAD
-
     from accelmo.fitting.protocol import Evaluate
 
 LOGGER = logging.getLogger(__name__)
 
-#: Observables that are plain phase-space coordinates rather than optical
-#: functions. ``gphys.optfun`` has no entry for these, so their value comes from
-#: the ordinary twiss column and their knob derivative from the saved map.
+#: Observables that are phase-space coordinates rather than optical functions.
 ORBIT_COORDS = ("x", "px", "y", "py")
 
 
@@ -167,24 +148,11 @@ class ClosedTwissData:
     total_points: int = 1
 
 
-def read_orbit_only(mad: MAD, n_coords: int, n_knobs: int):
-    """Receive BPM names, orbit values and Jacobian from ``compute_closed_orbit``."""
-    mad.send("send_orbit_only()")
-    names = list(mad.recv())
-    values = np.empty((n_coords, len(names)))
-    jacobian = np.empty((n_coords, len(names), n_knobs))
-    columns = max(n_knobs, 1)  # MAD keeps one all-zero column when there are no knobs
-    for i in range(n_coords):
-        values[i] = np.asarray(mad.recv(), dtype=float).ravel()
-        jacobian[i] = np.asarray(mad.recv(), dtype=float).reshape(len(names), columns)[:, :n_knobs]
-    return names, values, jacobian
-
-
 class ClosedTwissWorker(AbstractWorker[ClosedTwissData]):
     """Worker that fits knobs to a measured closed-twiss solution."""
 
     def prepare_data(self, data: ClosedTwissData) -> None:
-        """Store the measured observables and load the MAD-NG init script."""
+        """Store the measured observables."""
         if not data.observables:
             raise ValueError("ClosedTwissData carries no observables to fit")
 
@@ -196,17 +164,10 @@ class ClosedTwissWorker(AbstractWorker[ClosedTwissData]):
         )
 
         self.observables = list(data.observables)
-        # Closed-orbit coordinates are not optical functions, so they take the
-        # saved-map route; everything else goes through twiss's trkopt columns.
         self.orbit_coords = [obs.name for obs in self.observables if obs.name in ORBIT_COORDS]
         self.optics_names = [obs.name for obs in self.observables if obs.name not in ORBIT_COORDS]
-        # No optical function to normalise for: skip twiss. The MAD-side map order
-        # is chosen from the same condition (an empty ``optics_columns``).
-        self.closed_solver = (
-            "compute_closed_twiss()" if self.optics_names else "compute_closed_orbit()"
-        )
         self._measured_index = {name: i for i, name in enumerate(data.bpm_names)}
-        # Known momentum offset of this measurement; pinned on x0map.pt (not a knob).
+        # Known momentum offset of this measurement; pinned on the closed orbit (not a knob).
         self.pt = float(data.pt)
         # Filled on the first compute once the twiss BPM ordering is known.
         self._twiss_bpm_order: list[str] | None = None
@@ -217,66 +178,35 @@ class ClosedTwissWorker(AbstractWorker[ClosedTwissData]):
             raise ValueError(f"Worker {self.worker_id}: weight_scale must be finite and positive")
         self.normalisation_points = max(1, int(data.total_points))
 
-        self.init_text = self._strip_comment_lines(CLOSED_TWISS_INIT.read_text())
 
-    @staticmethod
-    def _strip_comment_lines(text: str) -> str:
-        """Remove full-line comments and blank lines before sending to MAD-NG."""
-        kept = []
-        for line in text.splitlines():
-            stripped = line.strip()
-            if not stripped or stripped.startswith("--") or stripped.startswith("!"):
-                continue
-            kept.append(line)
-        return "\n".join(kept)
+    def extra_knobs(self) -> list[str] | None:
+        """Zero-valued knobs after the magnet knobs (see :class:`CalibratedClosedOrbitWorker`)."""
+        return None
 
-    def _setup_da_maps(self, mad: MAD) -> None:
-        """Build the parametric knob map and observable readout in MAD-NG.
+    def on_start(self, knobs: dict[str, float]) -> None:
+        """Build the engine; ``pt`` is never a knob here, it is pinned on the closed orbit."""
+        self.engine = self.backend.ClosedOrbitEngine(
+            self.config,
+            knobs,
+            optics_names=self.optics_names,
+            orbit_coords=self.orbit_coords,
+            extra_knobs=self.extra_knobs(),
+            worker_id=self.worker_id,
+            logfile=self.engine_logfile,
+        )
+        self.n_knobs = len(self.engine.knob_names)
+        self.engine.set_pt(self.pt)
 
-        ``pt`` is never an optimisation knob here: the momentum is a fixed input
-        pinned on the parametric map's ``pt`` coordinate so cofind returns this
-        worker's off-momentum closed solution (dispersion + off-momentum bend kick).
-        """
-        knob_names = list(mad["knob_names"])
-        if "pt" in knob_names:
-            knob_names.remove("pt")
-            mad["knob_names"] = knob_names
-
-        # One trkopt column per (optical function, knob monomial), values first so
-        # the returned frame splits cleanly into a value block and a Jacobian block.
-        self.n_knobs = len(knob_names)
-        self.value_columns = [f"{name}_" for name in self.optics_names]
-        self.derivative_columns = [
-            f"{name}_{_knob_monomial(i, self.n_knobs)}"
-            for name in self.optics_names
-            for i in range(self.n_knobs)
-        ]
-        mad["optics_columns"] = self.value_columns + self.derivative_columns
-        mad["orbit_coords"] = self.orbit_coords
-        mad.send(self.init_text)
-        mad.send(f"x0map.pt:set0({self.pt:.15e})")
-
-    def _solve(self, mad: MAD, observables: list[Observable], *, context: str = ""):
+    def _solve(self, observables: list[Observable], *, context: str = ""):
         """Solve the closed orbit (and twiss) at the loaded knobs.
 
         Returns ``(bpm_names, values, jacobian)`` with ``values`` of shape
         ``(n_observables, n_bpms)`` and ``jacobian`` of shape ``(n_observables,
         n_bpms, n_knobs)``, rows in the order of ``observables``; ``None`` when the
-        closed orbit is lost or MAD raised (an unstable trial point), so the
-        optimiser backtracks.
+        closed orbit is lost (an unstable trial point), so the optimiser backtracks.
         """
-        mad.send(self.closed_solver)
-        try:
-            found = mad.recv()
-        except RuntimeError as exc:
-            LOGGER.warning(
-                "Worker %s: MAD error in the closed-orbit solve%s (%s); flagging step for backtrack",
-                self.worker_id,
-                context,
-                exc,
-            )
-            return None
-        if not found:
+        solution = self.engine.solve([obs.name for obs in observables])
+        if solution is None:
             LOGGER.warning(
                 "Worker %s: closed orbit not found%s; flagging step for backtrack",
                 self.worker_id,
@@ -284,41 +214,7 @@ class ClosedTwissWorker(AbstractWorker[ClosedTwissData]):
             )
             return None
 
-        n_knobs = self.n_knobs
-        if not self.optics_names:  # orbit coordinates only: already in observable order
-            return read_orbit_only(mad, len(self.orbit_coords), n_knobs)
-
-        columns = ["name", *self.orbit_coords, *self.value_columns, *self.derivative_columns]
-        frame = mad.closed_tbl.to_df(columns=columns)
-        twiss_names = list(frame["name"])
-        n_bpms = len(twiss_names)
-        n_optics = len(self.optics_names)
-        optics_values = frame[self.value_columns].to_numpy(dtype=float).T
-        optics_jacobian = (
-            frame[self.derivative_columns]
-            .to_numpy(dtype=float)
-            .reshape(n_bpms, n_optics, n_knobs)
-            .transpose(1, 0, 2)
-        )
-        orbit_values = frame[list(self.orbit_coords)].to_numpy(dtype=float).T
-        orbit_jacobian = np.empty((len(self.orbit_coords), n_bpms, n_knobs))
-        if self.orbit_coords:
-            mad.send("send_orbit_jacobian()")
-            for i in range(len(self.orbit_coords)):
-                orbit_jacobian[i] = np.asarray(mad.recv(), dtype=float).reshape(n_bpms, n_knobs)
-
-        # Re-interleave into the caller's observable order.
-        values = np.empty((len(observables), n_bpms))
-        jacobian = np.empty((len(observables), n_bpms, n_knobs))
-        orbit_iter, optics_iter = iter(range(len(self.orbit_coords))), iter(range(n_optics))
-        for i, obs in enumerate(observables):
-            if obs.name in ORBIT_COORDS:
-                source = next(orbit_iter)
-                values[i], jacobian[i] = orbit_values[source], orbit_jacobian[source]
-            else:
-                source = next(optics_iter)
-                values[i], jacobian[i] = optics_values[source], optics_jacobian[source]
-        return twiss_names, values, jacobian
+        return solution.names, solution.values, solution.jacobian
 
     def _reply(
         self, grad: np.ndarray, loss: float, hessian: np.ndarray, normal_matrix: np.ndarray, extra=None
@@ -335,10 +231,10 @@ class ClosedTwissWorker(AbstractWorker[ClosedTwissData]):
         n = self.n_knobs
         return self._reply(np.zeros(n), float("nan"), np.zeros((n, n)), np.zeros((n, n)))
 
-    def evaluate(self, mad: MAD, message: Evaluate) -> GradReply:
+    def evaluate(self, message: Evaluate) -> GradReply:
         """Closed twiss at ``message.knobs`` and its weighted least-squares derivatives."""
-        self.send_knobs(mad, message.knobs)
-        solved = self._solve(mad, self.observables)
+        self.engine.set_knobs(message.knobs)
+        solved = self._solve(self.observables)
         if solved is None:
             return self._failure()
         twiss_names, model, jacobian = solved
@@ -438,15 +334,6 @@ def weighted_loss_gradient_hessian(
         loss += float(np.sum(weight * residual**2))
 
     return grad, loss, (2.0 / weight_scale) * normal_matrix, normal_matrix
-
-
-def _knob_monomial(index: int, n_knobs: int) -> str:
-    """Parameter-monomial suffix selecting d/d(knob ``index``) in a trkopt name.
-
-    ``gphys.nf_pk`` reads the ``_`` separator as the six phase-space slots, so
-    only the parameter part belongs in the suffix.
-    """
-    return "0" * index + "1" + "0" * (n_knobs - index - 1)
 
 
 def _to_advance(values: np.ndarray, jacobian: np.ndarray) -> tuple[np.ndarray, np.ndarray]:

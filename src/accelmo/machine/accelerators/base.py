@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import re
-import textwrap
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, ClassVar, NamedTuple
@@ -13,27 +12,10 @@ from pymadng_utils.accelerators.base import Accelerator as BaseAccelerator
 
 LOGGER = logging.getLogger(__name__)
 _INDEXED_RESULT_MULTIPOLE_RE = re.compile(r"\.(knl|ksl)\[(\d+)\]$")
-_TILT_SEED = 1e-9  # Should discuss this with Laurent.
-# Every offset is zeroed (not just the selected one) so the deferred table never reads nil.
-_MISALIGN_PREPARATION = (
-    "e.dx = e.dx or 0\ne.dy = e.dy or 0\ne.ds = e.ds or 0\n"
-    "e.misalign = MAD.typeid.deferred{dx =\\->e.dx, dy =\\->e.dy, ds =\\->e.ds}"
-)
-_KNOB_PREPARATION = {
-    "dx": _MISALIGN_PREPARATION,
-    "dy": _MISALIGN_PREPARATION,
-    "ds": _MISALIGN_PREPARATION,
-    # MAD-NG drops a rotation whose scalar angle is zero (mad_dynmap.cpp:345),
-    # silently zeroing the knob's Jacobian column. Seeding above ``minang``
-    # (1e-10 rad) keeps the derivative; the knob inherits the seed as its value.
-    "tilt": f"e.tilt = (e.tilt or 0) + {_TILT_SEED:.15e}",
-}
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
     from pathlib import Path
-
-    from accelmo.machine.mad.optimising_mad_interface import GradientDescentMadInterface
 
 
 class KnobSpec(NamedTuple):
@@ -54,7 +36,8 @@ class MagnetFamily:
     """A group of magnets sharing name patterns and the attributes that may be fitted.
 
     Attributes:
-        patterns: MAD element kind -> Lua name pattern (one entry per kind).
+        patterns: Element kind -> Lua name pattern (one entry per kind; see
+            :func:`accelmo.machine.patterns.lua_to_regex`).
         errors: Field attributes that may be fitted (``k1``, ``k0s``, ``knl[3]``, ``kick`` ...).
         misalignments: Alignment attributes that may be fitted (subset of ``MISALIGNMENT_ATTRS``).
         nonzero_attr: Only create knobs on elements where this attribute is nonzero.
@@ -98,9 +81,8 @@ def _normalise_selection(
 class Accelerator(BaseAccelerator, ABC):
     """Abstract base class for accelerator definitions.
 
-    This class encapsulates all machine-specific configuration and provides
-    a factory method for creating MAD interfaces, eliminating the need to
-    pass many individual parameters through multiple layers.
+    This class encapsulates all backend-neutral machine configuration; the
+    backend-specific code lives in ``accelmo.backend.<name>``.
 
     Subclasses declare ``FAMILIES``; callers pick what to fit with ``errors``
     and ``misalignments``, both keyed by family name.
@@ -118,6 +100,7 @@ class Accelerator(BaseAccelerator, ABC):
         misalignments: Mapping[str, Iterable[str]] | None = None,
         optimise_energy: bool = False,
         custom_knobs_to_optimise: list[str] | None = None,
+        backend: str = "madng",
         **kwargs,
     ):
         """Initialise base accelerator.
@@ -132,6 +115,7 @@ class Accelerator(BaseAccelerator, ABC):
                 e.g. ``{"quad": {"dx", "dy", "ds", "tilt"}}``
             optimise_energy: Fit the beam energy (``pt``)
             custom_knobs_to_optimise: Extra global knob names to fit
+            backend: Model backend of the fits (``accelmo.backend.BACKENDS``)
         """
         super().__init__(
             sequence_file=sequence_file,
@@ -144,6 +128,7 @@ class Accelerator(BaseAccelerator, ABC):
         self.misalignments = _normalise_selection(misalignments, self.FAMILIES, "misalignments")
         self.optimise_energy = optimise_energy
         self.custom_knobs_to_optimise = custom_knobs_to_optimise
+        self.backend = backend
 
     def selection_kwargs(self) -> dict:
         """Return the constructor kwargs describing what is optimised (for ``copy_with``)."""
@@ -152,6 +137,7 @@ class Accelerator(BaseAccelerator, ABC):
             "misalignments": self.misalignments,
             "optimise_energy": self.optimise_energy,
             "custom_knobs_to_optimise": self.custom_knobs_to_optimise,
+            "backend": self.backend,
         }
 
     def optimises(self, family: str, attribute: str) -> bool:
@@ -169,7 +155,9 @@ class Accelerator(BaseAccelerator, ABC):
                 for attr in sorted(attrs):
                     for kind, pattern in family.patterns.items():
                         pattern = family.attr_patterns.get(attr, pattern)
-                        specs.append(KnobSpec(kind, attr, pattern, family.nonzero_attr, f"{name} {attr}"))
+                        specs.append(
+                            KnobSpec(kind, attr, pattern, family.nonzero_attr, f"{name} {attr}")
+                        )
         return specs
 
     def has_any_optimisation(self) -> bool:
@@ -189,13 +177,11 @@ class Accelerator(BaseAccelerator, ABC):
     @abstractmethod
     def tune_variables(self) -> tuple[str, str]:
         """Return the names of the horizontal and vertical tune variables."""
-        pass
 
     @property
     @abstractmethod
     def tune_integers(self) -> tuple[int, int]:
         """Return the integer tune values."""
-        pass
 
     def log_optimisation_targets(self) -> None:
         """Log the optimisation targets for this accelerator."""
@@ -215,7 +201,6 @@ class Accelerator(BaseAccelerator, ABC):
     @abstractmethod
     def copy_with(self, **overrides) -> Accelerator:
         """Return a new instance of the same type with selected parameters overridden."""
-        pass
 
     def get_bend_lengths(self) -> dict[str, float] | None:
         """Return bend lengths required for accelerator-specific normalisation."""
@@ -268,58 +253,18 @@ class Accelerator(BaseAccelerator, ABC):
         names = self.format_result_knob_names(list(knobs))
         return dict(zip(names, knobs.values(), strict=True))
 
-    def prepare_mad_for_knob_creation(
-        self,
-        mad_iface: GradientDescentMadInterface,
-        specs: list[KnobSpec],
-    ) -> None:
-        """Run each selected attribute's ``_KNOB_PREPARATION`` before knob creation."""
-        grouped: dict[tuple[str, str], list[str]] = {}
-        for spec in specs:
-            body = _KNOB_PREPARATION.get(spec.attribute)
-            if body is not None:
-                grouped.setdefault((spec.kind, body), []).append(spec.pattern)
+    @property
+    def has_ac_kickers(self) -> bool:
+        """True when the model has turn-dependent AC kickers (their phase depends on the start turn)."""
+        return False
 
-        for (element_kind, body), patterns in grouped.items():
-            self._prepare_matching_elements(
-                mad_iface, element_kind, tuple(dict.fromkeys(patterns)), body
-            )
+    def ac_kicker_freqs(self, file_index: int) -> tuple[float, float] | None:
+        """AC-kicker (h, v) drive tunes of measurement file ``file_index``."""
+        return None
 
-    def _prepare_matching_elements(
-        self,
-        mad_iface: GradientDescentMadInterface,
-        element_kind: str,
-        patterns: tuple[str, ...],
-        body: str,
-    ) -> None:
-        """Run Lua ``body`` once per element of ``element_kind`` matching ``patterns``.
-
-        Args:
-            mad_iface: Interface owning the MAD-NG process holding ``loaded_sequence``
-            element_kind: MAD-NG element kind to match (e.g. ``"quadrupole"``)
-            patterns: Element name patterns to match
-            body: Lua statements, seeing the matched element as ``e``
-        """
-        mad_iface.mad.send(f"""
-        local element_kind = {mad_iface.py_name}:recv()
-        local patterns = {mad_iface.py_name}:recv()
-        for i, e in loaded_sequence:siter(magnet_range) do
-            if e.kind == element_kind then
-                for _, pattern in ipairs(patterns) do
-                    if string.match(e.name, pattern) then
-{textwrap.indent(body, " " * 24)}
-                        break
-                    end
-                end
-            end
-        end
-        """)
-        mad_iface.mad.send(element_kind).send(patterns)
-
-    def get_mad_attr_spec(self, kind: str, attribute: str) -> dict[str, str]:
-        """Return accelerator-specific expressions for one element attribute."""
-        del kind, attribute
-        return {}
+    def ac_kicker_volt_knobs(self, file_index: int) -> tuple[str, ...] | None:
+        """Per-file volt (a, b) knob names of the AC kickers (``None``: shared knobs)."""
+        return None
 
     def get_perturbation_families(self) -> dict[str, dict[str, str | float | dict]]:
         """Return per-family override metadata keyed by family code d/q/s."""
@@ -329,4 +274,3 @@ class Accelerator(BaseAccelerator, ABC):
     @abstractmethod
     def infer_monitor_plane(bpm_name: str) -> str:
         """Infer measurement plane from BPM name."""
-        pass

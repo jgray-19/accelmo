@@ -12,11 +12,13 @@ the main process sums their replies and updates the knobs.
 There are two fitting engines, built the same way:
 
 - **Tracking** (``tracking``): ``TrackingFitter`` and its subclasses
-  ``ArcByArcFitter``, ``KickerFitter`` and ``ACDMarkerFitter`` fit
-  turn-by-turn data with mini-batch gradient descent (Adam or L-BFGS, ``tracking.sgd``).
+  ``ArcByArcFitter``, ``KickerFitter``, ``ACDMarkerFitter``, ``ACDSinusoidFitter`` and
+  ``ACDTurnSinusoidFitter`` fit
+  turn-by-turn data with mini-batch gradient descent (Adam or L-BFGS, ``tracking.sgd``) or
+  Levenberg-Marquardt (``fitting.lm_loop``), optionally with the start coordinates.
 - **POCO** (``poco``): ``ClosedOrbitFitter``, ``ClosedTwissFitter`` and
   ``CalibratedClosedOrbitFitter`` fit closed-orbit and closed-twiss data with
-  Levenberg-Marquardt (``poco.lm_loop``).
+  Levenberg-Marquardt (``fitting.lm_loop``).
 
 Both compose a :class:`~accelmo.fitting.setup.MachineSetup`: the MAD-NG model and its BPMs,
 the knobs and their starting values, the output settings and the one
@@ -31,9 +33,9 @@ the same loop, :meth:`AbstractWorker.run <accelmo.fitting.worker.AbstractWorker.
 
 1. Receive ``Start(knobs)`` and build the MAD-NG session.
 2. Answer each ``Evaluate(knobs, batch)`` with one ``GradReply`` (loss, gradient and,
-   for POCO workers, the Hessian and normal matrix), and each ``Command`` (``DIAGNOSE``,
-   ``VALIDATE``, ``APPLY_MASK``, ``SET_KNOBS``, ``UPDATE_INIT_COORDS``,
-   ``SET_UNCERTAINTY_MODE``) with one ``Ack`` or ``LossReply``.
+   for POCO workers, the Hessian and normal matrix), and each command (``Validate``,
+   ``Diagnose``, ``SetKnobs``, ``UpdateInitCoords``, ``SetUncertaintyMode``) with one
+   ``Ack`` or ``LossReply``.
 3. On ``Stop``, a training tracking worker replies with its ``UncertaintyPart``, then exits.
 
 A worker sends exactly one reply per request. A failure sends one ``ErrorReply``
@@ -76,7 +78,7 @@ run log. For a tracking fit the body is:
    validation batches with a seeded shuffle, and clamp ``num_batches`` to the data.
 2. Start a :class:`~accelmo.tracking.session.TrackingSession`: build the worker
    payloads, start the training and validation
-   :class:`~accelmo.fitting.pool.WorkerPool` and screen outlier BPMs and workers.
+   :class:`~accelmo.fitting.pool.WorkerPool`.
 3. Run :class:`~accelmo.tracking.sgd.loop.SGDLoop`: per epoch, evaluate every batch and take an optimiser step after
    each; score the held-out validation loss; keep the knobs with the lowest loss
    (validation when available); stop on a converged loss or gradient.
@@ -102,7 +104,7 @@ Imports only point down this list; the two engines never import each other
 ``accelmo.tracking``
     The tracking engine: fitters, ``TrackingSession``, BPM ranges, ``DataManager``,
     the tracking worker and its uncertainty parts. ``tracking.dispatch`` builds the
-    worker payloads, plans turns and screens outliers; ``tracking.sgd`` holds the SGD
+    worker payloads and plans turns; ``tracking.sgd`` holds the SGD
     loop, learning-rate schedule and checkpointing; ``tracking.config`` the
     measurement, kicker and checkpoint settings and the tracking plans.
 ``accelmo.poco``
@@ -118,13 +120,10 @@ Imports only point down this list; the two engines never import each other
     Adam, L-BFGS and Levenberg-Marquardt.
 ``accelmo.machine``
     ``machine.accelerators``: machine definitions (``LHC``, ``PSB``, ``SPS``,
-    ``FCC``), knob families, BPM pattern and tune configuration. ``machine.mad``: the
+    ``FCC``), knob families, BPM pattern and tune configuration. ``backend.madng``: the
     MAD-NG interfaces; ``GenericMadInterface`` builds the model,
     ``GradientDescentMadInterface`` adds the optimisation knobs and derivatives, and
     ``machine_state`` handles fixed machine-state inputs.
-``accelmo.measurements``
-    Measurement preparation shared by the PSB and LHC workflows: reconstruction,
-    ACD marker rows, BPM noise and variances.
 ``accelmo.analysis``
     Degeneracy checks.
 ``accelmo.runlog``

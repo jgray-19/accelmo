@@ -238,3 +238,4 @@ tests/data/sequences/*.mad
 # build and run artefacts
 *.o
 /test_run_*.txt
+scratch_tmp

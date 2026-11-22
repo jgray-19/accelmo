@@ -9,6 +9,7 @@ from accelmo.tracking.config.models import (
 )
 from accelmo.tracking.config.tracking import (
     ACDArcByArcTrackingPlan,
+    ACDSinusoidTrackingPlan,
     ACDTrackingPlan,
     KickerTrackingPlan,
     RangeContext,
@@ -16,12 +17,14 @@ from accelmo.tracking.config.tracking import (
     TrackingPlan,
     WorkerRangeSpec,
     acd_marker_setup,
+    acd_sinusoid_setup,
     arc_by_arc_setup,
     kicker_setup,
 )
 
 __all__ = [
     "ACDArcByArcTrackingPlan",
+    "ACDSinusoidTrackingPlan",
     "ACDTrackingPlan",
     "CheckpointConfig",
     "KickerConfig",
@@ -33,6 +36,7 @@ __all__ = [
     "TrackingPlan",
     "WorkerRangeSpec",
     "acd_marker_setup",
+    "acd_sinusoid_setup",
     "arc_by_arc_setup",
     "create_arc_measurement_config",
     "kicker_setup",

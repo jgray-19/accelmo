@@ -22,6 +22,10 @@ class LevenbergMarquardtConfig:
     lambda_decrease: float = 0.5
     lambda_increase: float = 10.0
     lambda_max: float = 1e10
+    #: Floor of the loss scale in the relative test; 0 makes it purely relative (tiny losses).
+    loss_relative_floor: float = 1.0
+    #: Consecutive accepted steps that must each change the loss by less than the tolerance.
+    loss_stall_patience: int = 1
 
     def __post_init__(self) -> None:
         if self.max_iterations < 1:
@@ -74,6 +78,7 @@ class LevenbergMarquardtOptimiser:
         # there with the increased damping instead of re-evaluating it unchanged.
         self.best_grad: np.ndarray | None = None
         self.prev_loss: float | None = None
+        self.stall_count = 0
         self.t = 0
 
     def update(
@@ -102,11 +107,12 @@ class LevenbergMarquardtOptimiser:
             self._increase_damping()
             return self._retry_from_best(loss, grad_norm, "rejected")
 
-        loss_converged = (
-            self.prev_loss is not None
-            and abs(self.prev_loss - loss)
-            <= self.config.loss_relative_tolerance * max(1.0, abs(self.prev_loss))
+        stalled = self.prev_loss is not None and abs(self.prev_loss - loss) <= (
+            self.config.loss_relative_tolerance
+            * max(self.config.loss_relative_floor, abs(self.prev_loss))
         )
+        self.stall_count = self.stall_count + 1 if stalled else 0
+        loss_converged = self.stall_count >= self.config.loss_stall_patience
         grad_converged = grad_norm < self.config.gradient_converged_value
 
         self.best.record(loss, params.copy())
@@ -184,6 +190,14 @@ class LevenbergMarquardtOptimiser:
             damping=self.damping,
             reason=reason,
         )
+
+    def reset_objective(self, params: np.ndarray) -> None:
+        """Forget the best point: the objective changed, so old losses no longer compare."""
+        self.best = BestTracker(value=np.array(params, dtype=float).copy())
+        self.best_hessian = None
+        self.best_grad = None
+        self.prev_loss = None
+        self.stall_count = 0
 
     def solve_step(self, hessian: np.ndarray, grad: np.ndarray) -> np.ndarray:
         """Solve ``(H + lambda diag(H)) step = -grad`` for the LM step."""

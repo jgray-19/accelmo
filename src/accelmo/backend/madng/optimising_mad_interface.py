@@ -1,6 +1,6 @@
 """High-level MAD-NG interfaces used by optimisation and worker code.
 
-The classes in this module build on :mod:`accelmo.machine.mad.aba_mad_interface`
+The classes in this module build on :mod:`accelmo.backend.madng.aba_mad_interface`
 to provide a fully configured MAD-NG session for optimisation workflows. They
 handle sequence loading, BPM observation setup, optional machine-state
 application, and knob discovery for gradient-based tuning.
@@ -15,16 +15,19 @@ from typing import TYPE_CHECKING
 import numpy as np
 import tfs
 from pymadng_utils.mad.accelerator_mad_interface import (
-    MAGNET_STRENGTH_SUFFIXES,
     MAX_MULTIPOLE,
     MULTIPOLE_ATTRS,
     MultipoleInfo,
 )
 
 from accelmo.machine.accelerators import LHC
+from accelmo.machine.knob_names import is_magnet_strength_name
 
 from .aba_mad_interface import AbaMadInterface
-from .machine_state import MachineState, assign_state, resolve_machine_state
+from .accelerator_hooks import knob_expansion_block, mad_attr_spec, prepare_knob_creation
+from accelmo.machine.machine_state import MachineState, resolve_machine_state
+
+from .machine_state import assign_state
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -38,17 +41,6 @@ BPM_PATTERN = "^BPM"
 LOGGER = logging.getLogger(__name__)
 
 _INDEXED_MULTIPOLE_RE = re.compile(r"^(knl|ksl)\[(\d+)\]$")
-
-
-def is_magnet_strength_name(name: str) -> bool:
-    """True if ``name`` is a settable magnet-strength name (e.g. ``MQ.1.dk1l``).
-
-    These are exactly the names accepted by
-    :meth:`AcceleratorMadInterface.set_magnet_strengths`, so callers can use this
-    to tell a genuine magnet strength from a stray/typo'd knob name before routing
-    values to the model.
-    """
-    return any(name.endswith(suffix) for suffix in MAGNET_STRENGTH_SUFFIXES)
 
 
 def indexed_multipole_attr_info(attr: str) -> MultipoleInfo | None:
@@ -264,7 +256,7 @@ class GenericMadInterface(AbaMadInterface):
         )
         for marker in observed_anchor_markers:
             self.observe_element(marker)
-        self.bpms_in_range, self.nbpms, self.all_bpms = self.count_bpms(self.bpm_range)
+        self.recount_bpms()
         self.make_all_monitors_thin(list(set(self.all_bpms) - set(anchor_markers)))
 
         self._apply_b2_errors(b2_errors, machine_state)
@@ -338,6 +330,10 @@ class GenericMadInterface(AbaMadInterface):
             raise ValueError("b2_errors are only supported for LHC MAD interfaces.")
         apply_b2_errors_to_sequence(self.mad, self.py_name, b2_errors, machine_state)
 
+    def recount_bpms(self) -> None:
+        """Refresh ``bpms_in_range``, ``nbpms`` and ``all_bpms`` (after a cycle)."""
+        self.bpms_in_range, self.nbpms, self.all_bpms = self.count_bpms(self.bpm_range)
+
     def count_bpms(self, bpm_range: str) -> tuple[list[str], int, list[str]]:
         """Count the number of BPM elements in the specified range."""
         all_bpms, bpms_in_range = self.get_bpm_list(bpm_range)
@@ -366,7 +362,7 @@ class GenericMadInterface(AbaMadInterface):
         return bpm_range
 
     def _set_machine_state(self, machine_state: MachineState) -> None:
-        """Put the model in *machine_state* (see :mod:`accelmo.machine.mad.machine_state`)."""
+        """Put the model in *machine_state* (see :mod:`accelmo.machine.machine_state`)."""
         state = resolve_machine_state(machine_state)
         assign_state(self.mad, state)
         LOGGER.info("Set %d machine-state entries", len(state))
@@ -479,7 +475,7 @@ class GradientDescentMadInterface(GenericMadInterface):
         lines: list[str] = []
 
         for kind, attr, condition in attr_conditions:
-            spec = self.accelerator.get_mad_attr_spec(kind, attr)
+            spec = mad_attr_spec(self.accelerator, kind, attr)
             mp = MULTIPOLE_ATTRS.get(attr) or indexed_multipole_attr_info(attr)
 
             # The knob variable name in MAD (e.g. "MQXA.1R1.dk1l")
@@ -501,6 +497,13 @@ class GradientDescentMadInterface(GenericMadInterface):
                         f"or loaded_sequence[e.name].{mp.dk_table}[{mp.index}] or 0.0"
                     ),
                     f"    loaded_sequence[e.name].{mp.dk_table}[{mp.index}] = \\->loaded_sequence[k_str_name]",
+                ]
+            elif "sign_expr" in spec:
+                # Shared knob with a per-element sign: element value = sign * knob.
+                tmpl += [
+                    f"    local k_sign = {spec['sign_expr']}",
+                    f"    loaded_sequence[k_str_name] = loaded_sequence[k_str_name] or k_sign * {mad_value}",
+                    f"    loaded_sequence[e.name].{attr} = \\->k_sign * loaded_sequence[k_str_name]",
                 ]
             else:
                 tmpl += [
@@ -526,7 +529,7 @@ class GradientDescentMadInterface(GenericMadInterface):
     def _make_adj_knobs(self) -> None:
         """Create deferred-strength knobs in MAD for all elements matching the knob specs."""
         specs = self.get_knob_specs()
-        self.accelerator.prepare_mad_for_knob_creation(self, specs)
+        prepare_knob_creation(self, self.accelerator, specs)
 
         attr_block = ""
         if specs:
@@ -570,6 +573,7 @@ local spos_list = {{}}
 local used = {{}}
 local counts = {{}}
 {attr_block}
+{knob_expansion_block(self.accelerator)}
 {energy_block}
 {self.py_name}:send(knob_names, true)
 {self.py_name}:send(spos_list, true)
@@ -619,7 +623,7 @@ local counts = {{}}
             target_strength,
         )
 
-    def receive_knob_values(self) -> np.ndarray:
+    def knob_values(self) -> np.ndarray:
         """Retrieve the current values of all knobs from the MAD-NG session."""
         var_names = [f"loaded_sequence['{k}']" for k in self.knob_names]
         values = self.mad.recv_vars(*var_names)

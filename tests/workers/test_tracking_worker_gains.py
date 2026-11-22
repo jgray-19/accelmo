@@ -32,7 +32,9 @@ def _worker(tmp_path, optimise_momenta: bool) -> TrackingWorker:
         init_pts=np.zeros(N_PARTICLES),
         reading_ids=np.zeros(shape, dtype=np.int64),
         init_reading_ids=np.zeros(N_PARTICLES, dtype=np.int64),
-        init_variances=np.ones((N_PARTICLES, 2)),
+        init_variances=np.ones((N_PARTICLES, 4)),
+
+        start_turn_offsets=np.zeros(N_PARTICLES, dtype=np.int64),
         precomputed_weights=PrecomputedTrackingWeights(
             **{o: rng.uniform(0.5, 2.0, shape) for o in ("x", "y", "px", "py")}, scale=1.0
         ),

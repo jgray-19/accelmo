@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 from pymadng_utils.accelerators.lhc import LHC as BaseLHC  # noqa: N811
 
-from accelmo.machine.accelerators.base import Accelerator, KnobSpec, MagnetFamily
+from accelmo.machine.accelerators.base import Accelerator, MagnetFamily
 from accelmo.machine.accelerators.magnet_grouping import normalise_lhcbend_magnets
 
 LOGGER = logging.getLogger(__name__)
@@ -15,8 +15,6 @@ LOGGER = logging.getLogger(__name__)
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
     from pathlib import Path
-
-    from accelmo.machine.mad.optimising_mad_interface import GradientDescentMadInterface
 
 
 class LHC(BaseLHC, Accelerator):
@@ -33,7 +31,9 @@ class LHC(BaseLHC, Accelerator):
     PATTERN_CORRECTOR = "MCB"
     PATTERN_QUAD_NON_TUNE = "MQ[^.TSY]"  # Explicitly not MQS, MQT or MQ., but still quadrupoles
     # With the MQ. main quads (``quad`` family) this covers every "MQ[^ST]" quadrupole.
-    PATTERN_QUAD_DISPLACEMENT_Y_OTHER = "MQ[^.ST]"  # Non-main quads with potential vertical misalignments
+    PATTERN_QUAD_DISPLACEMENT_Y_OTHER = (
+        "MQ[^.ST]"  # Non-main quads with potential vertical misalignments
+    )
     PATTERN_QUAD_DISPLACEMENT_X = (
         "MQ[^.TSYM]"  # Triplet quadrupoles, warm quads with potential horizontal misalignments
     )
@@ -65,7 +65,10 @@ class LHC(BaseLHC, Accelerator):
             errors=frozenset({"k1"}),
             misalignments=frozenset({"dx", "dy"}),
             nonzero_attr="k1",
-            attr_patterns={"dx": PATTERN_QUAD_DISPLACEMENT_X, "dy": PATTERN_QUAD_DISPLACEMENT_Y_OTHER},
+            attr_patterns={
+                "dx": PATTERN_QUAD_DISPLACEMENT_X,
+                "dy": PATTERN_QUAD_DISPLACEMENT_Y_OTHER,
+            },
         ),
         "sextupole": MagnetFamily(
             {"sextupole": PATTERN_SEXTUPOLE}, errors=frozenset({"k2"}), nonzero_attr="k2"
@@ -88,6 +91,7 @@ class LHC(BaseLHC, Accelerator):
         optimise_energy: bool = False,
         normalise_bends: bool | None = None,
         custom_knobs_to_optimise: list[str] | None = None,
+        backend: str = "madng",
     ):
         """Initialise LHC accelerator for a specific beam.
 
@@ -118,6 +122,7 @@ class LHC(BaseLHC, Accelerator):
             misalignments=misalignments,
             optimise_energy=optimise_energy,
             custom_knobs_to_optimise=custom_knobs_to_optimise,
+            backend=backend,
         )
         if normalise_bends is None:
             normalise_bends = self.optimises("bend", "k0")
@@ -154,41 +159,6 @@ class LHC(BaseLHC, Accelerator):
         if self.optimises("bend", "k0") and bend_lengths:
             return normalise_lhcbend_magnets(true_strengths, bend_lengths)
         return true_strengths
-
-    def prepare_mad_for_knob_creation(
-        self,
-        mad_iface: GradientDescentMadInterface,
-        specs: list[KnobSpec],
-    ) -> None:
-        """Prepare LHC-specific MAD state for knob creation."""
-        super().prepare_mad_for_knob_creation(mad_iface, specs)
-        if self.optimises("bend", "k0") and self.normalise_bends:
-            mad_iface.mad.send(f"""
-            bend_dict = {{}}
-            bend_lengths = {{}}
-            for i, e in loaded_sequence:siter(magnet_range) do
-                if (e.kind == "sbend" or e.kind == "rbend") and e.k0 ~= 0 then
-                    bend_dict[e.name .. ".dk0l"] = e.k0
-                    bend_lengths[e.name .. ".dk0l"] = e.l
-                end
-            end
-            {mad_iface.py_name}:send(bend_dict, true)
-            {mad_iface.py_name}:send(bend_lengths, true)
-            bend_dict = {mad_iface.py_name}:recv()
-            """)
-            true_strengths_dict: dict[str, float] = mad_iface.mad.recv()
-            self.bend_lengths = mad_iface.mad.recv()
-            normalised_names = normalise_lhcbend_magnets(true_strengths_dict, self.bend_lengths)
-            mad_iface.mad.send(normalised_names)
-
-    def get_mad_attr_spec(self, kind: str, attribute: str) -> dict[str, str]:
-        """Return LHC-specific attr naming/value expressions."""
-        if not self.normalise_bends or kind != "sbend" or attribute != "k0":
-            return {}
-        return {
-            "name_expr": 'string.gsub(e.name, "(MB%.)([ABCD])([0-9]+[LR][1-8]%.B[12])", "%1%3") .. ".dk0l"',
-            "mad_value": "bend_dict[k_str_name]",
-        }
 
     @staticmethod
     def infer_monitor_plane(bpm_name: str) -> str:

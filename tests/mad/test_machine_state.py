@@ -19,8 +19,9 @@ import tfs
 from pymadng_utils.io.utils import save_knobs
 
 from accelmo.machine.accelerators import PSB
-from accelmo.machine.mad import GenericMadInterface, merge_machine_states
-from accelmo.machine.mad.machine_state import resolve_machine_state
+from accelmo.backend.madng import GenericMadInterface
+from accelmo.machine.machine_state import merge_machine_states
+from accelmo.machine.machine_state import resolve_machine_state
 
 if TYPE_CHECKING:
     from pathlib import Path

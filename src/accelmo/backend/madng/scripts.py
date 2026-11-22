@@ -81,10 +81,10 @@ def _allocation_block(observables: tuple[str, ...], *, include_derivatives: bool
     lines = _per_observable(observables, "{o}[i] = vector(nbpms * n_run_turns)", level=1)
     if include_derivatives:
         lines += _per_observable(
-            observables, "d{o}_dk[i] = matrix(matrix_size, nbpms * n_run_turns)", level=1
+            observables, "d{o}_dk[i] = matrix(nbpms * n_run_turns, matrix_size)", level=1
         )
         lines += _per_observable(
-            observables, "d{o}_dc0[i] = matrix(2, nbpms * n_run_turns)", level=1
+            observables, "d{o}_dc0[i] = matrix(4, nbpms * n_run_turns)", level=1
         )
     return _join_lines(lines)
 
@@ -99,7 +99,7 @@ def _save_knob_derivative_block(observables: tuple[str, ...]) -> str:
     return _join_lines(
         _per_observable(
             observables,
-            "d{o}_dk[i]:setsub(set_range, observe_count, get_knob_vec(mflw[i].{o}))",
+            "_C.mad_tpsa_getv(mflw[i].{o}, 7, num_knobs, d{o}_dk[i]._dat + row)",
             level=4,
         )
     )
@@ -109,29 +109,27 @@ def _save_energy_derivative_block(observables: tuple[str, ...]) -> str:
     return _join_lines(
         _per_observable(
             observables,
-            "d{o}_dk[i]:setsub(dpt_idx, observe_count, mflw[i].{o}:get(7))",
+            "d{o}_dk[i]._dat[row + num_knobs] = mflw[i].{o}:get(7)",
             level=4,
         )
     )
 
 
 def _save_start_derivative_block(observables: tuple[str, ...]) -> str:
-    """Store d(observable)/d(x0) and d(observable)/d(y0), TPSA monomials 2 and 4."""
-    lines = _per_observable(
-        observables, "d{o}_dc0[i]:set(1, observe_count, mflw[i].{o}:get(2))", level=4
-    )
-    lines += _per_observable(
-        observables, "d{o}_dc0[i]:set(2, observe_count, mflw[i].{o}:get(4))", level=4
-    )
+    """Store d(observable)/d(x0, px0, y0, py0), TPSA monomials 2 to 5."""
+    lines = []
+    for row in range(1, 5):
+        lines += _per_observable(
+            observables,
+            f"d{{o}}_dc0[i]:set({row}, observe_count, mflw[i].{{o}}:get({row + 1}))",
+            level=4,
+        )
     return _join_lines(lines)
 
 
-def _reset_block(observables: tuple[str, ...], *, include_derivatives: bool = True) -> str:
-    lines = _per_observable(observables, "{o}[i]:zeros()", level=2)
-    if include_derivatives:
-        lines += _per_observable(observables, "d{o}_dk[i]:zeros()", level=2)
-        lines += _per_observable(observables, "d{o}_dc0[i]:zeros()", level=2)
-    return _join_lines(lines)
+def _reset_block(observables: tuple[str, ...]) -> str:
+    # derivative matrices are fully overwritten each track (preflight checks the count)
+    return _join_lines(_per_observable(observables, "{o}[i]:zeros()", level=2))
 
 
 def _send_block(
@@ -186,6 +184,46 @@ def _observation_gate_definition() -> str:
     return "function is_observation_point(elm, slc)\nreturn slc == -4 and elm:is_observed()\nend"
 
 
+def build_track_speedup_script(track_methods: dict[str, int]) -> str:
+    """Remove zero-field magnets without knob parameters and set per-kind track methods.
+
+    Run after machine state and TPSA knobs are installed: knob values are TPSA, so an
+    element carrying a knob is never removed. The gaps are tracked as implicit drifts.
+    """
+    methods = ", ".join(f"{kind}={method}" for kind, method in track_methods.items())
+    return f"""! Generated track speed-up script
+local KINDS = {{quadrupole=true, sextupole=true, octupole=true, decapole=true, dodecapole=true,
+               hkicker=true, vkicker=true, kicker=true, tkicker=true, solenoid=true, rfcavity=true}}
+local ATTR = {{"k0", "k0s", "k1", "k1s", "k2", "k2s", "k3", "k3s", "k4", "k4s", "k5", "k5s",
+              "kick", "hkick", "vkick", "ks", "ksi", "volt", "angle", "knl", "ksl", "dknl", "dksl",
+              "dx", "dy", "ds", "dtheta", "dphi", "dpsi", "tilt"}}
+local function zero(v)
+    local t = type(v)
+    if t == "nil" or t == "boolean" then return not v end
+    if t == "number" then return v == 0 end
+    if t == "table" then
+        for i = 1, #v do if not zero(v[i]) then return false end end
+        return true
+    end
+    return false
+end
+local function is_off(e, i)
+    if not (KINDS[e.kind] and e.is_thick and e.l > 0) or e.misalign or loaded_sequence:align(i) then
+        return false
+    end
+    for _, a in ipairs(ATTR) do if not zero(e[a]) then return false end end
+    return true
+end
+-- remove needs increasing indexes: drop the (by-name) cycle around it
+local cycle_ref = loaded_sequence.__cycle
+loaded_sequence:cycle(nil)
+loaded_sequence:remove {{select=is_off}}
+loaded_sequence:cycle(cycle_ref)
+local methods = {{{methods}}}
+loaded_sequence:foreach(\\e => e.method = methods[e.kind] end, {{select=\\e -> methods[e.kind] ~= nil}})
+"""
+
+
 def build_tracking_init_script(
     observables: tuple[str, ...], *, start_on_first_turn: bool = False
 ) -> str:
@@ -196,17 +234,7 @@ def build_tracking_init_script(
     return f"""! Generated tracking init script
 num_knobs = #knob_names
 local matrix_size = optimise_energy and (num_knobs + 1) or num_knobs
-local set_range, get_range, get_knob_vec
-
-if num_knobs > 0 then
-    set_range = vector(num_knobs):seq()
-    get_range = vector(num_knobs):seq(7)
-
-    function get_knob_vec(coord_tpsa)
-        local all_first_deriv = coord_tpsa:getvec(1, num_knobs + 7)
-        return all_first_deriv:getvec(get_range)
-    end
-end
+local _C in MAD
 
 {_table_definitions(observables)}
 
@@ -221,15 +249,15 @@ observe_count = {initial_observe_count}
 save_start_derivatives = false
 function save_data(elm, mflw, _, slc)
     if is_observation_point(elm, slc) then
+        local row = (observe_count - 1) * matrix_size
         for i=1,batch_size do
 {_save_scalar_block(observables)}
 
-            if set_range then
+            if num_knobs > 0 then
 {_save_knob_derivative_block(observables)}
             end
 
             if optimise_energy then
-                local dpt_idx = num_knobs + 1
 {_save_energy_derivative_block(observables)}
             end
 
@@ -322,7 +350,7 @@ end
 function reset_before_validation()
     observe_count = 1
     for i=1,batch_size do
-{_reset_block(observables, include_derivatives=False)}
+{_reset_block(observables)}
     end
 end
 """
@@ -337,4 +365,3 @@ reset_before_validation()
 
 {_send_block(observables, include_derivatives=False)}
 """
-

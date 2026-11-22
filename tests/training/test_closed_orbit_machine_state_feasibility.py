@@ -23,8 +23,8 @@ import numpy as np
 import pytest
 
 from accelmo.machine.accelerators import PSB
-from accelmo.machine.mad import GradientDescentMadInterface
-from accelmo.machine.mad.scripts import PYTHON_IN_MAD
+from accelmo.backend.madng import GradientDescentMadInterface
+from accelmo.backend.madng.scripts import PYTHON_IN_MAD
 
 from .test_closed_orbit_cofind import COORDS, _send_init, _solve
 

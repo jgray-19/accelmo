@@ -142,3 +142,66 @@ def test_lm_state_roundtrip() -> None:
     assert np.allclose(restored.best_hessian, optim.best_hessian)
     # Without the gradient at the best point a resumed run cannot backtrack.
     assert np.allclose(restored.best_grad, optim.best_grad)
+
+
+def test_refresh_after_every_accepted_step_reaches_the_fixed_point() -> None:
+    """Loss (x - m)^2 with m rebuilt from the accepted x as m = x / 2 + 1: x -> m -> 2."""
+    from accelmo.fitting.lm_loop import LMPoint, run_levenberg_marquardt
+
+    marker = [1.0]
+    refreshed_at: list[float] = []
+
+    def evaluate(params: np.ndarray, iteration: int) -> LMPoint:
+        residual = params[0] - marker[0]
+        return LMPoint(residual**2, np.array([2.0 * residual]), np.array([[2.0]]))
+
+    def refresh(params: np.ndarray) -> bool:
+        refreshed_at.append(float(params[0]))
+        new = params[0] / 2.0 + 1.0
+        moved = abs(new - marker[0]) > 1e-12
+        marker[0] = new
+        return moved
+
+    config = LevenbergMarquardtConfig(gradient_converged_value=0.0, max_iterations=200)
+    optimiser, diagnostics = run_levenberg_marquardt(
+        np.array([0.0]), evaluate, config, refresh=refresh
+    )
+    assert optimiser.best.value[0] == pytest.approx(2.0, abs=1e-11)
+    # one refresh per accepted point, never twice at the same point
+    assert len(refreshed_at) == len(set(refreshed_at))
+    assert diagnostics.iterations < 200
+
+
+def test_lm_stops_after_patience_stalled_steps_on_a_tiny_loss() -> None:
+    """Accepted steps that each lower a 1e-7 loss by 1e-8 of itself: stop on the 5th, not before."""
+    optim = LevenbergMarquardtOptimiser(
+        LevenbergMarquardtConfig(
+            gradient_converged_value=0.0,
+            loss_relative_tolerance=1e-6,
+            loss_relative_floor=0.0,
+            loss_stall_patience=5,
+        ),
+        initial_params=np.array([0.0]),
+    )
+    converged = []
+    for k in range(7):
+        update = optim.update(
+            np.array([float(k)]), 1e-7 * (1.0 - 1e-8 * k), np.array([1e-3]), np.array([[2.0]])
+        )
+        converged.append(update.converged)
+    assert converged == [False] * 5 + [True] * 2  # 1st update has no previous loss; stalls 1..5 end at k=5
+
+
+def test_lm_stall_count_resets_on_a_real_improvement() -> None:
+    optim = LevenbergMarquardtOptimiser(
+        LevenbergMarquardtConfig(
+            gradient_converged_value=0.0,
+            loss_relative_tolerance=1e-6,
+            loss_relative_floor=0.0,
+            loss_stall_patience=3,
+        ),
+        initial_params=np.array([0.0]),
+    )
+    losses = [1e-7, 1e-7 * (1 - 1e-9), 1e-7 * (1 - 2e-9), 0.5e-7, 0.5e-7 * (1 - 1e-9), 0.5e-7 * (1 - 2e-9)]
+    flags = [optim.update(np.array([float(k)]), x, np.array([1e-3]), np.array([[2.0]])).converged for k, x in enumerate(losses)]
+    assert flags == [False] * 6  # the drop to 0.5e-7 restarts the count: two stalls < 3

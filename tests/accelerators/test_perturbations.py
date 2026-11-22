@@ -8,12 +8,12 @@ import numpy as np
 import pytest
 
 from accelmo.machine.accelerators import PSB
-from accelmo.machine.mad import GradientDescentMadInterface
+from accelmo.backend.madng import GradientDescentMadInterface
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from accelmo.machine.mad.aba_mad_interface import AbaMadInterface
+    from accelmo.backend.madng.aba_mad_interface import AbaMadInterface
 
 
 def _get_element_attr(interface: AbaMadInterface, element_name: str, attr: str) -> float:
@@ -176,7 +176,7 @@ def test_perturbation_preserves_deferred_optimisation_knob_link(seq_psb: Path) -
             seed=20260811,
             magnet_type="d",
         )
-        knob_values = dict(zip(iface.knob_names, iface.receive_knob_values(), strict=True))
+        knob_values = dict(zip(iface.knob_names, iface.knob_values(), strict=True))
         assert knob_values[knob] == pytest.approx(magnet_strengths[knob])
         assert iface.get_magnet_strengths([knob])[knob] == pytest.approx(magnet_strengths[knob])
 

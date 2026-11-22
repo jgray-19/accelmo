@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import psutil
 
-from accelmo.fitting.protocol import STOP, Command, CommandKind, WorkerChannels
+from accelmo.fitting.protocol import STOP, SetUncertaintyMode, WorkerChannels
 from accelmo.fitting.worker import KickPlane
 
 if TYPE_CHECKING:
@@ -122,7 +122,7 @@ def _drain_parts(
     workers = [pool.workers[idx] for idx in indices]
     channels = WorkerChannels([pool.conns[idx] for idx in indices], workers)
     if not propagate_uncertainty:
-        channels.ack_all(Command(CommandKind.SET_UNCERTAINTY_MODE, {"enabled": False}))
+        channels.ack_all(SetUncertaintyMode(enabled=False))
     channels.send_all(STOP)
     parts = channels.recv_all()
     for part in parts:

@@ -57,11 +57,11 @@ MAD Interface Layer
 .. autosummary::
    :toctree: _autosummary
 
-   accelmo.machine.mad
-   accelmo.machine.mad.aba_mad_interface
-   accelmo.machine.mad.optimising_mad_interface
-   accelmo.machine.mad.machine_state
-   accelmo.machine.mad.scripts
+   accelmo.backend.madng
+   accelmo.backend.madng.aba_mad_interface
+   accelmo.backend.madng.optimising_mad_interface
+   accelmo.backend.madng.machine_state
+   accelmo.backend.madng.scripts
 
 
 Closed-Orbit Fitting (POCO)
@@ -74,7 +74,6 @@ Closed-Orbit Fitting (POCO)
    accelmo.poco.closed_orbit
    accelmo.poco.calibrated
    accelmo.poco.fitter
-   accelmo.poco.lm_loop
    accelmo.poco.prior
    accelmo.poco.calibration
    accelmo.poco.workers
@@ -98,7 +97,6 @@ Tracking Fits
    accelmo.tracking.worker
    accelmo.tracking.dispatch
    accelmo.tracking.dispatch.payloads
-   accelmo.tracking.dispatch.screening
    accelmo.tracking.dispatch.setup
    accelmo.tracking.dispatch.turn_planner
    accelmo.tracking.uncertainty
@@ -122,6 +120,7 @@ Shared Fitting Base
    accelmo.fitting.setup
    accelmo.fitting.config
    accelmo.fitting.protocol
+   accelmo.fitting.lm_loop
    accelmo.fitting.worker
    accelmo.fitting.shared_reference
    accelmo.fitting.pool
@@ -144,21 +143,6 @@ Optimisers And Numerical Helpers
    accelmo.optimisers.adam
    accelmo.optimisers.lbfgs
    accelmo.optimisers.levenberg_marquardt
-
-
-Measurement Preparation
------------------------
-
-.. autosummary::
-   :toctree: _autosummary
-
-   accelmo.measurements
-   accelmo.measurements.acd_pipeline
-   accelmo.measurements.preprocessing
-   accelmo.measurements.reconstruction
-   accelmo.measurements.reference
-   accelmo.measurements.variances
-   accelmo.measurements.noise
 
 
 Analysis

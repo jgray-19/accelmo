@@ -13,8 +13,8 @@ import pytest
 from pymadng_utils.io.utils import read_knobs
 
 from accelmo.machine.accelerators import LHC, PSB
-from accelmo.machine.mad import merge_machine_states
-from accelmo.machine.mad.optimising_mad_interface import (
+from accelmo.machine.machine_state import merge_machine_states
+from accelmo.backend.madng.optimising_mad_interface import (
     GenericMadInterface,
     GradientDescentMadInterface,
 )
@@ -552,7 +552,7 @@ def test_recv_update_knob_values(
     optimising_interface: GradientDescentMadInterface,
 ) -> None:
     """Test receiving current knob values."""
-    values = optimising_interface.receive_knob_values()
+    values = optimising_interface.knob_values()
     # We are optimising energy by default, so "pt" knob should be present with a value
     assert len(values) == 1
 
@@ -562,14 +562,14 @@ def test_recv_update_knob_values(
     optimising_interface.mad.send(
         "loaded_sequence.a = 1.0; loaded_sequence.b = 2.1; loaded_sequence.c = -3.2"
     )
-    values = optimising_interface.receive_knob_values()
+    values = optimising_interface.knob_values()
     # The "pt" knob should have a default value of 1e-6 (as set in get_base_knob_values), and the new knobs should have the values we set
     assert all(values == [1e-6, 1.0, 2.1, -3.2]), f"Unexpected knob values: {values}"
 
     # Update knobs (including a non-existent one "pt" that should be ignored)
     update_table = {"a": 4.5, "b": -6.7, "c": 8.9, "pt": 1.0}
     optimising_interface.update_knob_values(update_table)
-    values = optimising_interface.receive_knob_values()
+    values = optimising_interface.knob_values()
     # Only the 3 existing knobs should be updated
     assert all(values == [1.0, 4.5, -6.7, 8.9]), f"Unexpected knob values after update: {values}"
 
