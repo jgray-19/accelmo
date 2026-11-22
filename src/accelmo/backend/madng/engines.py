@@ -296,6 +296,19 @@ def _strip_comment_lines(text: str) -> str:
     return "\n".join(kept)
 
 
+def read_orbit_only(mad: MAD, n_coords: int, n_knobs: int):
+    """BPM names, orbit values and Jacobian after ``compute_closed_orbit``."""
+    mad.send("send_orbit_only()")
+    names = list(mad.recv())
+    values = np.empty((n_coords, len(names)))
+    jacobian = np.empty((n_coords, len(names), n_knobs))
+    columns = max(n_knobs, 1)  # MAD keeps one all-zero column when there are no knobs
+    for i in range(n_coords):
+        values[i] = np.asarray(mad.recv(), dtype=float).ravel()
+        jacobian[i] = np.asarray(mad.recv(), dtype=float).reshape(len(names), columns)[:, :n_knobs]
+    return names, values, jacobian
+
+
 def _knob_monomial(index: int, n_knobs: int) -> str:
     """Parameter-monomial suffix selecting d/d(knob ``index``) in a trkopt name.
 
@@ -392,17 +405,7 @@ class ClosedOrbitEngine:
         mad = self.session.mad
         n_knobs = self.n_knobs
         if not self.optics_names:
-            mad.send("send_orbit_only()")
-            names = list(mad.recv())
-            values = np.empty((len(self.orbit_coords), len(names)))
-            jacobian = np.empty((len(self.orbit_coords), len(names), n_knobs))
-            columns = max(n_knobs, 1)  # MAD keeps one all-zero column when there are no knobs
-            for i in range(len(self.orbit_coords)):
-                values[i] = np.asarray(mad.recv(), dtype=float).ravel()
-                jacobian[i] = np.asarray(mad.recv(), dtype=float).reshape(len(names), columns)[
-                    :, :n_knobs
-                ]
-            return ClosedSolution(names, values, jacobian)
+            return ClosedSolution(*read_orbit_only(mad, len(self.orbit_coords), n_knobs))
 
         columns = ["name", *self.orbit_coords, *self._value_columns, *self._derivative_columns]
         frame = mad.closed_tbl.to_df(columns=columns)

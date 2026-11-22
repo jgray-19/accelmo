@@ -2,7 +2,7 @@
 
 Goal: MAD-NG is one implementation of a small backend interface. A second backend (xtrack TPSA first, Cheetah maybe later) is a new subpackage, with no edits to fitters, workers' numerics, optimisers or the protocol. Contract: `docs/replacing_madng.rst`.
 
-Status: see the table at the bottom (kept up to date while implementing).
+Status: see the table below.
 
 ## Decisions (from the user)
 
@@ -54,14 +54,14 @@ Workers keep data prep, weights, loss, gradient, gains, uncertainty and replies.
 
 | # | Step | Status |
 |---|---|---|
-| 1 | `backend/protocol.py`, `backend/__init__.py`, `Accelerator.backend` | |
-| 2 | Move `machine/mad/*` to `backend/madng/`; neutral machine-state code to `machine/machine_state.py`; fix all imports (src, tests, scripts) | |
-| 3 | `MadngTrackingEngine`; `TrackingWorker` and `AbstractWorker` hold `self.engine`, no `mad` arguments | |
-| 4 | `MadngClosedOrbitEngine`; `ClosedTwissWorker`, `ClosedOrbitWorker`, `CalibratedClosedOrbitWorker` use it | |
-| 5 | Accelerator Lua hooks to `backend/madng/accelerator_hooks.py`; `lua_to_regex` | |
-| 6 | `MachineSetup`, `momentum_reference.closed_orbit_at` through `open_model` / `closed_orbit_table` | |
-| 7 | Layer test; MAD-NG suite green on dev3, loss floors unchanged | |
-| 8 | xtrack backend: closed orbit (fixed-point TPSA) and tracking (`ParticlesTpsa` per particle); acceptance vs MAD-NG | |
+| 1 | `backend/protocol.py`, `backend/__init__.py`, `Accelerator.backend` | done |
+| 2 | Move `machine/mad/*` to `backend/madng/`; neutral machine-state code to `machine/machine_state.py`; fix all imports (src, tests, scripts) | done |
+| 3 | `MadngTrackingEngine`; `TrackingWorker` and `AbstractWorker` hold `self.engine`, no `mad` arguments | done |
+| 4 | `MadngClosedOrbitEngine`; `ClosedTwissWorker`, `ClosedOrbitWorker`, `CalibratedClosedOrbitWorker` use it | done |
+| 5 | Accelerator Lua hooks to `backend/madng/accelerator_hooks.py`; `lua_to_regex` | done; `test_lua_patterns.py` matches MAD-NG on every LHC/PSB pattern |
+| 6 | `MachineSetup`, `momentum_reference.closed_orbit_at` through `open_model` / `closed_orbit_table` | done; `OpticsSource` implementations live downstream |
+| 7 | Layer test; MAD-NG suite green on dev3, loss floors unchanged | layer test done; suite: see `logs/seam_*.log` |
+| 8 | xtrack backend: closed orbit (fixed-point TPSA) and tracking (`ParticlesTpsa` per particle); acceptance vs MAD-NG | done for quad k1 / bend k0; limits and agreement in `docs/replacing_madng.rst` |
 
 ## Risks
 
@@ -69,3 +69,10 @@ Workers keep data prep, weights, loss, gradient, gains, uncertainty and replies.
 * Which LHC/PSB/SPS elements the xtrack TPSA kernels support is not checked; the xtrack backend refuses knob kinds it cannot map.
 * TPSA tracking needs radiation off (fine for the proton machines, not FCC-ee).
 * Step 3/4 must keep numerical results identical: same Lua text in the same order, checked with the controller tests' stored values.
+
+## Open items
+
+* LHC beam 2: `pymadng_utils` LHC now requires `seq_dir`; `accelmo.LHC` never passes it, so `tests/accelerators/test_lhc.py` beam-2 tests fail. Not from this work; the value (-1 or 1) is the user's call.
+* xtrack vs MAD-NG vertical PSB off momentum: 3e-4 relative with the bundled release `mad_Linux` 1.1.15; the dev build `MAD/src/mad` and `mad_fringe` agree with xsuite to 4e-10 m. The engines spawn the bundled binary.
+* xtrack quad knob convention (thick `k1 += dk1l/L`) vs MAD-NG `dknl[2]`: 1e-4 relative closed-orbit difference at ±2e-3 knobs.
+* xtrack: no misalignment, corrector, thin multipole or volt knobs (no TPSA fields in xtrack 0.118.6).

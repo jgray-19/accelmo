@@ -42,6 +42,7 @@ from accelmo.config import SimulationConfig
 from accelmo.fitting.worker import WorkerConfig
 from accelmo.machine.accelerators import PSB
 from accelmo.backend.madng import GradientDescentMadInterface
+from accelmo.backend.madng.engines import read_orbit_only
 from accelmo.backend.madng.scripts import CLOSED_TWISS_INIT, PYTHON_IN_MAD
 from accelmo.poco.workers.closed_orbit import (
     ClosedOrbitMeasurementData,
@@ -88,15 +89,8 @@ def _solve(mad: MAD, solver: str, n_knobs: int):
     mad.send(f"{solver}()")
     assert mad.recv(), f"{solver} failed"
     if solver == "compute_closed_orbit":
-        mad.send("send_orbit_only()")
-        names = list(mad.recv())
-        orbit, jac = {}, {}
-        for coord in COORDS:
-            orbit[coord] = np.asarray(mad.recv(), dtype=float).ravel()
-            jac[coord] = np.asarray(mad.recv(), dtype=float).reshape(len(names), max(n_knobs, 1))[
-                :, :n_knobs
-            ]
-        return names, orbit, jac
+        names, orbit, jac = read_orbit_only(mad, len(COORDS), n_knobs)
+        return names, dict(zip(COORDS, orbit)), dict(zip(COORDS, jac))
     frame = mad.closed_tbl.to_df(columns=["name", *COORDS])
     n_bpms = len(frame)
     mad.send("send_orbit_jacobian()")

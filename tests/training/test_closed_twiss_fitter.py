@@ -67,7 +67,8 @@ from accelmo.poco import (
     ClosedTwissFitter,
     LevenbergMarquardtConfig,
 )
-from accelmo.poco.workers.closed_twiss import ClosedTwissWorker, read_orbit_only
+from accelmo.backend.madng.engines import read_orbit_only
+from accelmo.poco.workers.closed_twiss import ClosedTwissWorker
 
 if TYPE_CHECKING:
     from pathlib import Path

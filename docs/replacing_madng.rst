@@ -4,8 +4,9 @@ Replacing MAD-NG
 MAD-NG does two jobs in every fit: it computes the model prediction at the BPMs, and it
 returns the derivative of that prediction with respect to every knob. This page lists what
 the rest of the code needs from those two jobs and describes two other sources of them:
-``xtrack`` (the planned first replacement) and Cheetah (https://github.com/desy-ml/cheetah, a
-possible later one). Nothing on this page is implemented; the code today only runs MAD-NG.
+``xtrack`` (implemented, limited: see `xtrack backend requirements`_) and Cheetah
+(https://github.com/desy-ml/cheetah, a possible later one). The backend is chosen with
+``Accelerator(backend="madng" | "xtrack")``; the interface is :mod:`accelmo.backend.protocol`.
 
 What the optimiser needs
 ------------------------
@@ -227,3 +228,65 @@ Use the existing tests as the acceptance criteria.
    the loss at the true strengths must be far below the loss at the nominal ones.
 3. **Fit.** Run a controller test (``tests/training/controller/``) with Levenberg-Marquardt
    and compare ``relative_truth_errors`` with the MAD-NG values stored in the test comments.
+
+
+xtrack backend requirements
+---------------------------
+
+``accelmo.backend.xtrack`` fits only knobs whose xsuite field is TPSA-capable. Measured on
+xtrack 0.118.6 (``_float_or_tpsa_fields`` of each element class):
+
+.. list-table::
+   :header-rows: 1
+   :widths: 16 34 50
+
+   * - Element class
+     - TPSA fields
+     - Consequence
+   * - ``Quadrupole``
+     - ``k1``, ``k1s``
+     - ``quad k1`` knobs supported (``<Q>.dk1l`` adds ``dk1l / L`` to ``k1``)
+   * - ``Bend``, ``RBend``
+     - ``k0``, ``k1``, ``k2``
+     - ``bend k0`` knobs supported (``<B>.dk0l`` adds ``dk0l / L`` to ``k0``)
+   * - ``Sextupole``, ``Octupole``
+     - ``k2``, ``k2s`` / ``k3``, ``k3s``
+     - Not wired yet (no family uses the thick field)
+   * - ``Multipole`` (thin correctors, thin sextupoles)
+     - none
+     - No ``kick``, ``knl[n]`` or ``ksl[n]`` knobs; corrector kicks are machine state only
+   * - Any element: ``shift_x``, ``shift_y``, ``rot_s_rad``
+     - none
+     - No misalignment knobs (``dx``, ``dy``, ``ds``, ``tilt``)
+   * - ``Cavity``, AC kickers
+     - none
+     - No ``volt`` knobs, no AC-kicker tracking
+
+Other requirements of the backend:
+
+* TPSA tracking needs ``line.config.XTRACK_MULTIPOLE_NO_SYNRAD = True``: proton machines only.
+* The TPSA kernels contain no aperture elements; the backend drops every ``Limit*`` element
+  (MAD-NG tracks with a 100 m aperture).
+* xsuite keeps no MAD-X kind; the backend reads each element's base kind from the
+  sequence file declarations (``madx_element_kinds``).
+* Not supported: backward sequences (LHC beam 2), ``sdir = -1``, fitted ``pt``, PSB cell
+  grouping, LHC bend normalisation, tracking anchors (ACD/kicker markers), b2 errors,
+  calibrated closed orbit, optics observables (closed orbit ``x, px, y, py`` only), a named
+  range over more than one turn, and the momentum-reference table. Each raises
+  ``NotImplementedError``.
+
+Agreement with MAD-NG on PSB ring 3 (``tests/backend/test_xtrack_backend.py``,
+``scratch_tmp/xt/compare_backends.py``):
+
+* Knob names and observed BPMs: identical (48 quad knobs, 16 BPMs).
+* Closed orbit from one corrector state: 5e-12 m vertical, 3e-13 m horizontal on ~1 mm; the
+  corrector sign conventions agree.
+* One-turn horizontal tracking: x 6e-10 m on 5 mm, d(x)/dk 6e-9 on 4e-2.
+* Vertical plane, off momentum: with the bundled MAD-NG release (``mad_Linux`` 1.1.15)
+  d(y)/d(y0) differs by 3e-4 relative at pt = 1e-3 (1e-6 on momentum), accumulated in the
+  quadrupoles. The xsuite TPSA map equals plain xsuite tracking (2e-17 m) and finite
+  differences (6e-10). With the MAD-NG dev build (``MAD/src/mad``, or ``MAD/src/mad_fringe``)
+  the one-turn y difference drops from 3.2e-7 m to 4.3e-10 m, the same as x: the release
+  binary's off-momentum quadrupole map differs, not xsuite.
+* Closed orbit with quad knobs at ±2e-3 and correctors on: 1e-4 relative. The knob enters
+  MAD-NG as ``dknl[2]`` and xsuite as a thick ``k1`` change, which are different maps.
