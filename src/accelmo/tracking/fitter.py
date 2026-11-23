@@ -51,7 +51,7 @@ from accelmo.tracking.sgd.loop import SGDLoop
 
 #: LM stops after this many accepted steps in a row that each lower the chi² by less than this fraction.
 LM_STALL_TOLERANCE = 1e-6
-#: Below this chi² the stall test is absolute: |Δχ²| < 1e-12 ends a noise-free fit.
+#: Below this chi² the stall test is absolute: ``abs(Δχ²) < 1e-12`` ends a noise-free fit.
 LM_CHI2_FLOOR = 1e-6
 LM_STALL_PATIENCE = 5
 #: TrackingParameters fields only the LM solver fits.
