@@ -131,7 +131,7 @@ def test_schur_step_equals_dense_step():
     )
     blocks = blocks_at(q, g, b)
     apply_prior(
-        blocks, np.concatenate([q, g]), b, 0.01, 0.01, 1.0
+        blocks, np.concatenate([q, g]), b, 0.01, 0.01
     )  # the g/b scale degeneracy needs the prior
     n_u = N_Q + N_G
     hess = np.block([[blocks.hess_uu, blocks.hess_ub], [blocks.hess_ub.T, np.diag(blocks.hess_bb)]])
@@ -151,17 +151,16 @@ def test_quad_prior_matches_finite_difference_and_leaves_zero_sigma_free():
         rng.normal(size=N_OBS * N_BPM) * 0.1,
     )
     sigma_q = np.array([0.5, 0.0, 2.0, 0.1, 0.0])
-    c = 1.7
     base = blocks_at(q, g, b)
     with_prior = blocks_at(q, g, b)
-    apply_prior(with_prior, np.concatenate([q, g]), b, 0.0, 0.0, c, sigma_q)
+    apply_prior(with_prior, np.concatenate([q, g]), b, 0.0, 0.0, sigma_q)
     free = sigma_q == 0
-    expected = c * np.sum((q[~free] / sigma_q[~free]) ** 2)
+    expected = np.sum((q[~free] / sigma_q[~free]) ** 2)
     assert np.isclose(with_prior.loss - base.loss, expected)
     d_grad = (with_prior.grad_u - base.grad_u)[:N_Q]
-    assert np.allclose(d_grad, 2 * c * np.where(free, 0.0, q / np.where(free, 1.0, sigma_q) ** 2))
+    assert np.allclose(d_grad, 2 * np.where(free, 0.0, q / np.where(free, 1.0, sigma_q) ** 2))
     d_hess = (with_prior.hess_uu - base.hess_uu)[:N_Q, :N_Q]
-    assert np.allclose(d_hess, np.diag(2 * c / np.where(free, np.inf, sigma_q) ** 2))
+    assert np.allclose(d_hess, np.diag(2 / np.where(free, np.inf, sigma_q) ** 2))
 
 
 def test_apply_prior_loss_only_matches_the_full_prior_loss():
@@ -174,7 +173,26 @@ def test_apply_prior_loss_only_matches_the_full_prior_loss():
     sigma_q = np.array([0.5, 0.0, 1.0, 2.0, 0.1])
     full = CalibrationBlocks(n_q, n_g, n_b)
     full.loss = 12.5
-    apply_prior(full, u, b, 0.02, 0.03, 1.7, sigma_q)
+    apply_prior(full, u, b, 0.02, 0.03, sigma_q)
     shell = SimpleNamespace(loss=12.5, n_q=n_q)
-    apply_prior(shell, u, b, 0.02, 0.03, 1.7, sigma_q, loss_only=True)
+    apply_prior(shell, u, b, 0.02, 0.03, sigma_q, loss_only=True)
     assert shell.loss == pytest.approx(full.loss, rel=1e-14)
+
+
+def test_knob_sigma_array_resolves_names_then_terminal_attributes() -> None:
+    from accelmo.fitting.priors import knob_sigma_array
+
+    names = ["BR.QNO10.dk1l", "BR.QNO20.dk1l", "BR.BHZ11.dk0l", "BR.QNO10.dy"]
+    sigmas = knob_sigma_array(names, {"dk1l": 0.1, "br.qno20.dk1l": 0.5, "DK0L": 2.0})
+    assert np.array_equal(sigmas, [0.1, 0.5, 2.0, 0.0])
+
+
+@pytest.mark.parametrize(
+    ("sigmas", "message"),
+    [({"dk1l": 0.0}, "must be > 0"), ({"dk1l": 1.0, "dx": 1.0}, "not optimised: \\['dx'\\]")],
+)
+def test_knob_sigma_array_rejects_bad_widths_and_unknown_knobs(sigmas, message) -> None:
+    from accelmo.fitting.priors import knob_sigma_array
+
+    with pytest.raises(ValueError, match=message):
+        knob_sigma_array(["BR.QNO10.dk1l"], sigmas)

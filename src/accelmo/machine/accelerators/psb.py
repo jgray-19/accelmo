@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from pymadng_utils.accelerators.psb import PSB as BasePSB  # noqa: N811
 from pymadng_utils.mad.ac_kickers import AC_KICKERS
@@ -128,7 +128,7 @@ class PSB(BasePSB, Accelerator):
 
     def copy_with(self, **overrides) -> PSB:
         """Return a new PSB instance with selected parameters overridden."""
-        kwargs = {
+        kwargs: dict[str, Any] = {
             "ring": self.ring,
             "sequence_file": self.sequence_file,
             "kinetic_energy": self.kinetic_energy,

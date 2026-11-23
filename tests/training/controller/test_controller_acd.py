@@ -11,17 +11,19 @@ import pandas as pd
 import pytest
 import xtrack as xt
 
-from accelmo.config import SimulationConfig
+from accelmo.config import TrackingDataConfig, TrackingParameters, WorkerRuntime
 from accelmo.fitting.config import OutputConfig, SequenceConfig
 from accelmo.machine.accelerators import PSB
 from accelmo.machine.machine_state import merge_machine_states
-from accelmo.tracking.config.helpers import create_arc_measurement_config
-from accelmo.tracking.fitter import ACDMarkerFitter, FitterOptions
+from accelmo.tracking.config.helpers import single_measurement_config
+from accelmo.tracking.fitter import ACDMarkerFitter, FitterOptions, tracking_lm_config
 from tests.training.controller_test_utils import (
+    LM_TEST_ITERATIONS,
+    QUAD_RUNTIME,
+    QUAD_TRACKING_DATA,
+    UNIT_LOSS,
     _load_mad_twiss_for_tracking,
-    _make_simulation_config_quad,
     evaluate_controller_worker_loss,
-    make_lm_config,
     relative_truth_errors,
     strip_inline_flags,
 )
@@ -218,7 +220,7 @@ def _build_acd_controller(
         bpm_pattern=r"(?i)br3\.bpm.*",
     )
 
-    optimiser_config = make_lm_config()
+    optimiser_config = tracking_lm_config(LM_TEST_ITERATIONS)
 
     ctrl = ACDMarkerFitter(
         PSB(
@@ -228,9 +230,10 @@ def _build_acd_controller(
             errors={"quad": {"k1"}},
         ),
         optimiser_config,
-        _make_simulation_config_quad(),
+        QUAD_RUNTIME,
+        QUAD_TRACKING_DATA,
         SequenceConfig(magnet_range=magnet_range),
-        create_arc_measurement_config(
+        single_measurement_config(
             off_magnet_path, machine_state=merge_machine_states(corrector_file, tune_knobs)
         ),
         options=FitterOptions(
@@ -266,7 +269,7 @@ def test_controller_quad_opt_with_acd(
 
     if loss_regression:
         true_loss = evaluate_controller_worker_loss(ctrl, magnet_strengths)
-        assert true_loss < 5e-15, (
+        assert true_loss < 5e-15 * UNIT_LOSS, (
             "True-strength ACD loss should be near the xsuite/MAD-NG integrator floor (~5e-15), "
             f"got {true_loss:.3e} (initial={initial_loss:.3e})"
         )
@@ -310,18 +313,15 @@ def test_lm_gain_prior_does_not_depend_on_particles_per_worker(
                 sequence_file=seq_psb,
                 errors={"quad": {"k1"}},
             ),
-            make_lm_config(),
-            SimulationConfig(
-                num_workers=num_workers,
-                num_batches=1,
-                validation_fraction=0.0,
-                bpm_gain_sigma=0.01,
-            ),
+            tracking_lm_config(LM_TEST_ITERATIONS),
+            WorkerRuntime(num_workers=num_workers),
+            TrackingDataConfig(num_batches=1, validation_fraction=0.0),
             SequenceConfig(magnet_range="$start/$end"),
-            create_arc_measurement_config(
+            single_measurement_config(
                 data, machine_state=merge_machine_states(corrector_file, tune_knobs)
             ),
             options=FitterOptions(
+                parameters=TrackingParameters(bpm_gain_sigma=0.01),
                 initial_knob_strengths=strengths,
                 output_config=OutputConfig(mad_logfile=tmp_path / "mad.log", write_run_log=False),
             ),
@@ -358,18 +358,15 @@ def test_lm_knob_prior_shifts_a_knob_by_the_gaussian_posterior_mean(
                 sequence_file=seq_psb,
                 errors={"quad": {"k1"}},
             ),
-            make_lm_config(),
-            SimulationConfig(
-                num_workers=num_workers,
-                num_batches=1,
-                validation_fraction=0.0,
-                knob_sigmas=prior,
-            ),
+            tracking_lm_config(LM_TEST_ITERATIONS),
+            WorkerRuntime(num_workers=num_workers),
+            TrackingDataConfig(num_batches=1, validation_fraction=0.0),
             SequenceConfig(magnet_range="$start/$end"),
-            create_arc_measurement_config(
+            single_measurement_config(
                 data, machine_state=merge_machine_states(corrector_file, tune_knobs)
             ),
             options=FitterOptions(
+                parameters=TrackingParameters(knob_sigmas=prior),
                 initial_knob_strengths=strengths,
                 output_config=OutputConfig(mad_logfile=tmp_path / "mad.log", write_run_log=False),
             ),

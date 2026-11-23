@@ -1,15 +1,13 @@
 from __future__ import annotations
 
-import dataclasses
-
 import numpy as np
 import pandas as pd
 import pytest
 
+from accelmo.config import TrackingDataConfig, WorkerRuntime
 from accelmo.fitting.config import OutputConfig
 from accelmo.fitting.protocol import Evaluate
 from accelmo.fitting.uncertainty import HESSIAN_MIN_EIGENVALUE, sandwich_uncertainties
-from accelmo.fitting.weights import variance_to_weight
 from accelmo.machine.machine_state import merge_machine_states
 from accelmo.tracking.fitter import ArcByArcFitter, FitterOptions, TrackingFitter
 from accelmo.tracking.uncertainty import (
@@ -96,54 +94,14 @@ def test_sandwich_reduces_to_inverse_normal_matrix_for_independent_readings() ->
 
 
 def _collect_epoch_gradient(ctrl: TrackingFitter, knob_updates: dict[str, float]) -> np.ndarray:
-    """Return the raw training gradient summed over all workers and batches.
-
-    Workers divide their gradient by their own point count, which differs between
-    ranges; multiplying it back makes the sum comparable with the Hessian parts.
-    """
+    """The training chi² gradient summed over all workers and batches."""
     gradient = np.zeros(len(ctrl.machine.knob_names), dtype=np.float64)
-    n_run_turns = ctrl.machine.simulation_config.n_run_turns
-    # Training workers are numbered from 0 in pool order.
-    points = [len(plan.bpm_names) * n_run_turns for plan in ctrl.session.training.metadata]
     channels = ctrl.session.training.channels
-    for batch in range(ctrl.machine.simulation_config.num_batches):
+    for batch in range(ctrl.tracking_data.num_batches):
         channels.send_all(Evaluate(knob_updates, batch))
         for result in channels.recv_all():
-            gradient += points[result.worker_id] * np.asarray(
-                result.grad, dtype=np.float64
-            ).reshape(-1)
+            gradient += np.asarray(result.grad, dtype=np.float64).reshape(-1)
     return gradient
-
-
-def _compute_training_weight_normaliser(ctrl: TrackingFitter) -> float:
-    """Rebuild the worker payload weights and return the global gradient normaliser.
-
-    Production normalises weights over the training *and* validation payloads at once
-    (see ``TrackingSession.build_payloads``), so the normaliser is computed over the
-    same combined set here.
-    """
-    training, validation = ctrl.session.build_payloads(ctrl.data_manager.tracks)
-    payloads = training + validation
-    if not payloads:
-        raise AssertionError("Expected at least one worker payload")
-
-    optimise_momenta = ctrl.machine.simulation_config.optimise_momenta
-    global_max = 0.0
-    for data, config, _file_idx in payloads:
-        planes = {"x": ("x"), "y": ("y")}.get(config.kick_plane, ("x", "y"))
-        active = planes + tuple(f"p{plane}" for plane in planes) * optimise_momenta
-        variances = {
-            "x": data.position_variances[:, :, 0],
-            "y": data.position_variances[:, :, 1],
-            "px": data.momentum_variances[:, :, 0],
-            "py": data.momentum_variances[:, :, 1],
-        }
-        for observable in active:
-            weights = variance_to_weight(variances[observable])
-            if weights.size:
-                global_max = max(global_max, float(np.max(weights)))
-
-    return global_max if global_max > 0.0 else 1.0
 
 
 #: Norm-relative Hessian error budgets at truth: the measured central-difference error
@@ -192,11 +150,10 @@ def test_controller_worker_hessian_matches_finite_difference_on_reduced_knob_sub
 ) -> None:
     from accelmo.fitting.config import SequenceConfig
     from accelmo.machine.accelerators import LHC
-    from accelmo.tracking.config.helpers import create_arc_measurement_config
+    from accelmo.tracking.config.helpers import single_measurement_config
     from tests.training.controller_test_utils import (
         _generate_nonoise_track,
         _make_optimiser_config_quad,
-        _make_simulation_config_quad,
     )
 
     magnet_range = "BPM.13R1.B1/BPM.13L2.B1"
@@ -215,11 +172,6 @@ def test_controller_worker_hessian_matches_finite_difference_on_reduced_knob_sub
         perturb_quads=True,
     )
 
-    simulation_config = dataclasses.replace(
-        _make_simulation_config_quad(),
-        num_workers=4,
-        num_batches=2,
-    )
     ctrl = ArcByArcFitter(
         LHC(
             beam=1,
@@ -228,9 +180,10 @@ def test_controller_worker_hessian_matches_finite_difference_on_reduced_knob_sub
             errors={"quad": {"k1"}},
         ),
         _make_optimiser_config_quad(),
-        simulation_config,
+        WorkerRuntime(num_workers=4),
+        TrackingDataConfig(num_batches=2),
         SequenceConfig(magnet_range=magnet_range),
-        create_arc_measurement_config(
+        single_measurement_config(
             measurement_file, machine_state=merge_machine_states(corrector_file, tune_knobs)
         ),
         bpm_start_points,
@@ -247,7 +200,6 @@ def test_controller_worker_hessian_matches_finite_difference_on_reduced_knob_sub
     terminated = False
     try:
         ctrl.start_session(ctrl.machine.initial_knobs)
-        weight_normaliser = _compute_training_weight_normaliser(ctrl)
         base_knobs = ctrl.machine.true_strengths.copy()
         base_vec = np.array(
             [base_knobs[name] for name in ctrl.machine.knob_names],
@@ -271,7 +223,7 @@ def test_controller_worker_hessian_matches_finite_difference_on_reduced_knob_sub
     assert total_hessian.shape == (n_knobs, n_knobs)
     assert np.all(np.isfinite(total_hessian))
     sym_hessian = 0.5 * (total_hessian + total_hessian.T)
-    predicted = 2.0 * sym_hessian[np.ix_(subset, subset)] / weight_normaliser
+    predicted = 2.0 * sym_hessian[np.ix_(subset, subset)]
 
     _assert_matrices_close(fd_matrix, predicted, LHC_HESSIAN_REL_TOL)
 
@@ -303,7 +255,7 @@ def _make_psb_fitter(
     exact_start_bpms: tuple[str, ...] = (),
     exact_start_columns: tuple[str, ...] = ("x", "y", "px", "py"),
     flattop_turns: int = 256,
-    **simulation_overrides,
+    validation_fraction: float = 0.1,
 ):
     """A PSB ring-3 arc-by-arc quadrupole fitter on noise-free data, and its measurement file.
 
@@ -312,10 +264,9 @@ def _make_psb_fitter(
     from accelmo.config import OptimiserConfig
     from accelmo.fitting.config import SequenceConfig
     from accelmo.machine.accelerators import PSB
-    from accelmo.tracking.config.helpers import create_arc_measurement_config
+    from accelmo.tracking.config.helpers import single_measurement_config
     from tests.training.controller_test_utils import (
         _generate_nonoise_track,
-        _make_simulation_config_quad,
     )
 
     measurement_file = tmp_path / "track_off_magnet_psb.parquet"
@@ -335,19 +286,12 @@ def _make_psb_fitter(
         exact = track["name"].str.upper().isin([name.upper() for name in exact_start_bpms])
         track.loc[exact, [f"var_{column}" for column in exact_start_columns]] = np.inf
         track.to_parquet(measurement_file, index=False)
-    simulation_config = dataclasses.replace(
-        _make_simulation_config_quad(),
-        num_workers=num_workers,
-        num_batches=num_batches,
-        **simulation_overrides,
-    )
     optimiser_config = OptimiserConfig(
         max_epochs=1,
         warmup_epochs=0,
         warmup_lr_start=1e-6,
         max_lr=3e-4,
         min_lr=3e-4,
-        gradient_converged_value=5e-15,
         optimiser_type="adam",
     )
     ctrl = ArcByArcFitter(
@@ -358,9 +302,10 @@ def _make_psb_fitter(
             errors={"quad": {"k1"}},
         ),
         optimiser_config,
-        simulation_config,
+        WorkerRuntime(num_workers=num_workers),
+        TrackingDataConfig(num_batches=num_batches, validation_fraction=validation_fraction),
         SequenceConfig("$start/$end"),
-        create_arc_measurement_config(
+        single_measurement_config(
             measurement_file, machine_state=merge_machine_states(corrector_file, tune_knobs)
         ),
         bpm_start_points,
@@ -398,7 +343,6 @@ def test_controller_worker_hessian_matches_finite_difference_for_psb_100um_varia
     terminated = False
     try:
         ctrl.start_session(ctrl.machine.initial_knobs)
-        weight_normaliser = _compute_training_weight_normaliser(ctrl)
         base_knobs = ctrl.machine.true_strengths.copy()
         base_vec = np.array(
             [base_knobs[name] for name in ctrl.machine.knob_names],
@@ -437,7 +381,7 @@ def test_controller_worker_hessian_matches_finite_difference_for_psb_100um_varia
     positive_modes = eigenvalues[eigenvalues > 1e-9]
     assert positive_modes.size == n_knobs - len(zero_row_knobs)
 
-    predicted = 2.0 * sym_hessian[np.ix_(subset, subset)] / weight_normaliser
+    predicted = 2.0 * sym_hessian[np.ix_(subset, subset)]
 
     _assert_matrices_close(fd_matrix, predicted, PSB_HESSIAN_REL_TOL)
 
@@ -469,14 +413,9 @@ def test_single_direction_sigma_is_the_inverse_finite_difference_normal_matrix(
     terminated = False
     try:
         ctrl.start_session(ctrl.machine.initial_knobs)
-        assert [plan.range_spec.sdir for plan in ctrl.session.training.metadata] == [sdir]
-        weight_normaliser = _compute_training_weight_normaliser(ctrl)
+        assert [config.geometry.sdir for config in ctrl.session.training.metadata] == [sdir]
         base_knobs = ctrl.machine.true_strengths.copy()
-        fd_normal = (
-            0.5
-            * weight_normaliser
-            * _finite_difference_hessian(ctrl, base_knobs, np.arange(n_knobs))
-        )
+        fd_normal = 0.5 * _finite_difference_hessian(ctrl, base_knobs, np.arange(n_knobs))
         ctrl.session.set_training_knobs(base_knobs)
         normal, noise = ctrl.session.stop_and_collect_uncertainty(
             n_knobs, propagate_uncertainty=True
@@ -561,7 +500,6 @@ def test_reported_noise_matrix_matches_single_reading_probes(
     terminated = False
     try:
         ctrl.start_session(ctrl.machine.initial_knobs)
-        weight_normaliser = _compute_training_weight_normaliser(ctrl)
         base_gradient = _collect_epoch_gradient(ctrl, base_knobs)
         ctrl.session.set_training_knobs(base_knobs)
         _, noise = ctrl.session.stop_and_collect_uncertainty(n_knobs, propagate_uncertainty=True)
@@ -581,7 +519,7 @@ def test_reported_noise_matrix_matches_single_reading_probes(
             probe.iloc[row, probe.columns.get_loc(column)] += shift
             probe.to_parquet(probe_file, index=False)
             gradient = _truth_gradient(ctrl, probe_file, base_knobs)
-            sensitivity = 0.5 * weight_normaliser * (gradient - base_gradient) / shift
+            sensitivity = 0.5 * (gradient - base_gradient) / shift
             expected += variances[row] * np.outer(sensitivity, sensitivity)
 
     _assert_matrices_close(

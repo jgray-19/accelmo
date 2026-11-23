@@ -21,16 +21,20 @@ from xtrack_tools.monitors import (
 )
 from xtrack_tools.tracking import run_tracking, run_tracking_without_ac_dipole
 
-from accelmo.config import OptimiserConfig, SimulationConfig
+from accelmo.config import OptimiserConfig, TrackingDataConfig, WorkerRuntime
 from accelmo.fitting.config import OutputConfig, SequenceConfig
 from accelmo.machine.machine_state import merge_machine_states
-from accelmo.tracking.config.helpers import create_arc_measurement_config
+from accelmo.tracking.config.helpers import single_measurement_config
 from accelmo.tracking.fitter import ArcByArcFitter, FitterOptions, TrackingFitter
 from tests.training.helpers import TRACK_COLUMNS, generate_xsuite_env_with_errors
 
 # Measurement noise assigned to the synthetic tracks' variance columns.
+#: Iterations of the tests' Levenberg-Marquardt tracking fits.
+LM_TEST_ITERATIONS = 30
 POSITION_STD_DEV = 1e-4
 MOMENTUM_STD_DEV = 3e-6
+#: Chi² per weighted point of a loss of 1 in units of the largest weight (1/σ_p², 4 observables).
+UNIT_LOSS = 1.0 / (4 * MOMENTUM_STD_DEV**2)
 
 KICKER_PATTERNS = (
     r"^mk",
@@ -389,19 +393,18 @@ DPP_VALUE = 1.25e-4
 FLATTOP_TURNS = 256
 
 
-def _make_simulation_config_energy(optimise_momenta: bool = True) -> SimulationConfig:
-    return SimulationConfig(
-        num_workers=3,
-        num_batches=2,
-        optimise_momenta=optimise_momenta,
-    )
+ENERGY_RUNTIME = WorkerRuntime(num_workers=3)
+
+
+def _make_tracking_data_energy(optimise_momenta: bool = True) -> TrackingDataConfig:
+    return TrackingDataConfig(num_batches=2, optimise_momenta=optimise_momenta)
 
 
 def _build_energy_optimisation_case(
     *,
     tmp_path: Path,
     loaded_interface: MadInterface,
-    simulation_config: SimulationConfig,
+    tracking_data: TrackingDataConfig,
     optimiser_config: OptimiserConfig,
     bpm_start_points: list[str],
     bpm_end_points: list[str],
@@ -428,7 +431,7 @@ def _build_energy_optimisation_case(
     )
 
     sequence_config = SequenceConfig(magnet_range=magnet_range)
-    measurement_config = create_arc_measurement_config(
+    measurement_config = single_measurement_config(
         off_dpp_path, machine_state=merge_machine_states(corrector_file, tune_knobs)
     )
 
@@ -440,7 +443,8 @@ def _build_energy_optimisation_case(
     ctrl = ArcByArcFitter(
         accel,
         optimiser_config,
-        simulation_config,
+        ENERGY_RUNTIME,
+        tracking_data,
         sequence_config,
         measurement_config,
         bpm_start_points,
@@ -457,7 +461,7 @@ def _run_energy_optimisation_case(
     *,
     tmp_path: Path,
     loaded_interface: MadInterface,
-    simulation_config: SimulationConfig,
+    tracking_data: TrackingDataConfig,
     optimiser_config: OptimiserConfig,
     bpm_start_points: list[str],
     bpm_end_points: list[str],
@@ -473,7 +477,7 @@ def _run_energy_optimisation_case(
     ctrl, _true_knobs = _build_energy_optimisation_case(
         tmp_path=tmp_path,
         loaded_interface=loaded_interface,
-        simulation_config=simulation_config,
+        tracking_data=tracking_data,
         optimiser_config=optimiser_config,
         bpm_start_points=bpm_start_points,
         bpm_end_points=bpm_end_points,
@@ -486,19 +490,6 @@ def _run_energy_optimisation_case(
         dpp_value=dpp_value,
     )
     return ctrl.run()
-
-
-def make_lm_config(max_iterations: int = 30) -> OptimiserConfig:
-    """Levenberg-Marquardt tracking fit; stops at the gradient floor or ``max_iterations``."""
-    return OptimiserConfig(
-        max_epochs=max_iterations,
-        warmup_epochs=0,
-        warmup_lr_start=0.0,
-        max_lr=0.0,
-        min_lr=0.0,
-        gradient_converged_value=1e-13,
-        optimiser_type="levenberg_marquardt",
-    )
 
 
 def relative_truth_errors(
@@ -522,15 +513,11 @@ def _make_optimiser_config_quad() -> OptimiserConfig:
         warmup_lr_start=1e-4,
         max_lr=1e-4,
         min_lr=1e-4,
-        gradient_converged_value=5e-14,
     )
 
 
-def _make_simulation_config_quad() -> SimulationConfig:
-    return SimulationConfig(
-        num_workers=8,
-        num_batches=2,
-    )
+QUAD_RUNTIME = WorkerRuntime(num_workers=8)
+QUAD_TRACKING_DATA = TrackingDataConfig(num_batches=2)
 
 
 def evaluate_controller_worker_loss(
@@ -539,7 +526,7 @@ def evaluate_controller_worker_loss(
     *,
     enable_validation: bool | None = None,
 ) -> float:
-    """Return the total worker diagnostic loss summed across all workers at one knob setting."""
+    """Training chi² per weighted point at one knob setting."""
     return evaluate_controller_worker_losses(
         ctrl,
         [knobs],
@@ -553,12 +540,12 @@ def evaluate_controller_worker_losses(
     *,
     enable_validation: bool | None = None,
 ) -> list[float]:
-    """Return worker diagnostic losses for several knob settings using one worker startup."""
+    """Training chi² per weighted point for several knob settings, from one worker startup."""
     session = ctrl.start_session(enable_validation=enable_validation)
     try:
         losses = []
         for knobs in knobs_list:
-            losses.append(sum(session.training_losses(knobs)))
+            losses.append(sum(session.training_losses(knobs)) / session.n_training_points)
     finally:
         session.terminate()
     return losses

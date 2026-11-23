@@ -128,7 +128,7 @@ def test_lhc_all_optimisation_combinations_select_expected_knob_list(
     # creating a full MAD session (faster exhaustive combinatorial test).
     interface = MadInterface.__new__(MadInterface)
     interface.accelerator = accelerator
-    selected_specs = interface.get_knob_specs()
+    selected_specs = interface.accelerator.get_knob_specs()
 
     actual_knob_list = [_spec_key(spec[:4]) for spec in selected_specs]
     if optimise_energy:
@@ -541,8 +541,7 @@ def test_count_bpms(optimising_interface: MadInterface, bpm_range: str) -> None:
         start, end = bpm_range.split("/")
         expected_bpms_in_range = full_bpms[full_bpms.index(start) : full_bpms.index(end) + 1]
 
-    bpms_in_range, nbpms, all_bpms = optimising_interface.count_bpms(bpm_range)
-    assert nbpms == len(expected_bpms_in_range)
+    all_bpms, bpms_in_range = optimising_interface.get_bpm_list(bpm_range)
     assert bpms_in_range == expected_bpms_in_range
     assert all_bpms == full_bpms  # Should always return full BPM list
 
@@ -649,10 +648,8 @@ def test_initial_model_value_is_preserved_when_quadrupole_knob_is_created(seq_b1
     cleanup_interface(interface)
 
 
-def test_observed_tracking_anchor_markers_overrides_default_anchor_observation(
-    seq_psb: Path,
-) -> None:
-    """``observed_tracking_anchor_markers`` replaces, rather than adds to, the default set."""
+def test_anchor_markers_are_observed_unless_switched_off(seq_psb: Path) -> None:
+    """Workers switch off the anchor-marker observation the parent model keeps."""
     accelerator = PSB(ring=3, sequence_file=seq_psb, errors={"quad": {"k1"}})
     acd_after = accelerator.acd_marker_name("after")
     acd_before = accelerator.acd_marker_name("before")
@@ -666,7 +663,7 @@ def test_observed_tracking_anchor_markers_overrides_default_anchor_observation(
     overridden_interface = MadInterface(
         accelerator=accelerator,
         tracking_anchor_mode="acd",
-        observed_tracking_anchor_markers=[],
+        observe_anchor_markers=False,
         discard_mad_output=True,
         create_knobs=True,
     )

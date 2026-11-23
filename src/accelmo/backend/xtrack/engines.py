@@ -23,9 +23,10 @@ if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
     from pathlib import Path
 
-    from accelmo.backend.protocol import TrackRequest
+    from accelmo.backend.protocol import TrackGeometry, TrackRequest
     from accelmo.fitting.worker import WorkerConfig
     from accelmo.machine.accelerators import Accelerator
+    from accelmo.machine.machine_state import MachineState
 
 LOGGER = logging.getLogger(__name__)
 COORDS = ("x", "px", "y", "py")
@@ -40,20 +41,22 @@ def _monomials(n_knobs: int) -> np.ndarray:
     return monomials
 
 
-def _model(config: WorkerConfig, init_knobs: Mapping[str, float]) -> XtrackModel:
+def _model(
+    config: WorkerConfig, init_knobs: Mapping[str, float], geometry: TrackGeometry | None = None
+) -> XtrackModel:
+    """The worker's model: ``geometry``'s segment, cycled; the whole ring, uncycled, without it."""
     model = XtrackModel(
         config.accelerator,
         magnet_range=config.magnet_range,
-        bpm_range=config.bpm_range,
+        bpm_range="$start/$end" if geometry is None else geometry.bpm_range,
         bad_bpms=config.bad_bpms,
-        machine_state=config.interface_options.get("machine_state"),
+        machine_state=config.machine_state,
         initial_model_values=init_knobs,
     )
-    unsupported = set(config.interface_options) - {"machine_state"}
-    if unsupported or config.tracking_anchor_mode is not None:
-        raise NotImplementedError(f"xtrack backend: unsupported options {sorted(unsupported)}")
-    if config.cycle_target is not None:
-        model.cycle_to_start(config.cycle_target)
+    if config.b2_errors is not None or (geometry is not None and geometry.anchor_mode is not None):
+        raise NotImplementedError("xtrack backend: no b2 errors or marker-anchored tracking")
+    if geometry is not None:
+        model.cycle_to_start(geometry.cycle_target)
         model.recount_bpms()
     return model
 
@@ -73,7 +76,7 @@ class _Parametric:
         for i, name in enumerate(self.names):
             if name in knobs:
                 self.values[i] = float(knobs[name])
-        if self.applied:
+        if self.applied and self.knobs is not None:
             self.knobs.apply(list(self.values))
 
     def apply(self) -> None:
@@ -102,22 +105,22 @@ class TrackingEngine:
         logfile: Path | None = None,
     ) -> None:
         del worker_id, logfile
-        if config.sdir != 1 or config.accelerator.has_ac_kickers:
+        if plan.geometry.sdir != 1 or config.accelerator.has_ac_kickers:
             raise NotImplementedError(
                 "xtrack backend: backward tracking and AC kickers are not supported"
             )
         self.plan = plan
-        self.model = _model(config, init_knobs)
+        self.model = _model(config, init_knobs, plan.geometry)
         self.knob_names = list(self.model.knob_names)
         line = self.model.line
         names = line.element_names
-        if plan.tracking_range is None:
+        if plan.geometry.tracking_range is None:
             self.ele_start, self.ele_stop, observed = 0, None, self.model.all_bpms
             self.nbpms = len(observed)
         else:
-            if plan.n_run_turns != 1:
+            if plan.geometry.n_turns != 1:
                 raise NotImplementedError("xtrack backend: a named range is tracked for one turn")
-            start, stop = _range_indices(names, plan.tracking_range)
+            start, stop = _range_indices(names, plan.geometry.tracking_range)
             self.ele_start, self.ele_stop = start, stop + 1
             inside = {name.upper() for name in names[start : stop + 1]}
             observed = [name for name in self.model.all_bpms if name in inside]
@@ -175,7 +178,7 @@ class TrackingEngine:
                 particle,
                 ele_start=self.ele_start,
                 ele_stop=self.ele_stop,
-                num_turns=self.plan.n_run_turns,
+                num_turns=self.plan.geometry.n_turns,
                 multi_element_monitor_at=self.observed,
                 monitor_monomials=dict.fromkeys(COORDS, self.monomials),
             )
@@ -184,13 +187,13 @@ class TrackingEngine:
             return None
         record = np.asarray(line.tracker.record_multi_element_last_track.coefficients)
         n = len(self.monomials)
-        turns = record[: self.plan.n_run_turns]
+        turns = record[: self.plan.geometry.n_turns]
         return turns.reshape(-1, len(COORDS), n)
 
     def preflight(self) -> dict[str, int | bool]:
         """See :meth:`accelmo.backend.protocol.TrackingEngine.preflight`."""
         record = self._track_one(self.coords[0][0], float(self.pts[0][0]))
-        expected = self.nbpms * self.plan.n_run_turns
+        expected = self.nbpms * self.plan.geometry.n_turns
         if record is None:
             return {"observed": 0, "expected": expected, "lost": True}
         return {"observed": len(record), "expected": expected, "lost": False}
@@ -198,7 +201,7 @@ class TrackingEngine:
     def track(self, batch: int, *, start_derivatives: bool) -> TrackResult:
         """See :meth:`accelmo.backend.protocol.TrackingEngine.track`."""
         coords, pts = self.coords[batch], self.pts[batch]
-        n_points = self.nbpms * self.plan.n_run_turns
+        n_points = self.nbpms * self.plan.geometry.n_turns
         n_knobs = len(self.params.names)
         records = np.full((len(coords), n_points, len(COORDS), 5 + n_knobs), np.nan)
         n_lost = 0
@@ -237,8 +240,11 @@ class ClosedOrbitEngine:
         orbit_coords: Sequence[str],
         worker_id: int,
         logfile: Path | None = None,
+        extra_knobs: Sequence[str] | None = None,
     ) -> None:
         del worker_id, logfile
+        if extra_knobs is not None:
+            raise NotImplementedError("xtrack backend: no corrector calibration (extra_knobs)")
         if optics_names:
             raise NotImplementedError("xtrack backend: closed orbit only (no optics)")
         self.model = _model(config, init_knobs)
@@ -336,7 +342,7 @@ def open_model(
     accelerator: Accelerator,
     *,
     magnet_range: str,
-    machine_state: object = None,
+    machine_state: MachineState | None = None,
     b2_errors: Path | None = None,
     bad_bpms: list[str] | None = None,
     debug: bool = False,

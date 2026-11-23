@@ -17,9 +17,10 @@ import numpy as np
 import pytest
 
 from accelmo.backend.madng.engines import TrackingEngine
-from accelmo.config import SimulationConfig
+from accelmo.backend.protocol import TrackGeometry
+from accelmo.config import TrackingDataConfig, TrackingParameters, WorkerRuntime
 from accelmo.fitting.protocol import Ack, UpdateInitCoords
-from accelmo.fitting.worker import WorkerConfig
+from accelmo.tracking.dispatch.setup import TrackingWorkerConfig
 from accelmo.tracking.worker import PrecomputedTrackingWeights, TrackingData, TrackingWorker
 
 # ---------------------------------------------------------------------------
@@ -73,22 +74,25 @@ def _make_worker_with_init_coords(n_particles: int = 6, num_batches: int = 2) ->
         init_variances=np.ones((n_particles, 4)),
         start_turn_offsets=np.zeros(n_particles, dtype=np.int64),
         precomputed_weights=PrecomputedTrackingWeights(
-            x=np.ones(shape), y=np.ones(shape), px=np.ones(shape), py=np.ones(shape), scale=1.0
+            x=np.ones(shape), y=np.ones(shape), px=np.ones(shape), py=np.ones(shape)
         ),
     )
-    config = WorkerConfig(
+    config = TrackingWorkerConfig(
         accelerator=None,  # type: ignore[arg-type]  # only the MAD session needs it
-        tracking_start_bpm="BPM.A",
-        tracking_end_bpm="BPM.B",
         magnet_range="$start/$end",
         kick_plane="x",
+        geometry=TrackGeometry(start_bpm="BPM.A", end_bpm="BPM.B"),
+        file_idx=0,
+        bpm_names=["BPM.A", "BPM.B"],
     )
     worker = TrackingWorker(
         None,  # type: ignore[arg-type]
         0,
         data,
         config,
-        SimulationConfig(num_workers=1, num_batches=num_batches),
+        WorkerRuntime(1),
+        TrackingDataConfig(num_batches),
+        TrackingParameters(),
     )
     worker.engine = RecordingEngine()
     return worker

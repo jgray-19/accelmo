@@ -59,7 +59,7 @@ def _corrector_table_state(table: tfs.TfsDataFrame) -> dict[str, float]:
         )
     changed = (table["hkick"] != table["hkick_old"]) | (table["vkick"] != table["vkick_old"])
     state = {}
-    for row in table[changed].itertuples():
+    for row in table[changed].itertuples():  # ty:ignore[unresolved-attribute]
         for attribute, column in _KICKER_ATTRIBUTES.get(row.kind, ()):
             state[f"{row.ename}.{attribute}"] = float(getattr(row, column))
     return state

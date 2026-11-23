@@ -9,7 +9,7 @@ from accelmo.optimisers.levenberg_marquardt import (
 
 def test_lm_solves_quadratic_newton_step() -> None:
     optim = LevenbergMarquardtOptimiser(
-        LevenbergMarquardtConfig(gradient_converged_value=0.0),
+        LevenbergMarquardtConfig(),
         initial_params=np.array([0.0]),
     )
 
@@ -146,29 +146,30 @@ def test_lm_state_roundtrip() -> None:
 
 def test_refresh_after_every_accepted_step_reaches_the_fixed_point() -> None:
     """Loss (x - m)^2 with m rebuilt from the accepted x as m = x / 2 + 1: x -> m -> 2."""
-    from accelmo.fitting.lm_loop import LMPoint, run_levenberg_marquardt
+    from accelmo.fitting.lm_loop import LMPoint, LMProblem, run_levenberg_marquardt
 
-    marker = [1.0]
-    refreshed_at: list[float] = []
+    class MovingMarker(LMProblem):
+        def __init__(self) -> None:
+            self.marker = 1.0
+            self.refreshed_at: list[float] = []
 
-    def evaluate(params: np.ndarray, iteration: int) -> LMPoint:
-        residual = params[0] - marker[0]
-        return LMPoint(residual**2, np.array([2.0 * residual]), np.array([[2.0]]))
+        def evaluate(self, params: np.ndarray, iteration: int) -> LMPoint:
+            residual = params[0] - self.marker
+            return LMPoint(residual**2, np.array([2.0 * residual]), np.array([[2.0]]))
 
-    def refresh(params: np.ndarray) -> bool:
-        refreshed_at.append(float(params[0]))
-        new = params[0] / 2.0 + 1.0
-        moved = abs(new - marker[0]) > 1e-12
-        marker[0] = new
-        return moved
+        def refresh(self, params: np.ndarray) -> bool:
+            self.refreshed_at.append(float(params[0]))
+            new = params[0] / 2.0 + 1.0
+            moved = abs(new - self.marker) > 1e-12
+            self.marker = new
+            return moved
 
-    config = LevenbergMarquardtConfig(gradient_converged_value=0.0, max_iterations=200)
-    optimiser, diagnostics = run_levenberg_marquardt(
-        np.array([0.0]), evaluate, config, refresh=refresh
-    )
+    problem = MovingMarker()
+    config = LevenbergMarquardtConfig(max_iterations=200)
+    optimiser, diagnostics = run_levenberg_marquardt(np.array([0.0]), problem, config)
     assert optimiser.best.value[0] == pytest.approx(2.0, abs=1e-11)
     # one refresh per accepted point, never twice at the same point
-    assert len(refreshed_at) == len(set(refreshed_at))
+    assert len(problem.refreshed_at) == len(set(problem.refreshed_at))
     assert diagnostics.iterations < 200
 
 
@@ -176,7 +177,6 @@ def test_lm_stops_after_patience_stalled_steps_on_a_tiny_loss() -> None:
     """Accepted steps that each lower a 1e-7 loss by 1e-8 of itself: stop on the 5th, not before."""
     optim = LevenbergMarquardtOptimiser(
         LevenbergMarquardtConfig(
-            gradient_converged_value=0.0,
             loss_relative_tolerance=1e-6,
             loss_relative_floor=0.0,
             loss_stall_patience=5,
@@ -197,7 +197,6 @@ def test_lm_stops_after_patience_stalled_steps_on_a_tiny_loss() -> None:
 def test_lm_stall_count_resets_on_a_real_improvement() -> None:
     optim = LevenbergMarquardtOptimiser(
         LevenbergMarquardtConfig(
-            gradient_converged_value=0.0,
             loss_relative_tolerance=1e-6,
             loss_relative_floor=0.0,
             loss_stall_patience=3,
@@ -217,3 +216,65 @@ def test_lm_stall_count_resets_on_a_real_improvement() -> None:
         for k, x in enumerate(losses)
     ]
     assert flags == [False] * 6  # the drop to 0.5e-7 restarts the count: two stalls < 3
+
+
+STALL_CONFIG = LevenbergMarquardtConfig(
+    loss_relative_tolerance=1e-6,
+    loss_relative_floor=0.0,
+    loss_stall_patience=3,
+)
+STALL_LOSSES = [1e-7 * (1.0 - 1e-9 * k) for k in range(5)]
+
+
+def _stall_flags(optim: LevenbergMarquardtOptimiser, losses: list[float], first: int) -> list[bool]:
+    return [
+        optim.update(np.array([float(first + i)]), x, np.array([1e-3]), np.array([[2.0]])).converged
+        for i, x in enumerate(losses)
+    ]
+
+
+def test_lm_resumed_run_keeps_its_stall_count() -> None:
+    """Checkpoint after two stalled steps: the resumed run converges at the same step."""
+    uninterrupted = _stall_flags(
+        LevenbergMarquardtOptimiser(STALL_CONFIG, initial_params=np.array([0.0])), STALL_LOSSES, 0
+    )
+    first = LevenbergMarquardtOptimiser(STALL_CONFIG, initial_params=np.array([0.0]))
+    head = _stall_flags(first, STALL_LOSSES[:3], 0)
+    resumed = LevenbergMarquardtOptimiser(STALL_CONFIG, initial_params=np.array([0.0]))
+    resumed.load_state_dict(first.state_dict())
+    assert head + _stall_flags(resumed, STALL_LOSSES[3:], 3) == uninterrupted
+    assert uninterrupted == [False] * 3 + [True] * 2
+
+
+@pytest.mark.parametrize(
+    "bad", [{"loss_stall_patience": 0}, {"loss_relative_floor": -1e-3}], ids=["patience", "floor"]
+)
+def test_lm_config_rejects_invalid_stall_settings(bad: dict) -> None:
+    with pytest.raises(ValueError, match="LevenbergMarquardtConfig"):
+        LevenbergMarquardtConfig(**bad)
+
+
+def test_loss_only_trials_reach_the_same_solution_with_fewer_full_evaluations() -> None:
+    """Loss x^4 with a constant Hessian 2 overshoots, so many steps are rejected."""
+    from accelmo.fitting.lm_loop import LMPoint, LMProblem, run_levenberg_marquardt
+
+    class Quartic(LMProblem):
+        def __init__(self, loss_only_trials: bool) -> None:
+            self.loss_only_trials = loss_only_trials
+            self.full, self.trials = 0, 0
+
+        def evaluate(self, params: np.ndarray, iteration: int) -> LMPoint:
+            self.full += 1
+            return LMPoint(params[0] ** 4, np.array([4.0 * params[0] ** 3]), np.array([[2.0]]))
+
+        def trial_loss(self, params: np.ndarray) -> float | None:
+            self.trials += 1
+            return float(params[0] ** 4)
+
+    config = LevenbergMarquardtConfig(max_iterations=200)
+    plain, trial = Quartic(loss_only_trials=False), Quartic(loss_only_trials=True)
+    best_plain = run_levenberg_marquardt(np.array([3.0]), plain, config)[0].best
+    best_trial = run_levenberg_marquardt(np.array([3.0]), trial, config)[0].best
+    assert best_trial.value[0] == best_plain.value[0]
+    assert trial.trials > 0
+    assert trial.full < plain.full

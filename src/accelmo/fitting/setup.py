@@ -18,7 +18,6 @@ from accelmo.runlog import RunLog
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
-    from accelmo.config import SimulationConfig
     from accelmo.fitting.config import SequenceConfig
     from accelmo.machine.accelerators import Accelerator
 
@@ -69,7 +68,6 @@ class MachineSetup:
     def __init__(
         self,
         accelerator: Accelerator,
-        simulation_config: SimulationConfig,
         sequence_config: SequenceConfig,
         *,
         output_config: OutputConfig | None = None,
@@ -85,14 +83,9 @@ class MachineSetup:
         if not accelerator.has_any_optimisation():
             raise ValueError("No optimisation types enabled in the accelerator configuration.")
         self.accelerator = accelerator
-        self.simulation_config = simulation_config
         self.sequence_config = sequence_config
         self.output_config = output_config if output_config is not None else OutputConfig()
         self.debug = debug
-
-        self.output_config.log_state()
-        simulation_config.log_state()
-        sequence_config.log_state()
 
         self.model = get_backend(accelerator.backend).open_model(
             accelerator,

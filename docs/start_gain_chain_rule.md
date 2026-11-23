@@ -1,6 +1,6 @@
 # Starts that depend on the BPM gains: chain rule in the tracking LM fit
 
-`SimulationConfig.starts_follow_gains` with `StartGainMap` (`accelmo/tracking/fitter.py`, `TrackingFitter._solve_lm`).
+`TrackingParameters.starts_follow_gains` with `StartGainMap` (`accelmo/tracking/lm_problem.py`, `TrackingLMProblem`).
 
 ## Setting
 
@@ -17,8 +17,8 @@ L(k, g, s) = \sum_{p} \sum_{m} w_{pm}\, r_{pm}^2,
 \qquad r_{pm} = (1 + g_{b(m)})\, x_{pm}(k, s_p) - d_{pm},
 $$
 
-with $d_{pm}$ the measured reading, $w_{pm}$ the normalised inverse variance and $b(m)$ the BPM of
-point $m$, scaled by the worker loss scale (`TrackingWorker`, curvature path).
+with $d_{pm}$ the measured reading, $w_{pm} = 1/\sigma_{pm}^2$ and $b(m)$ the BPM of point $m$
+(`TrackingWorker`, curvature path).
 
 When the starts are reconstructed from the same gained readings (ACD markers rebuilt from the readings
 divided by $1 + g$), they are functions $s(g)$ of the gains. The objective is then

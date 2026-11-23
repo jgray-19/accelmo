@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 from scipy.linalg import block_diag
 
-from accelmo.tracking.fitter import chain_starts_through_gains
+from accelmo.tracking.lm_problem import chain_starts_through_gains
 
 N_KNOBS, N_GAINS, N_PARTICLES, N_POINTS = 3, 4, 5, 6  # points per particle
 

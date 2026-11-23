@@ -55,7 +55,7 @@ from omc3.model_creator import create_instance_and_model
 from pymadng_utils.madx.make_sequence import make_madx_sequence
 
 from accelmo.backend import get_backend
-from accelmo.backend.protocol import TrackRequest
+from accelmo.backend.protocol import TrackGeometry, TrackRequest
 from accelmo.fitting.worker import WorkerConfig
 from accelmo.machine.accelerators import PSB
 
@@ -150,11 +150,8 @@ def timed(
 def poco(sequence: Path, backend: str, knobs: dict[str, float], profile: bool):
     config = WorkerConfig(
         accelerator=accelerator(sequence, backend),
-        tracking_start_bpm="$start",
-        tracking_end_bpm="$end",
         magnet_range="$start/$end",
-        cycle_sequence=False,
-        interface_options={"machine_state": CORRECTOR_STATE},
+        machine_state=CORRECTOR_STATE,
     )
     start = time.perf_counter()
     engine = get_backend(backend).ClosedOrbitEngine(
@@ -179,20 +176,17 @@ def dlmn(
     multi_turn: bool,
 ):
     n_particles = MULTI_TURN_PARTICLES if multi_turn else SINGLE_TURN_PARTICLES
-    config = WorkerConfig(
-        accelerator=accelerator(sequence, backend),
-        tracking_start_bpm=bpms[0],
-        tracking_end_bpm=bpms[-1],
-        magnet_range="$start/$end",
-        initial_condition_marker=KICKER if multi_turn else None,
-    )
+    config = WorkerConfig(accelerator=accelerator(sequence, backend), magnet_range="$start/$end")
     plan = TrackRequest(
+        geometry=TrackGeometry(
+            start_bpm=bpms[0],
+            end_bpm=bpms[-1],
+            initial_condition_marker=KICKER if multi_turn else None,
+            n_turns=MULTI_TURN_TURNS if multi_turn else 1,
+        ),
         observables=("x", "px", "y", "py"),
         batch_size=n_particles,
         num_batches=1,
-        tracking_range=config.tracking_range,
-        n_run_turns=MULTI_TURN_TURNS if multi_turn else 1,
-        start_on_first_turn=multi_turn,
         validation=False,
         file_index=0,
         turn_offset=0,

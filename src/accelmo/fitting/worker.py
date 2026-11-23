@@ -11,8 +11,7 @@ from __future__ import annotations
 import logging
 import traceback
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
-from enum import StrEnum
+from dataclasses import dataclass
 from multiprocessing import Process
 from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
@@ -25,93 +24,38 @@ if TYPE_CHECKING:
     from multiprocessing.connection import Connection
     from pathlib import Path
 
-    from accelmo.config import SimulationConfig
+    from accelmo.config import WorkerRuntime
     from accelmo.fitting.protocol import Ack, GradReply, LossReply
     from accelmo.machine.accelerators import Accelerator
+    from accelmo.machine.machine_state import MachineState
 
 LOGGER = logging.getLogger(__name__)
 
 # Type variable for worker data type
 WorkerDataType = TypeVar("WorkerDataType")
-
-
-class KickPlane(StrEnum):
-    """Kick-plane options for worker routing and payload selection."""
-
-    X = "x"
-    Y = "y"
-    XY = "xy"
+ConfigType = TypeVar("ConfigType", bound="WorkerConfig")
 
 
 @dataclass
 class WorkerConfig:
     """Configuration shared by all worker processes.
 
-    The accelerator object bundles machine-specific setup, while the remaining
-    fields describe the local BPM range, tracking direction, and optional input
-    files needed by the worker.
-
+    The accelerator bundles machine-specific setup; the other fields are the model
+    options and log files. Tracking workers add their geometry
+    (:class:`~accelmo.tracking.dispatch.setup.TrackingWorkerConfig`).
     """
 
     accelerator: Accelerator
-    tracking_start_bpm: str
-    tracking_end_bpm: str
     magnet_range: str
-    # Per-measurement keyword arguments forwarded to the MAD-NG interface, e.g.
-    # machine_state, b2_errors.
-    interface_options: dict[str, Any] = field(default_factory=dict)
-    observation_range_start_bpm: str | None = None
-    initial_condition_marker: str | None = None
-    # Whether to cycle the sequence so tracking starts at this worker's init
-    # marker. Closed-twiss workers fit the whole ring from ``$start`` and set it
-    # False; every tracking plan cycles.
-    cycle_sequence: bool = True
-    sdir: int = 1
-    kick_plane: KickPlane = KickPlane.XY
+    machine_state: MachineState | None = None
+    b2_errors: Path | None = None
     bad_bpms: list[str] | None = None
     debug: bool = False
     mad_logfile: Path | None = None
     python_logfile: Path | None = None
-    tracking_anchor_mode: str | None = None
-    tracking_anchor_sources: list[str] | None = None
-    observed_tracking_anchor_markers: list[str] | None = None
-    cycle_marker: str | None = None
-
-    @property
-    def bpm_range(self) -> str:
-        """Observed BPM range ``first/last``."""
-        start = self.observation_range_start_bpm or self.tracking_start_bpm
-        return f"{start}/{self.tracking_end_bpm}"
-
-    @property
-    def tracking_range(self) -> str | None:
-        """Tracked range in tracking order; ``None`` tracks the full cycled sequence.
-
-        Kicker mode (a marker supplies the start) tracks the whole ring for every turn,
-        since a named range would treat elements outside it as drifts.
-        """
-        if self.initial_condition_marker is not None:
-            return None
-        if self.sdir < 0:
-            return f"{self.tracking_end_bpm}/{self.tracking_start_bpm}"
-        return self.bpm_range
-
-    @property
-    def cycle_target(self) -> str | None:
-        """Element the sequence is cycled to before tracking, or None.
-
-        The initial-condition marker (kicker/ACD) or the point where this worker's
-        measured turn increment starts. For backward ranges that is the tracking end,
-        because the payload initial coordinates are taken there. Validation workers
-        must cycle identically or they track a different path.
-        """
-        if not self.cycle_sequence:
-            return None
-        tracking_init_bpm = self.tracking_start_bpm if self.sdir > 0 else self.tracking_end_bpm
-        return self.cycle_marker or self.initial_condition_marker or tracking_init_bpm
 
 
-class AbstractWorker(Process, ABC, Generic[WorkerDataType]):
+class AbstractWorker(Process, ABC, Generic[WorkerDataType, ConfigType]):
     """Abstract base class for all worker process implementations.
 
     Subclasses implement :meth:`prepare_data`, :meth:`on_start` (which builds
@@ -122,13 +66,15 @@ class AbstractWorker(Process, ABC, Generic[WorkerDataType]):
         WorkerDataType: The type of data structure this worker uses
     """
 
+    engine: Any
+
     def __init__(
         self,
         conn: Connection,
         worker_id: int,
         data: WorkerDataType,
-        config: WorkerConfig,
-        simulation_config: SimulationConfig,
+        config: ConfigType,
+        runtime: WorkerRuntime,
     ) -> None:
         """Initialize the worker process.
 
@@ -137,19 +83,14 @@ class AbstractWorker(Process, ABC, Generic[WorkerDataType]):
             worker_id: Unique identifier for this worker
             data: Worker-specific data (tracking or optics)
             config: Configuration parameters
-            simulation_config: Simulation configuration settings
+            runtime: Worker process settings
         """
         super().__init__()
         self.worker_id = worker_id
         self.conn = conn
-        self.config = config
-        self.simulation_config = simulation_config
-        LOGGER.debug(
-            "Initializing worker %d for BPM range %s -> %s",
-            worker_id,
-            config.tracking_start_bpm,
-            config.tracking_end_bpm,
-        )
+        self.config: ConfigType = config
+        self.runtime = runtime
+        LOGGER.debug("Initializing worker %d", worker_id)
 
         # Let subclasses process their specific data
         self.prepare_data(data)
@@ -264,13 +205,13 @@ class AbstractWorker(Process, ABC, Generic[WorkerDataType]):
         return logfile_path.with_name(f"{logfile_path.name}_worker_{self.worker_id}")
 
     def configure_worker_threads(self) -> None:
-        """Limit this worker process's BLAS threads (``SimulationConfig.worker_blas_threads``).
+        """Limit this worker process's BLAS threads (``WorkerRuntime.blas_threads``).
 
         Must run inside the worker process: the pool is already initialised in the forked
         parent, so the ``OPENBLAS_NUM_THREADS`` environment variable would be too late.
         """
-        if self.simulation_config.worker_blas_threads is not None:
-            threadpool_limits(limits=self.simulation_config.worker_blas_threads)
+        if self.runtime.blas_threads is not None:
+            threadpool_limits(limits=self.runtime.blas_threads)
 
     def configure_python_worker_logging(self) -> None:
         """Attach a file handler so worker Python logs land in the worker logfile."""
@@ -282,7 +223,7 @@ class AbstractWorker(Process, ABC, Generic[WorkerDataType]):
 
         worker_logfile.parent.mkdir(parents=True, exist_ok=True)
         root_logger = logging.getLogger()
-        level = self.simulation_config.worker_logging_level
+        level = self.runtime.logging_level
         root_logger.setLevel(level)
 
         if any(

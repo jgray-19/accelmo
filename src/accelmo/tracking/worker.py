@@ -18,41 +18,35 @@ from accelmo.backend.protocol import TrackRequest
 from accelmo.fitting.bpm_gains import PLANES, bpm_gain_names, bpm_reading, without_bpm_gains
 from accelmo.fitting.protocol import (
     Ack,
-    Diagnose,
     GradReply,
     LossReply,
     SetKnobs,
     SetUncertaintyMode,
+    TotalChi2,
     UpdateInitCoords,
-    Validate,
 )
 from accelmo.fitting.worker import AbstractWorker
+from accelmo.tracking.dispatch.setup import TrackingWorkerConfig
 from accelmo.tracking.uncertainty import UncertaintyPart
 
 if TYPE_CHECKING:
     from multiprocessing.connection import Connection
 
-    from accelmo.backend.protocol import TrackResult
-    from accelmo.config import SimulationConfig
+    from accelmo.backend.protocol import TrackingEngine, TrackResult
+    from accelmo.config import TrackingDataConfig, TrackingParameters, WorkerRuntime
     from accelmo.fitting.protocol import Command, Evaluate
-    from accelmo.fitting.worker import WorkerConfig
 
 LOGGER = logging.getLogger(__name__)
 
 
 @dataclass
 class PrecomputedTrackingWeights:
-    """Per-observable, globally normalised weights for the loss and gradient.
-
-    ``scale`` undoes the normalisation (``weight · scale = 1/σ²``), so the
-    uncertainty propagation can report a physical normal matrix.
-    """
+    """Per-observable inverse-variance weights ``1/σ²`` (0 drops a point)."""
 
     x: np.ndarray
     y: np.ndarray
     px: np.ndarray
     py: np.ndarray
-    scale: float
 
 
 @dataclass
@@ -125,39 +119,45 @@ def _largest_divisor_at_most(value: int, limit: int) -> int:
     return 1
 
 
-class TrackingWorker(AbstractWorker[TrackingData]):
+class TrackingWorker(AbstractWorker[TrackingData, TrackingWorkerConfig]):
     """Worker for particle tracking simulations.
 
     Tracks every particle of a batch through the worker's range, compares the
-    observed positions (and, with ``SimulationConfig.optimise_momenta``, momenta)
+    observed positions (and, with ``TrackingDataConfig.optimise_momenta``, momenta)
     with the measurement, and returns the loss and its knob gradient from the
     differential-algebra map.
     """
+
+    engine: TrackingEngine
 
     def __init__(
         self,
         conn: Connection,
         worker_id: int,
         data: TrackingData,
-        config: WorkerConfig,
-        simulation_config: SimulationConfig,
+        config: TrackingWorkerConfig,
+        runtime: WorkerRuntime,
+        tracking_data: TrackingDataConfig,
+        parameters: TrackingParameters,
         validation: bool = False,
     ) -> None:
         self.validation = validation
-        super().__init__(conn, worker_id, data, config, simulation_config)
+        self.tracking_data = tracking_data
+        self.parameters = parameters
+        super().__init__(conn, worker_id, data, config, runtime)
 
     def prepare_data(self, data: TrackingData) -> None:
         """Split the measurement and start coordinates into batches."""
         self.observables = active_observables(
-            self.config.kick_plane, self.simulation_config.optimise_momenta
+            self.config.kick_plane, self.tracking_data.optimise_momenta
         )
         n_init = len(data.init_coords)
         if self.validation:
             # Every batch has one fixed ``batch_size``, so a divisor batch count keeps
             # every held-out turn.
-            num_batches = _largest_divisor_at_most(n_init, self.simulation_config.num_batches)
+            num_batches = _largest_divisor_at_most(n_init, self.tracking_data.num_batches)
         else:
-            num_batches = min(self.simulation_config.num_batches, n_init)
+            num_batches = min(self.tracking_data.num_batches, n_init)
         if num_batches <= 0:
             raise ValueError(f"Worker {self.worker_id}: No initial coordinates available")
         LOGGER.debug(
@@ -178,7 +178,6 @@ class TrackingWorker(AbstractWorker[TrackingData]):
             weights = getattr(data.precomputed_weights, observable)[:n_init]
             self.comparisons[observable] = np.array_split(values, num_batches)
             self.weights[observable] = np.array_split(weights, num_batches)
-        self.weight_scale = data.precomputed_weights.scale
         self._prepare_gains(data)
 
         # Flat copy kept in sync with the engine by per-epoch start-coordinate updates.
@@ -192,7 +191,6 @@ class TrackingWorker(AbstractWorker[TrackingData]):
         self.file_index = int(data.init_reading_ids[0] >> 32)
 
         self.propagate_uncertainty_on_exit = True
-        self.normalisation_points = self.comparisons[self.observables[0]][0].shape[1]
 
         if not self.validation:
             self._prepare_uncertainty_batches(data, n_init, num_batches)
@@ -305,12 +303,10 @@ class TrackingWorker(AbstractWorker[TrackingData]):
                 )
             turn_offset = int(self.turn_offsets[0])
         plan = TrackRequest(
+            geometry=self.config.geometry,
             observables=self.observables,
             batch_size=self.batch_size,
             num_batches=self.num_batches,
-            tracking_range=self.config.tracking_range,
-            n_run_turns=self.simulation_config.n_run_turns,
-            start_on_first_turn=self.config.initial_condition_marker is not None,
             validation=self.validation,
             file_index=self.file_index,
             turn_offset=turn_offset,
@@ -333,7 +329,7 @@ class TrackingWorker(AbstractWorker[TrackingData]):
         """Validate the observation geometry once with a single-particle dry run.
 
         Tracks one particle through the configured range and turns and confirms the
-        engine observes exactly ``nbpms * n_run_turns`` points, the size every real
+        engine observes exactly ``nbpms * n_turns`` points, the size every real
         run fills. A mis-scoped observe/range (e.g. an off-plane BPM left observed
         outside the range) then fails here with a clear message instead of deep in
         the optimisation loop.
@@ -346,8 +342,8 @@ class TrackingWorker(AbstractWorker[TrackingData]):
                 "Worker %d: preflight particle lost; skipping observation-count check "
                 "(range=%s sdir=%d)",
                 self.worker_id,
-                self.config.tracking_range,
-                self.config.sdir,
+                self.config.geometry.tracking_range,
+                self.config.geometry.sdir,
             )
             return
         observed = int(report["observed"])
@@ -355,10 +351,10 @@ class TrackingWorker(AbstractWorker[TrackingData]):
         if observed != expected:
             raise ValueError(
                 f"Worker {self.worker_id}: preflight observed {observed} BPM points per run "
-                f"but the result vectors hold {expected} (nbpms={self.engine.nbpms} x n_run_turns). "
+                f"but the result vectors hold {expected} (nbpms={self.engine.nbpms} x n_turns). "
                 f"An observe/range mismatch would overflow tracking; check the observe "
                 f"pattern and bad_bpms for plane {self.config.kick_plane!r} "
-                f"(range={self.config.tracking_range!r}, sdir={self.config.sdir})."
+                f"(range={self.config.geometry.tracking_range!r}, sdir={self.config.geometry.sdir})."
             )
         LOGGER.debug(
             "Worker %d: preflight OK (%d observed == %d allocated)",
@@ -382,7 +378,7 @@ class TrackingWorker(AbstractWorker[TrackingData]):
         self._update_gains(knob_updates)
         self.engine.set_knobs(knob_updates)
         self.engine.set_pts(machine_pt, batch, batch)
-        start_derivatives = self.simulation_config.start_derivatives and not self.validation
+        start_derivatives = self.parameters.start_derivatives and not self.validation
         return self._results(
             self.engine.track(batch, start_derivatives=start_derivatives), gain_columns=gain_columns
         )
@@ -396,6 +392,8 @@ class TrackingWorker(AbstractWorker[TrackingData]):
         results: dict[str, np.ndarray] = dict(result.obs)
         if self.validation:
             return self._apply_gains(results)
+        if result.d_dk is None:
+            raise ValueError(f"Worker {self.worker_id}: the engine returned no knob derivatives")
         for observable in self.observables:
             results[self._gradient_key(observable)] = result.d_dk[observable]
         if result.d_dc0 is not None:
@@ -452,22 +450,18 @@ class TrackingWorker(AbstractWorker[TrackingData]):
             )
         return 2.0 * grad, self._compute_loss(results, batch)
 
-    def _gauss_newton(
-        self, results: dict[str, np.ndarray], batch: int
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """``Σ w J Jᵀ`` with the loss weights, and the physical ``JᵀWJ`` (``w`` x weight scale)."""
+    def _gauss_newton(self, results: dict[str, np.ndarray], batch: int) -> np.ndarray:
+        """The normal matrix ``JᵀWJ`` of one batch."""
         weights = self._batch_weights(batch)
-        hessian = 0.0
+        terms = []
         for observable in self.observables:
             jacobian = results[self._gradient_key(observable)]  # (particles, knobs, points)
-            hessian = hessian + np.einsum(
-                "pkm,pjm->kj", jacobian * weights[observable][:, None, :], jacobian
+            terms.append(
+                np.einsum("pkm,pjm->kj", jacobian * weights[observable][:, None, :], jacobian)
             )
-        return hessian, hessian * self.weight_scale
+        return np.sum(terms, axis=0)
 
-    def _start_blocks(
-        self, results: dict[str, np.ndarray], batch: int, scale: float
-    ) -> dict[str, np.ndarray]:
+    def _start_blocks(self, results: dict[str, np.ndarray], batch: int) -> dict[str, np.ndarray]:
         """Gradient and Gauss-Newton blocks of the batch's start coordinates (x, px, y, py).
 
         ``grad`` (particles, 4), ``knob_start`` (knobs, particles, 4) and ``start_start``
@@ -490,20 +484,14 @@ class TrackingWorker(AbstractWorker[TrackingData]):
             start_start += np.einsum("pcm,pdm->pcd", weighted, dstart)
         first = sum(len(b) for b in self.init_coords[:batch])
         return {
-            "grad": 2.0 * grad * scale,
-            "knob_start": 2.0 * knob_start * scale,
-            "start_start": 2.0 * start_start * scale,
+            "grad": 2.0 * grad,
+            "knob_start": 2.0 * knob_start,
+            "start_start": 2.0 * start_start,
             "start": self._init_coords_np[first : first + n_particles, :4].copy(),
         }
 
     def evaluate(self, message: Evaluate) -> GradReply:
-        """Loss and gradient of one batch.
-
-        The loss is per particle and per BPM point, so it is comparable across
-        workers (and to the held-out validation loss) however many particles a
-        worker holds; the gradient is per point and the loop divides it by the
-        total particle count.
-        """
+        """Chi-square of one batch and its gradient (and Gauss-Newton blocks with ``curvature``)."""
         if self.validation:
             raise ValueError(
                 f"Worker {self.worker_id}: validation workers do not evaluate gradients"
@@ -523,38 +511,27 @@ class TrackingWorker(AbstractWorker[TrackingData]):
                 exc,
             )
             # NaN loss signals the aggregator to reject this epoch's knob updates.
-            return GradReply(self.worker_id, float("nan"), zeros, zero_curvature, zero_curvature)
+            return GradReply(self.worker_id, float("nan"), zeros, zero_curvature)
         grad, loss = self._compute_loss_and_gradients(results, batch)
-        n_particles = max(1, len(self.init_coords[batch]))
         if message.curvature:
-            scale = 1.0 / (self.normalisation_points * n_particles)
-            hessian, normal = self._gauss_newton(results, batch)
+            normal = self._gauss_newton(results, batch)
             extra = (
-                self._start_blocks(results, batch, scale)
-                if self.simulation_config.start_derivatives
-                else None
+                self._start_blocks(results, batch) if self.parameters.start_derivatives else None
             )
-            return GradReply(
-                self.worker_id, loss * scale, grad * scale, 2.0 * hessian * scale, normal, extra
-            )
+            return GradReply(self.worker_id, loss, grad, normal, extra)
         return GradReply(
             self.worker_id,
-            loss / (self.normalisation_points * n_particles),
-            grad / self.normalisation_points,
-            extra=self._gain_sums(results, batch) / self.normalisation_points
-            if self.fit_gains
-            else None,
+            loss,
+            grad,
+            extra=self._gain_sums(results, batch) if self.fit_gains else None,
         )
 
-    def compute_validation_loss(self, knob_updates: dict[str, float]) -> float:
-        """Held-out loss per particle and BPM point, normalised like the training loss."""
-        total_loss = 0.0
-        for batch in range(self.num_batches):
-            results = self._run_tracking_batch(knob_updates, batch)
-            batch_loss = self._compute_loss(results, batch)
-            n_particles = max(1, len(self.init_coords[batch]))
-            total_loss += batch_loss / (self.normalisation_points * n_particles)
-        return total_loss / max(1, self.num_batches)
+    def total_chi2(self, knobs: dict[str, float]) -> float:
+        """Chi-square of every batch at ``knobs``."""
+        return sum(
+            self._compute_loss(self._run_tracking_batch(knobs, batch), batch)
+            for batch in range(self.num_batches)
+        )
 
     # ------------------------------------------------------------------
     # Commands
@@ -563,14 +540,8 @@ class TrackingWorker(AbstractWorker[TrackingData]):
     def handle_command(self, command: Command) -> Ack | LossReply:
         """Answer a validation, diagnose, knob or start-coordinate command."""
         match command:
-            case Validate(knobs):
-                return LossReply(self.worker_id, self.compute_validation_loss(knobs))
-            case Diagnose(knobs):
-                total = sum(
-                    self._compute_loss(self._run_tracking_batch(knobs, batch), batch)
-                    for batch in range(self.num_batches)
-                )
-                return LossReply(self.worker_id, total / self.normalisation_points)
+            case TotalChi2(knobs):
+                return LossReply(self.worker_id, self.total_chi2(knobs))
             case SetKnobs(knobs):
                 self._update_gains(knobs)
                 self.engine.set_knobs(knobs)
@@ -644,7 +615,7 @@ class TrackingWorker(AbstractWorker[TrackingData]):
         projected out (``J → J − A_ks A_ss⁻¹ ∂m/∂c0`` per particle, ``A`` its Schur complement)
         and the measured start variances do not enter.
         """
-        fit_starts = self.simulation_config.fit_start_coords
+        fit_starts = self.parameters.fit_start_coords
         normal = np.zeros((n_knobs, n_knobs))
         ids, sensitivities, variances = [], [], []
         for batch in range(self.num_batches):
@@ -659,7 +630,7 @@ class TrackingWorker(AbstractWorker[TrackingData]):
             for observable in self.observables:
                 jacobian = results[self._gradient_key(observable)]  # (particles, knobs, points)
                 d_dc0 = results[f"d{observable}_dc0"]  # (particles, 4, points)
-                weight = weights[observable] * self.weight_scale  # (particles, points)
+                weight = weights[observable]  # (particles, points)
                 start += np.einsum("pkn,pcn->pck", jacobian * weight[:, None, :], d_dc0)
                 start_start += np.einsum("pcn,pdn->pcd", d_dc0 * weight[:, None, :], d_dc0)
                 terms.append((observable, jacobian, d_dc0, weight))

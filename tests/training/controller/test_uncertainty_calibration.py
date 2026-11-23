@@ -22,11 +22,11 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from accelmo.config import OptimiserConfig, SimulationConfig
+from accelmo.config import OptimiserConfig, TrackingDataConfig, WorkerRuntime
 from accelmo.fitting.config import OutputConfig, SequenceConfig
 from accelmo.fitting.uncertainty import sandwich_uncertainties
 from accelmo.machine.machine_state import merge_machine_states
-from accelmo.tracking.config.helpers import create_arc_measurement_config
+from accelmo.tracking.config.helpers import single_measurement_config
 from accelmo.tracking.config.models import MeasurementConfig
 from accelmo.tracking.fitter import ArcByArcFitter, FitterOptions
 from tests.training.controller_test_utils import (
@@ -67,15 +67,11 @@ def _make_fitter(
             warmup_lr_start=1e-8,
             max_lr=2e-6,
             min_lr=2e-7,
-            gradient_converged_value=5e-10,
         ),
-        SimulationConfig(
-            num_workers=3, num_batches=2, optimise_momenta=False, validation_fraction=0.0
-        ),
+        WorkerRuntime(num_workers=3),
+        TrackingDataConfig(num_batches=2, optimise_momenta=False, validation_fraction=0.0),
         SequenceConfig(magnet_range="BPM.9R2.B1/BPM.9L3.B1"),
-        create_arc_measurement_config(
-            track, machine_state=merge_machine_states(corrector, tune_knobs)
-        ),
+        single_measurement_config(track, machine_state=merge_machine_states(corrector, tune_knobs)),
         BPM_START_POINTS,
         BPM_END_POINTS,
         options=FitterOptions(

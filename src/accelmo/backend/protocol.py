@@ -22,23 +22,73 @@ if TYPE_CHECKING:
 
     from accelmo.fitting.worker import WorkerConfig
     from accelmo.machine.accelerators import Accelerator
+    from accelmo.machine.machine_state import MachineState
+
+
+@dataclass(frozen=True)
+class TrackGeometry:
+    """The model segment one tracking worker observes and tracks, fixed when its engine is built."""
+
+    start_bpm: str
+    end_bpm: str
+    #: Marker supplying the start coordinates (kicker, AC dipole); the full ring is tracked.
+    initial_condition_marker: str | None = None
+    sdir: int = 1
+    cycle_marker: str | None = None
+    anchor_mode: str | None = None
+    anchor_sources: tuple[str, ...] = ()
+    #: Turns tracked from each start.
+    n_turns: int = 1
+
+    @property
+    def init_point(self) -> str:
+        """Where the start coordinates are read: the marker, else the first BPM in tracking order."""
+        if self.initial_condition_marker is not None:
+            return self.initial_condition_marker
+        return self.start_bpm if self.sdir > 0 else self.end_bpm
+
+    @property
+    def bpm_range(self) -> str:
+        """Observed BPM range ``first/last``."""
+        return f"{self.start_bpm}/{self.end_bpm}"
+
+    @property
+    def tracking_range(self) -> str | None:
+        """Tracked range in tracking order; ``None`` tracks the full cycled sequence.
+
+        A marker start tracks the whole ring every turn, since a named range would treat
+        elements outside it as drifts.
+        """
+        if self.initial_condition_marker is not None:
+            return None
+        if self.sdir < 0:
+            return f"{self.end_bpm}/{self.start_bpm}"
+        return self.bpm_range
+
+    @property
+    def cycle_target(self) -> str:
+        """Element the sequence is cycled to before tracking.
+
+        The initial-condition marker or where the measured turn increment starts: the
+        tracking end for a backward range, where the start coordinates are taken.
+        Validation workers cycle identically or they track a different path.
+        """
+        init_bpm = self.start_bpm if self.sdir > 0 else self.end_bpm
+        return self.cycle_marker or self.initial_condition_marker or init_bpm
 
 
 @dataclass(frozen=True)
 class TrackRequest:
     """What one tracking worker tracks.
 
-    ``tracking_range`` is ``(first, last)`` in tracking order, or ``None`` for the full
-    (cycled) ring. ``turn_offset`` is the start turn minus the file's first turn
-    (AC-kicker phase) and ``file_index`` the measurement file of every particle.
+    ``turn_offset`` is the start turn minus the file's first turn (AC-kicker phase) and
+    ``file_index`` the measurement file of every particle.
     """
 
+    geometry: TrackGeometry
     observables: tuple[str, ...]
     batch_size: int
     num_batches: int
-    tracking_range: str | None
-    n_run_turns: int
-    start_on_first_turn: bool
     validation: bool
     file_index: int
     turn_offset: int
@@ -135,8 +185,13 @@ class ClosedOrbitEngine(Protocol):
         orbit_coords: Sequence[str],
         worker_id: int,
         logfile: Path | None = None,
+        extra_knobs: Sequence[str] | None = None,
     ) -> None:
-        """Load the model; ``solve`` returns ``optics_names`` and ``orbit_coords`` rows."""
+        """Load the model; ``solve`` returns ``optics_names`` and ``orbit_coords`` rows.
+
+        ``extra_knobs`` (calibration fits; ``madng`` only) are zero-valued knobs after the magnet
+        knobs, and ``pt`` is then never fitted.
+        """
 
     def set_knobs(self, knobs: Mapping[str, float]) -> None:
         """Set the fitted knobs to ``knobs``."""
@@ -188,11 +243,7 @@ class Model(Protocol):
 
 
 class Backend(Protocol):
-    """The module ``accelmo.backend.<name>``.
-
-    Optional: ``CalibratedClosedOrbitEngine`` (BPM gain and corrector calibration fits),
-    only in ``madng``.
-    """
+    """The module ``accelmo.backend.<name>``."""
 
     TrackingEngine: type[TrackingEngine]
     ClosedOrbitEngine: type[ClosedOrbitEngine]
@@ -202,7 +253,7 @@ class Backend(Protocol):
         accelerator: Accelerator,
         *,
         magnet_range: str,
-        machine_state: object = None,
+        machine_state: MachineState | None = None,
         b2_errors: Path | None = None,
         bad_bpms: list[str] | None = None,
         debug: bool = False,
@@ -217,7 +268,7 @@ class Backend(Protocol):
         accelerator: Accelerator,
         magnet_strengths: Mapping[str, float] | None,
         pt: float,
-        machine_state: object,
+        machine_state: MachineState | None,
         columns: Sequence[str],
     ) -> pd.DataFrame:
         """Closed-orbit ``columns`` at the BPMs for these strengths, ``pt`` and state."""

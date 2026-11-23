@@ -8,13 +8,14 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from accelmo.tracking.fitter import tracking_lm_config
 from tests.training.controller_test_utils import (
     DPP_VALUE,
+    LM_TEST_ITERATIONS,
     _build_energy_optimisation_case,
-    _make_simulation_config_energy,
+    _make_tracking_data_energy,
     _run_energy_optimisation_case,
     evaluate_controller_worker_losses,
-    make_lm_config,
 )
 
 if TYPE_CHECKING:
@@ -34,14 +35,14 @@ def test_controller_energy_opt(
     optimise_momenta: bool,
     controller_test_mode: str,
 ) -> None:
-    simulation_config = _make_simulation_config_energy(optimise_momenta)
-    optimiser_config = make_lm_config()
+    tracking_data = _make_tracking_data_energy(optimise_momenta)
+    optimiser_config = tracking_lm_config(LM_TEST_ITERATIONS)
 
     if controller_test_mode == "loss_regression":
         ctrl, true_knobs = _build_energy_optimisation_case(
             tmp_path=tmp_path,
             loaded_interface=loaded_interface,
-            simulation_config=simulation_config,
+            tracking_data=tracking_data,
             optimiser_config=optimiser_config,
             bpm_start_points=["BPM.9R2.B1", "BPM.10R2.B1", "BPM.11R2.B1"],
             bpm_end_points=["BPM.9L3.B1", "BPM.10L3.B1", "BPM.11L3.B1"],
@@ -57,7 +58,7 @@ def test_controller_energy_opt(
     result = _run_energy_optimisation_case(
         tmp_path=tmp_path,
         loaded_interface=loaded_interface,
-        simulation_config=simulation_config,
+        tracking_data=tracking_data,
         optimiser_config=optimiser_config,
         bpm_start_points=["BPM.9R2.B1", "BPM.10R2.B1", "BPM.11R2.B1"],
         bpm_end_points=["BPM.9L3.B1", "BPM.10L3.B1", "BPM.11L3.B1"],

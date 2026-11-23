@@ -21,18 +21,22 @@ epochs the fit stopped).
    * - :class:`~accelmo.machine.accelerators.base.Accelerator` subclass
      - Machine definition: sequence file, kinetic energy, BPM pattern and the knob
        families to fit (``errors``, ``misalignments``).
-   * - :class:`~accelmo.config.OptimiserConfig`
-     - Optimiser type (``adam``, ``lbfgs`` or ``levenberg_marquardt``), epoch count,
-       learning-rate schedule and convergence criterion.
-   * - :class:`~accelmo.config.SimulationConfig`
-     - Worker and batch counts, data and validation fractions.
+   * - ``solver``
+     - :class:`~accelmo.config.OptimiserConfig` (``adam`` or ``lbfgs``: epoch count,
+       learning-rate schedule, stopping rule) or a Levenberg-Marquardt config from
+       :func:`~accelmo.tracking.fitter.tracking_lm_config`.
+   * - :class:`~accelmo.config.WorkerRuntime`
+     - Worker count, worker log level and BLAS threads.
+   * - :class:`~accelmo.config.TrackingDataConfig`
+     - Batch count, data and validation fractions, momenta in the loss, track length.
    * - :class:`~accelmo.fitting.config.SequenceConfig`
      - Magnet range exposed to MAD-NG and BPMs to exclude.
    * - :class:`~accelmo.tracking.config.models.MeasurementConfig`
      - Measurement files, each with a :class:`~accelmo.tracking.config.models.MeasurementDetails`
        (MAD interface options, momentum offset, first BPM).
    * - :class:`~accelmo.tracking.fitter.FitterOptions` (optional)
-     - Starting knobs, true strengths, output and checkpoint settings, callbacks.
+     - Starting knobs, true strengths, output and checkpoint settings, callbacks, and the
+       :class:`~accelmo.config.TrackingParameters` (BPM gains, starts, prior widths).
 
 Fitters
 ~~~~~~~
@@ -53,16 +57,15 @@ Fitters
      - Bidirectional; the whole ring is observed.
    * - :class:`~accelmo.tracking.fitter.KickerFitter`
      - Kicker marker
-     - One worker, forward only, ``turns_after_kicker`` turns.
+     - One worker, forward only, ``turns_per_track`` turns.
    * - :class:`~accelmo.tracking.fitter.ACDSinusoidFitter`
-     - First flattop turn of each bunch
-     - Forward over ``n_run_turns`` turns through the model AC kickers.
+     - Before-marker, every ``turns_per_track`` turns
+     - Back-to-back ``turns_per_track``-turn tracks through the model AC kickers.
 
 All fit families, the knob families of each machine and the solvers are listed in
 :doc:`fit_families`.
 
-``KickerFitter`` also takes a
-:class:`KickerConfig(kicker_name, turns_after_kicker) <accelmo.tracking.config.models.KickerConfig>`.
+``KickerFitter`` also takes the ``kicker_name`` and ``turns_per_track``.
 The measurement data must contain ``x``, ``px``, ``y`` and ``py`` at the kicker
 marker, and the sequence must contain the kicker element.
 
@@ -73,7 +76,7 @@ Example
 
    from pathlib import Path
 
-   from accelmo.config import OptimiserConfig, SimulationConfig
+   from accelmo.config import OptimiserConfig, TrackingDataConfig, WorkerRuntime
    from accelmo.fitting.config import OutputConfig, SequenceConfig
    from accelmo.machine.accelerators import LHC
    from accelmo.tracking import (
@@ -87,15 +90,15 @@ Example
 
    fitter = ArcByArcFitter(
        accelerator=accelerator,
-       optimiser_config=OptimiserConfig(
+       solver=OptimiserConfig(
            max_epochs=200,
            warmup_epochs=10,
            warmup_lr_start=1e-6,
            max_lr=1e-4,
            min_lr=1e-6,
-           gradient_converged_value=1e-12,
        ),
-       simulation_config=SimulationConfig(num_workers=8, num_batches=4),
+       runtime=WorkerRuntime(num_workers=8),
+       tracking_data=TrackingDataConfig(num_batches=4),
        sequence_config=SequenceConfig(magnet_range="$start/$end"),
        measurement_config=MeasurementConfig(
            {Path("measurement.parquet"): MeasurementDetails()}
@@ -130,7 +133,7 @@ FitterOptions
 Validation
 ~~~~~~~~~~
 
-``SimulationConfig.validation_fraction`` (default 0.1) holds out a disjoint set of turns
+``TrackingDataConfig.validation_fraction`` (default 0.1) holds out a disjoint set of turns
 per file. These are never used for training, so the validation loss is out-of-sample.
 ``data_fraction`` is applied to the remaining training turns.
 
@@ -140,16 +143,19 @@ Closed-twiss fits
 The closed-twiss and closed-orbit fitters live in :mod:`accelmo.poco` and return the
 same :class:`~accelmo.fitting.results.FitResult` as the tracking fitters.
 
-:class:`~accelmo.poco.fitter.ClosedTwissFitter` fits knobs so that the
-periodic model optics match a measured closed twiss. Closed orbit, beta, phase and
+:class:`~accelmo.poco.closed_orbit.ClosedOrbitFitter` with
+``series=closed_twiss_series(measurements, observables)``
+(:func:`~accelmo.poco.closed_orbit.closed_twiss_series`) fits knobs so that the periodic model
+optics match a measured closed twiss. Closed orbit, beta, phase and
 dispersion are all obtained from one parametric MAD-NG ``twiss``, so they are fitted
 simultaneously and no starting point is taken from the measurement. The solver is
 Levenberg-Marquardt, configured by
 :class:`~accelmo.optimisers.levenberg_marquardt.LevenbergMarquardtConfig`.
 
-``measurements`` maps each measurement's ``pt`` to a file or dataframe. Parameters are
+``measurements`` maps each measurement's ``pt`` to a measured optics dataframe; each is one
+absolute series. Parameters are
 weighted by the inverse measurement variance; ``use_errors=False`` normalises every
-observable family identically instead. ``prior_strengths`` adds a Gaussian prior.
+observable family identically instead. ``knob_sigmas`` adds a Gaussian prior of absolute widths.
 
 Closed-orbit fits
 -----------------

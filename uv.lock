@@ -107,7 +107,7 @@ requires-dist = [
     { name = "psutil", marker = "extra == 'tracking'" },
     { name = "pyarrow", marker = "extra == 'tracking'" },
     { name = "pymadng", specifier = ">=0.10.0" },
-    { name = "pymadng-utils", specifier = ">=0.0.1" },
+    { name = "pymadng-utils", specifier = ">=0.0.2" },
     { name = "pytest", marker = "extra == 'test'" },
     { name = "pytest-cov", marker = "extra == 'test'" },
     { name = "pytest-xdist", marker = "extra == 'test'" },
@@ -2841,7 +2841,7 @@ wheels = [
 
 [[package]]
 name = "pymadng-utils"
-version = "0.0.1"
+version = "0.0.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
@@ -2850,9 +2850,9 @@ dependencies = [
     { name = "pymadng" },
     { name = "tfs-pandas" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/fd/58/0b52b24aaeca983f7ca803e98bd14ceb7412f2bf08e83aebdbafcad236e1/pymadng_utils-0.0.1.tar.gz", hash = "sha256:f00c7c6fc872fe9b9dd70a3d3ad4fbb64b288b51facd7f3043ea78e6fa016068", size = 43019, upload-time = "2026-11-21T21:49:24.371Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/63/2c/0f773d8567d41d1fb363baebda045ce5813c223bcac291f364c57f031221/pymadng_utils-0.0.2.tar.gz", hash = "sha256:3bb5d74a488206d2d5c2c1f8550059b4c608bebd6bc47dc49cdc05269d327cc0", size = 43380, upload-time = "2026-11-22T22:52:26.49Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/fd/67/331b3b69eb503bbbecd1a73af6886e0e4175cebd5deafaf8c4454f5a6f5d/pymadng_utils-0.0.1-py3-none-any.whl", hash = "sha256:73d6b1bf0b6cc8f0f228d0ca40a0c63d97786b0c3c0d47e07d542920a778ff86", size = 48900, upload-time = "2026-11-21T21:49:23.096Z" },
+    { url = "https://files.pythonhosted.org/packages/0e/4c/30b235defb6d066d5b16466c6e5c469523e484646ba0a713eb5c7bcc1290/pymadng_utils-0.0.2-py3-none-any.whl", hash = "sha256:72e736bef9e1fda8397602927e4f78c0060be8576a84059780fe3f2ebb3b0396", size = 49266, upload-time = "2026-11-22T22:52:25.446Z" },
 ]
 
 [[package]]

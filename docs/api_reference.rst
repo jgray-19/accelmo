@@ -17,12 +17,15 @@ Primary Entry Points
    accelmo.machine.accelerators.sps.SPS
    accelmo.machine.accelerators.fcc.FCC
    accelmo.config.OptimiserConfig
-   accelmo.config.SimulationConfig
+   accelmo.config.WorkerRuntime
+   accelmo.config.TrackingDataConfig
+   accelmo.config.TrackingParameters
    accelmo.tracking.fitter.ArcByArcFitter
    accelmo.tracking.fitter.ACDMarkerFitter
    accelmo.tracking.fitter.KickerFitter
    accelmo.tracking.fitter.ACDSinusoidFitter
    accelmo.tracking.fitter.FitterOptions
+   accelmo.tracking.fitter.tracking_lm_config
    accelmo.tracking.config.models.MeasurementConfig
    accelmo.fitting.config.SequenceConfig
    accelmo.fitting.config.OutputConfig
@@ -30,7 +33,7 @@ Primary Entry Points
    accelmo.poco.closed_orbit.ClosedOrbitFitter
    accelmo.poco.closed_orbit.ClosedOrbitSeries
    accelmo.poco.calibrated.CalibratedClosedOrbitFitter
-   accelmo.poco.fitter.ClosedTwissFitter
+   accelmo.poco.closed_orbit.closed_twiss_series
    accelmo.optimisers.levenberg_marquardt.LevenbergMarquardtConfig
 
 
@@ -86,7 +89,6 @@ Closed-Orbit Fitting (POCO)
    accelmo.poco.closed_orbit
    accelmo.poco.calibrated
    accelmo.poco.fitter
-   accelmo.poco.prior
    accelmo.poco.calibration
    accelmo.poco.workers
    accelmo.poco.workers.closed_orbit
@@ -103,6 +105,7 @@ Tracking Fits
 
    accelmo.tracking
    accelmo.tracking.fitter
+   accelmo.tracking.lm_problem
    accelmo.tracking.session
    accelmo.tracking.ranges
    accelmo.tracking.data_manager
@@ -134,6 +137,7 @@ Shared Fitting Base
    accelmo.fitting.config
    accelmo.fitting.protocol
    accelmo.fitting.lm_loop
+   accelmo.fitting.priors
    accelmo.fitting.worker
    accelmo.fitting.shared_reference
    accelmo.fitting.pool

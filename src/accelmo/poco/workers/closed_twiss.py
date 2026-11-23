@@ -1,12 +1,8 @@
-"""Closed-twiss worker: fit knobs to a measured periodic optics solution.
+"""Closed-twiss observables and their weighted least-squares blocks.
 
-One closed-orbit engine solve per iteration (:class:`~accelmo.backend.protocol.ClosedOrbitEngine`)
-gives the *periodic* closed orbit, beta, alpha, phase and dispersion at every BPM and
-their knob derivatives.
-
-Nothing is seeded from the measurement. There is no starting point to propagate
-from, so no measurement noise enters as an initial condition and no error can be
-absorbed by an assumed anchor; every residual is attributable to the magnets.
+One closed-orbit engine solve (:class:`~accelmo.backend.protocol.ClosedOrbitEngine`) gives the
+*periodic* closed orbit, beta, alpha, phase and dispersion at every BPM and their knob
+derivatives; :class:`~accelmo.poco.workers.closed_orbit.ClosedOrbitWorker` fits them.
 """
 
 from __future__ import annotations
@@ -14,16 +10,10 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import TYPE_CHECKING
 
 import numpy as np
 
-from accelmo.fitting.protocol import GradReply
 from accelmo.fitting.weights import variance_to_weight
-from accelmo.fitting.worker import AbstractWorker
-
-if TYPE_CHECKING:
-    from accelmo.fitting.protocol import Evaluate
 
 LOGGER = logging.getLogger(__name__)
 
@@ -92,7 +82,7 @@ OBSERVABLE_KINDS: dict[str, ObservableKind] = {
 
 @dataclass
 class Observable:
-    """One measured observable family, aligned to ``ClosedTwissData.bpm_names``.
+    """One measured observable family, aligned to the series' ``bpm_names``.
 
     ``targets`` and ``variances`` have one entry per BPM for a ``POINTWISE``
     observable and one per *interval* (``n_bpms - 1``) for an ``ADVANCE`` one.
@@ -115,163 +105,10 @@ class Observable:
             ) from None
 
 
-@dataclass
-class ClosedTwissData:
-    """Reference closed-twiss measurements for one momentum, for one worker.
-
-    Arrays are ordered to match the model BPM ordering (the order the sequence's
-    monitors are observed by twiss). ``bpm_names`` records that order so the
-    worker can align the twiss output to these comparisons by name.
-
-    ``pt`` is the known MAD-NG momentum coordinate of this measurement.
-    It is a fixed input to twiss (``x0map.pt``), never an optimisation knob, so
-    both the off-momentum bend response and the dispersive orbit come from the
-    physics. Fitting several ``pt`` values jointly makes the per-magnet
-    Jacobians independent and lifts the single-measurement rank deficiency.
-
-    ``weight_scale`` and ``total_points`` are the *global* loss normalisation and
-    must be identical across every worker in a fit. Each worker divides its
-    inverse-variance weights by ``weight_scale`` and its loss/gradient/Hessian by
-    ``total_points``. If derived per worker (from its own largest weight and point count), the
-    optimiser would minimise ``sum_w (1/(max_w * N_w)) * chi2_w`` instead of the
-    pooled ``sum_w chi2_w``. The most precisely measured momentum would then be
-    down-weighted, and the reported 1-sigma (built from the un-normalised
-    ``JᵀWJ``) would not describe the estimator that was minimised. They are
-    computed once, over every worker's observables, by
-    :func:`create_worker_payloads`.
-    """
-
-    bpm_names: list[str]
-    observables: list[Observable]
-    pt: float = 0.0
-    weight_scale: float = 1.0
-    total_points: int = 1
-
-
-class ClosedTwissWorker(AbstractWorker[ClosedTwissData]):
-    """Worker that fits knobs to a measured closed-twiss solution."""
-
-    def prepare_data(self, data: ClosedTwissData) -> None:
-        """Store the measured observables."""
-        if not data.observables:
-            raise ValueError("ClosedTwissData carries no observables to fit")
-
-        LOGGER.debug(
-            "Worker %s: closed-twiss data for %d BPMs, observables %s",
-            self.worker_id,
-            len(data.bpm_names),
-            [obs.name for obs in data.observables],
-        )
-
-        self.observables = list(data.observables)
-        self.orbit_coords = [obs.name for obs in self.observables if obs.name in ORBIT_COORDS]
-        self.optics_names = [obs.name for obs in self.observables if obs.name not in ORBIT_COORDS]
-        self._measured_index = {name: i for i, name in enumerate(data.bpm_names)}
-        # Known momentum offset of this measurement; pinned on the closed orbit (not a knob).
-        self.pt = float(data.pt)
-        # Filled on the first compute once the twiss BPM ordering is known.
-        self._twiss_bpm_order: list[str] | None = None
-        # Global loss normalisation, identical for every worker in the fit. See
-        # ``ClosedTwissData`` for why it must not be derived per worker.
-        self.weight_scale = float(data.weight_scale)
-        if not np.isfinite(self.weight_scale) or self.weight_scale <= 0.0:
-            raise ValueError(f"Worker {self.worker_id}: weight_scale must be finite and positive")
-        self.normalisation_points = max(1, int(data.total_points))
-
-    def _make_engine(self, knobs: dict[str, float]):
-        return self.backend.ClosedOrbitEngine(
-            self.config,
-            knobs,
-            optics_names=self.optics_names,
-            orbit_coords=self.orbit_coords,
-            worker_id=self.worker_id,
-            logfile=self.engine_logfile,
-        )
-
-    def on_start(self, knobs: dict[str, float]) -> None:
-        """Build the engine; ``pt`` is never a knob here, it is pinned on the closed orbit."""
-        self.engine = self._make_engine(knobs)
-        self.n_knobs = len(self.engine.knob_names)
-        self.engine.set_pt(self.pt)
-
-    def _solve(self, observables: list[Observable], *, context: str = ""):
-        """Solve the closed orbit (and twiss) at the loaded knobs.
-
-        Returns ``(bpm_names, values, jacobian)`` with ``values`` of shape
-        ``(n_observables, n_bpms)`` and ``jacobian`` of shape ``(n_observables,
-        n_bpms, n_knobs)``, rows in the order of ``observables``; ``None`` when the
-        closed orbit is lost (an unstable trial point), so the optimiser backtracks.
-        """
-        solution = self.engine.solve([obs.name for obs in observables])
-        if solution is None:
-            LOGGER.warning(
-                "Worker %s: closed orbit not found%s; flagging step for backtrack",
-                self.worker_id,
-                context,
-            )
-            return None
-
-        return solution.names, solution.values, solution.jacobian
-
-    def _reply(
-        self,
-        grad: np.ndarray,
-        loss: float,
-        hessian: np.ndarray,
-        normal_matrix: np.ndarray,
-        extra=None,
-    ) -> GradReply:
-        """Normalise by the global point count; the physical ``normal`` stays un-normalised.
-
-        Summed across workers, the inverse of ``normal`` is the covariance in real units.
-        """
-        points = self.normalisation_points
-        return GradReply(
-            self.worker_id, loss / points, grad / points, hessian / points, normal_matrix, extra
-        )
-
-    def _failure(self) -> GradReply:
-        """Reply for a lost closed orbit: NaN loss, so the optimiser backtracks."""
-        n = self.n_knobs
-        return self._reply(np.zeros(n), float("nan"), np.zeros((n, n)), np.zeros((n, n)))
-
-    def evaluate(self, message: Evaluate) -> GradReply:
-        """Closed twiss at ``message.knobs`` and its weighted least-squares derivatives."""
-        self.engine.set_knobs(message.knobs)
-        solved = self._solve(self.observables)
-        if solved is None:
-            return self._failure()
-        twiss_names, model, jacobian = solved
-        if self._twiss_bpm_order != twiss_names:
-            self.targets, self.raw_weights, self.weights = align_observables(
-                self.observables,
-                self._measured_index,
-                twiss_names,
-                self.weight_scale,
-                worker_id=self.worker_id,
-            )
-            self._twiss_bpm_order = twiss_names
-        # Every observable family contributes an independent block to the same
-        # ``2 JᵀWJ`` normal equations; the inverse-variance weights make families in
-        # different units commensurable, so no per-family scaling is applied.
-        return self._reply(
-            *weighted_loss_gradient_hessian(
-                model,
-                jacobian,
-                self.observables,
-                self.targets,
-                self.weights,
-                self.raw_weights,
-                self.weight_scale,
-            )
-        )
-
-
 def align_observables(
     observables,
     measured_index: dict[str, int],
     twiss_names: list[str],
-    weight_scale: float,
     *,
     worker_id: int,
 ):
@@ -290,32 +127,18 @@ def align_observables(
         )
 
     targets = []
-    raw_weights = []
+    weights = []
     for observable in observables:
         indices = order if observable.kind is ObservableKind.POINTWISE else order[:-1]
         targets.append(np.asarray(observable.targets, dtype=float)[indices])
-        raw_weights.append(
-            variance_to_weight(np.asarray(observable.variances, dtype=float)[indices])
-        )
-    return targets, raw_weights, [weight / weight_scale for weight in raw_weights]
+        weights.append(variance_to_weight(np.asarray(observable.variances, dtype=float)[indices]))
+    return targets, weights
 
 
-def weighted_loss_gradient_hessian(
-    model: np.ndarray,
-    jacobian: np.ndarray,
-    observables,
-    targets,
-    weights,
-    raw_weights,
-    weight_scale: float,
-) -> tuple[np.ndarray, float, np.ndarray, np.ndarray]:
-    """Evaluate weighted least squares for explicitly supplied observable blocks.
-
-    ``weights`` are ``raw_weights / weight_scale`` (see :func:`align_observables`), so
-    the Gauss-Newton Hessian ``2 JᵀWJ`` is the physical normal matrix ``Jᵀ W_raw J``
-    times ``2 / weight_scale``. Only the latter is formed, once per observable, as a
-    symmetric ``Aᵀ A`` product of the sqrt-weighted Jacobian.
-    """
+def weighted_least_squares(
+    model: np.ndarray, jacobian: np.ndarray, observables, targets, weights
+) -> tuple[np.ndarray, float, np.ndarray]:
+    """``(gradient, chi², JᵀWJ)`` of the inverse-variance weighted residuals of every observable block."""
     n_knobs = jacobian.shape[-1]
     grad = np.zeros(n_knobs)
     normal_matrix = np.zeros((n_knobs, n_knobs))
@@ -326,16 +149,14 @@ def weighted_loss_gradient_hessian(
         if observable.kind is ObservableKind.ADVANCE:
             values, jac = _to_advance(values, jac)
 
-        weight, raw_weight = weights[index], raw_weights[index]
-        if not np.allclose(weight * weight_scale, raw_weight, rtol=1e-9, atol=0.0):
-            raise ValueError("weights must equal raw_weights / weight_scale")
+        weight = weights[index]
         residual = np.where(weight > 0.0, values - targets[index], 0.0)
         grad += 2.0 * (weight * residual) @ jac
-        weighted_jac = jac * np.sqrt(raw_weight)[:, None]
+        weighted_jac = jac * np.sqrt(weight)[:, None]
         normal_matrix += weighted_jac.T @ weighted_jac  # numpy uses a symmetric rank-k update
         loss += float(np.sum(weight * residual**2))
 
-    return grad, loss, (2.0 / weight_scale) * normal_matrix, normal_matrix
+    return grad, loss, normal_matrix
 
 
 def _to_advance(values: np.ndarray, jacobian: np.ndarray) -> tuple[np.ndarray, np.ndarray]:

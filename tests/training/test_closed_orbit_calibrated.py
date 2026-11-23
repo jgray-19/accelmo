@@ -72,8 +72,7 @@ def _fitter(seq_k: Path, series: list[ClosedOrbitSeries], **kwargs) -> Calibrate
         accelerator=PSB(ring=3, sequence_file=seq_k, **KWARGS),
         sequence_config=SequenceConfig(magnet_range="$start/$end"),
         series=series,
-        lm_config=LevenbergMarquardtConfig(max_iterations=40, gradient_converged_value=1e-12),
-        prior_strengths={"dx": 1e-6, "dy": 1e-6},
+        lm_config=LevenbergMarquardtConfig(max_iterations=40),
         **kwargs,
     )
 

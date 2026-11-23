@@ -19,12 +19,12 @@ from xtrack_tools.env import initialise_env
 from xtrack_tools.monitors import process_tracking_data
 
 from accelmo.backend.madng import MadInterface
-from accelmo.config import SimulationConfig
+from accelmo.config import TrackingDataConfig, WorkerRuntime
 from accelmo.fitting.config import OutputConfig, SequenceConfig
 from accelmo.machine.accelerators import LHC
 from accelmo.tracking.config.models import MeasurementConfig, MeasurementDetails
-from accelmo.tracking.fitter import ACDMarkerFitter, FitterOptions
-from tests.training.controller_test_utils import evaluate_controller_worker_loss, make_lm_config
+from accelmo.tracking.fitter import ACDMarkerFitter, FitterOptions, tracking_lm_config
+from tests.training.controller_test_utils import LM_TEST_ITERATIONS, evaluate_controller_worker_loss
 from tests.training.helpers import TRACK_COLUMNS
 
 if TYPE_CHECKING:
@@ -132,12 +132,11 @@ def test_worker_loss_prefers_the_true_quadrupole_strengths(
     path, truth = lhc_acd_track
     fitter = ACDMarkerFitter(
         accelerator=_accelerator(seq_b1),
-        optimiser_config=make_lm_config(),
-        simulation_config=SimulationConfig(num_workers=NUM_WORKERS, num_batches=2),
+        solver=tracking_lm_config(LM_TEST_ITERATIONS),
+        runtime=WorkerRuntime(num_workers=NUM_WORKERS),
+        tracking_data=TrackingDataConfig(num_batches=2),
         sequence_config=SequenceConfig(magnet_range="$start/$end"),
-        measurement_config=MeasurementConfig(
-            {path: MeasurementDetails(interface_options={}, machine_deltap=0.0)}
-        ),
+        measurement_config=MeasurementConfig({path: MeasurementDetails(machine_deltap=0.0)}),
         options=FitterOptions(
             initial_knob_strengths={},
             true_strengths=truth,

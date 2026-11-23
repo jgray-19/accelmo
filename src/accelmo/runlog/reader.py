@@ -80,10 +80,11 @@ class StageLog:
 
     def version(self) -> tuple[int, int]:
         """Sizes of the growing files: changes whenever a step is logged."""
-        return tuple(  # type: ignore[return-value]
+        history, knobs = (
             (self.directory / name).stat().st_size if (self.directory / name).exists() else 0
             for name in (HISTORY_FILE, KNOBS_FILE)
         )
+        return history, knobs
 
     def history(self) -> pd.DataFrame:
         """The logged scalars, one row per step, indexed by step."""

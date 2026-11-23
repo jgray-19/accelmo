@@ -30,7 +30,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterable
     from pathlib import Path
 
-    from accelmo.machine.accelerators import Accelerator, KnobSpec
+    from accelmo.machine.accelerators import Accelerator
 
 BPM_PATTERN = "^BPM"
 LOGGER = logging.getLogger(__name__)
@@ -91,30 +91,24 @@ def _absolute_name_from_dk_knob(knob_name: str) -> str | None:
 def _deferred_table_helpers() -> str:
     """Lua helpers that defer dknl/dksl tables without resetting current values."""
     values = ",\n        ".join(f"old[{idx}] or 0.0" for idx in range(1, MAX_MULTIPOLE + 1))
-    return f"""
-local function make_dknl_deferred_knob(e)
-    if not MAD.typeid.is_deferred(loaded_sequence[e.name].dknl) then
-        local old = loaded_sequence[e.name].dknl or {{}}
-        loaded_sequence[e.name].dknl = MAD.typeid.deferred {{
+    return "".join(
+        f"""
+local function make_{table}_deferred_knob(e)
+    if not MAD.typeid.is_deferred(loaded_sequence[e.name].{table}) then
+        local old = loaded_sequence[e.name].{table} or {{}}
+        loaded_sequence[e.name].{table} = MAD.typeid.deferred {{
         {values},
         }}
     end
-end
-local function make_dksl_deferred_knob(e)
-    if not MAD.typeid.is_deferred(loaded_sequence[e.name].dksl) then
-        local old = loaded_sequence[e.name].dksl or {{}}
-        loaded_sequence[e.name].dksl = MAD.typeid.deferred {{
-        {values},
-        }}
-    end
-end
-"""
+end"""
+        for table in ("dknl", "dksl")
+    )
 
 
 def read_b2_error_table(path: Path | str) -> dict[str, float]:
     """Read an OMC3-style ``.errors`` table as an element-name to K1L mapping."""
     table = tfs.read(path, index="NAME")
-    return {str(name): float(value) for name, value in table["K1L"].items()}
+    return {str(name): float(value) for name, value in table["K1L"].items()}  # ty: ignore[missing-attribute]
 
 
 def apply_b2_errors_to_sequence(
@@ -212,7 +206,7 @@ class MadInterface(KnobMadInterface):
         discard_mad_output: bool = False,
         tracking_anchor_mode: str | None = None,
         tracking_anchor_markers: list[str] | None = None,
-        observed_tracking_anchor_markers: list[str] | None = None,
+        observe_anchor_markers: bool = True,
     ):
         stdout, redirect_stderr = self._resolve_mad_stdout(mad_logfile, discard_mad_output)
 
@@ -241,13 +235,9 @@ class MadInterface(KnobMadInterface):
         )
 
         self.observe_bpms(bad_bpms=bad_bpms, unobserve_first=True)
-        observed_anchor_markers = (
-            anchor_markers
-            if observed_tracking_anchor_markers is None
-            else _unique_names(observed_tracking_anchor_markers)
-        )
-        for marker in observed_anchor_markers:
-            self.observe_element(marker)
+        if observe_anchor_markers:
+            for marker in anchor_markers:
+                self.observe_element(marker)
         self.recount_bpms()
         self.make_all_monitors_thin(list(set(self.all_bpms) - set(anchor_markers)))
 
@@ -303,98 +293,6 @@ class MadInterface(KnobMadInterface):
             all_bpms = all_bpms[:-1]
         bpms_in_range = [bpm for bpm in all_bpms if bpm in bpms_in_range]
         return all_bpms, bpms_in_range
-
-    def _clear_disabled_elements(self) -> None:
-        """Clear the MAD disabled flag on every element in the loaded sequence."""
-        self.mad.send("loaded_sequence:deselect(MAD.element.flags.disabled)")
-
-    def _enable_only_named_elements(self, names: list[str], element_class: str) -> None:
-        """Disable an element class, then re-enable the provided element-name table."""
-        self.mad.send(
-            f"""
-local disabled_flag = MAD.element.flags.disabled
-loaded_sequence:select(disabled_flag, nil, {{class={element_class}}}) ! Disable all elements of the given class
-loaded_sequence:deselect(disabled_flag, nil, {self.py_name}:recv())   ! Re-enable only the provided element names
-{self.py_name}:send("Complete")
-"""
-        )
-        self.mad.send(names)
-        self._check_mad_response("Complete", "Error applying orbit-correction element filter")
-
-    def _apply_orbit_correction_filters(
-        self,
-        bpms: list[str] | None,
-        correctors: list[str] | None,
-    ) -> bool:
-        """Apply optional orbit-correction BPM/corrector filters."""
-        if bpms is None and correctors is None:
-            return False
-
-        self._clear_disabled_elements()
-        if bpms is not None:
-            self._enable_only_named_elements(bpms, "MAD.element.monitor")
-        if correctors is not None:
-            self._enable_only_named_elements(correctors, "MAD.element.kicker")
-        return True
-
-    def _run_orbit_correction_mad(self, twiss_name: str) -> None:
-        """Run MAD-NG orbit correction using already prepared sequence flags."""
-        self.mad.send(
-            rf"""
-local correct, option in MAD
-
-io.write("*** orbit correction using off momentum twiss\n")
-local tws_offmom = twiss {{ sequence=loaded_sequence, deltap=machine_deltap }}
-
-local fmt = option.numfmt ; option.numfmt = "% -.16e"
-local tbl = correct {{ sequence=loaded_sequence, model=tws_offmom, target={twiss_name}, method="svd", info=1, plane=correction_plane }}
-if correct_file then
-    tbl:write(correct_file)
-end
-option.numfmt = fmt
-
-{self.py_name}:send("Complete")
-"""
-        )
-        self._check_mad_response("Complete", "Error during MAD-NG orbit correction")
-
-    def perform_orbit_correction(
-        self,
-        machine_deltap: float,
-        target_qx: float | None = None,
-        target_qy: float | None = None,
-        corrector_file: Path | None = None,
-        twiss_name: str = "zero_twiss",
-        correct_tunes: bool = True,
-        bpms: list[str] | None = None,
-        correctors: list[str] | None = None,
-        plane: str = "x",
-    ) -> dict[str, float]:
-        """Perform orbit correction with optional BPM/corrector name filtering."""
-        qx_knob, qy_knob = self.accelerator.tune_variables
-        if plane not in {"x", "y", "xy"}:
-            raise ValueError(f"Invalid orbit correction plane {plane!r}; expected 'x', 'y' or 'xy'")
-        self.mad["machine_deltap"] = machine_deltap
-        self.mad["correct_file"] = str(corrector_file.absolute()) if corrector_file else None
-        self.mad["correction_plane"] = plane
-
-        filters_applied = self._apply_orbit_correction_filters(bpms, correctors)
-        try:
-            self._run_orbit_correction_mad(twiss_name)
-        finally:
-            if filters_applied:
-                self._clear_disabled_elements()
-
-        if correct_tunes:
-            if target_qx is None or target_qy is None:
-                raise ValueError(
-                    "Orbit has been corrected, but target tunes are not provided for matching, so MAD-NG cannot match tunes."
-                )
-            return self.match_tunes(target_qx, target_qy, deltap=machine_deltap)
-        return {
-            qx_knob: self.mad[f"MADX['{qx_knob}']"],
-            qy_knob: self.mad[f"MADX['{qy_knob}']"],
-        }
 
     def prepare_tracking_anchors(
         self,
@@ -460,34 +358,20 @@ option.numfmt = fmt
             raise ValueError("b2_errors are only supported for LHC MAD interfaces.")
         apply_b2_errors_to_sequence(self.mad, self.py_name, b2_errors, machine_state)
 
-    def recount_bpms(self) -> None:
-        """Refresh ``bpms_in_range``, ``nbpms`` and ``all_bpms`` (after a cycle)."""
-        self.bpms_in_range, self.nbpms, self.all_bpms = self.count_bpms(self.bpm_range)
+    @property
+    def nbpms(self) -> int:
+        """Number of observed BPMs in ``bpm_range``."""
+        return len(self.bpms_in_range)
 
-    def count_bpms(self, bpm_range: str) -> tuple[list[str], int, list[str]]:
-        """Count the number of BPM elements in the specified range."""
-        all_bpms, bpms_in_range = self.get_bpm_list(bpm_range)
-        LOGGER.info(
-            "Counted %d BPMs in observation range: %s",
-            len(bpms_in_range),
-            self._format_range_for_log(bpm_range),
-        )
-        return bpms_in_range, len(bpms_in_range), all_bpms
+    def recount_bpms(self) -> None:
+        """Refresh ``all_bpms`` and ``bpms_in_range`` (after a cycle)."""
+        self.all_bpms, self.bpms_in_range = self.get_bpm_list(self.bpm_range)
+        LOGGER.info("Counted %d BPMs in range %s", len(self.bpms_in_range), self.bpm_range)
 
     def make_all_monitors_thin(self, monitors: list[str], observe_after: bool = True) -> None:
-        """Replace monitor elements with markers in the specified BPM range."""
+        """Replace monitor elements with thin observation markers."""
         self.make_elements_thin(monitors, observe_after=observe_after, require_kind="monitor")
-        LOGGER.info(
-            "Replaced %d monitor BPMs with thin observation markers in range: %s",
-            len(monitors),
-            self._format_range_for_log(self.bpm_range),
-        )
-
-    @staticmethod
-    def _format_range_for_log(bpm_range: str) -> str:
-        if bpm_range == "$start/$end":
-            return "full cycled sequence ($start/$end)"
-        return bpm_range
+        LOGGER.info("Replaced %d monitor BPMs with thin observation markers", len(monitors))
 
     def _set_machine_state(self, machine_state: MachineState) -> None:
         """Put the model in *machine_state* (see :mod:`accelmo.machine.machine_state`)."""
@@ -528,10 +412,6 @@ option.numfmt = fmt
         }
         if magnet_values:
             self.set_magnet_strengths(magnet_values)
-
-    def get_knob_specs(self) -> list[KnobSpec]:
-        """Return the knob specs selected by the accelerator's errors / misalignments."""
-        return self.accelerator.get_knob_specs()
 
     def _build_attr_block(self, attr_conditions: list[tuple[str, str, str]]) -> str:
         """
@@ -598,7 +478,7 @@ option.numfmt = fmt
 
     def _make_adj_knobs(self) -> None:
         """Create deferred-strength knobs in MAD for all elements matching the knob specs."""
-        specs = self.get_knob_specs()
+        specs = self.accelerator.get_knob_specs()
         prepare_knob_creation(self, self.accelerator, specs)
 
         attr_block = ""

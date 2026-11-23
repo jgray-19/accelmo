@@ -38,9 +38,10 @@ if TYPE_CHECKING:
 
     from pymadng import MAD
 
-    from accelmo.backend.protocol import TrackRequest
+    from accelmo.backend.protocol import TrackGeometry, TrackRequest
     from accelmo.fitting.worker import WorkerConfig
     from accelmo.machine.accelerators import Accelerator
+    from accelmo.machine.machine_state import MachineState
 
 LOGGER = logging.getLogger(__name__)
 
@@ -49,26 +50,33 @@ class _MadngSession:
     """The worker's MAD-NG model: sequence, observed BPMs, knobs, cycled start."""
 
     def __init__(
-        self, config: WorkerConfig, init_knobs: Mapping[str, float], logfile: Path | None
+        self,
+        config: WorkerConfig,
+        init_knobs: Mapping[str, float],
+        logfile: Path | None,
+        geometry: TrackGeometry | None = None,
     ) -> None:
+        """``geometry`` is the tracked segment; without it the whole ring is observed, uncycled."""
         iface = MadInterface(
             accelerator=config.accelerator,
             magnet_range=config.magnet_range,
-            bpm_range=config.bpm_range,
-            **config.interface_options,
+            bpm_range="$start/$end" if geometry is None else geometry.bpm_range,
+            machine_state=config.machine_state,
+            b2_errors=config.b2_errors,
             initial_model_values=dict(init_knobs),
             bad_bpms=config.bad_bpms,
             debug=config.debug,
             mad_logfile=logfile,
             py_name=PYTHON_IN_MAD,
-            tracking_anchor_mode=config.tracking_anchor_mode,
-            tracking_anchor_markers=config.tracking_anchor_sources,
-            observed_tracking_anchor_markers=config.observed_tracking_anchor_markers,
+            tracking_anchor_mode=None if geometry is None else geometry.anchor_mode,
+            tracking_anchor_markers=None if geometry is None else list(geometry.anchor_sources),
+            # Tracking workers read the anchor markers from the data; they never observe them.
+            observe_anchor_markers=geometry is None,
             create_knobs=True,
         )
-        # One contiguous segment from this worker's start; closed-twiss workers do not cycle.
-        if config.cycle_target is not None:
-            iface.cycle_to_start(config.cycle_target)
+        # One contiguous segment from this worker's start.
+        if geometry is not None:
+            iface.cycle_to_start(geometry.cycle_target)
         self.iface = iface
         self.mad: MAD = iface.mad
         #: Every knob this process created, ``pt`` last when the energy is fitted.
@@ -83,9 +91,10 @@ class _MadngSession:
         mad["knob_names"] = self.knob_names
         # Without a tracking range (kicker mode) MAD tracks the full cycled ring and
         # observes every monitor, including the one wrapping past the start marker.
-        self.nbpms = len(iface.all_bpms) if config.tracking_range is None else iface.nbpms
+        full_ring = geometry is not None and geometry.tracking_range is None
+        self.nbpms = len(iface.all_bpms) if full_ring else iface.nbpms
         mad["nbpms"] = self.nbpms
-        mad["sdir"] = config.sdir
+        mad["sdir"] = 1 if geometry is None else geometry.sdir
         mad.import_module("MAD", "damap", "matrix", "vector")
         mad.import_module("MAD.utility", "tblcat")
 
@@ -132,7 +141,7 @@ class TrackingEngine:
     ) -> None:
         self.plan = plan
         self.worker_id = worker_id
-        self.session = _MadngSession(config, init_knobs, logfile)
+        self.session = _MadngSession(config, init_knobs, logfile, plan.geometry)
         self.knob_names = self.session.knob_names
         self.nbpms = self.session.nbpms
         mad = self.session.mad
@@ -140,13 +149,15 @@ class TrackingEngine:
         mad["batch_size"] = plan.batch_size
         mad["num_batches"] = plan.num_batches
         mad["optimise_energy"] = accelerator.optimise_energy
-        mad["tracking_range"] = plan.tracking_range
-        mad["n_run_turns"] = plan.n_run_turns
+        mad["tracking_range"] = plan.geometry.tracking_range
+        mad["n_run_turns"] = plan.geometry.n_turns
         if accelerator.has_ac_kickers:
-            set_ac_kicker_freqs(mad, accelerator.ac_kicker_freqs(plan.file_index))
+            freqs = accelerator.ac_kicker_freqs(plan.file_index)
+            assert freqs is not None
+            set_ac_kicker_freqs(mad, freqs)
             volt_knobs = accelerator.ac_kicker_volt_knobs(plan.file_index)
             if volt_knobs is not None:
-                bind_ac_kicker_volts(mad, volt_knobs)
+                bind_ac_kicker_volts(mad, volt_knobs)  # ty: ignore[invalid-argument-type]
             shift_ac_kicker_phase(mad, plan.turn_offset)
         self._install_knob_parameters(accelerator)
         self._build_scripts(config)
@@ -177,7 +188,8 @@ end
             self._start_track_script = self._track_script
             return
         self._init_script = build_tracking_init_script(
-            observables, start_on_first_turn=self.plan.start_on_first_turn
+            observables,
+            start_on_first_turn=self.plan.geometry.initial_condition_marker is not None,
         )
         self._track_script = build_tracking_script(observables)
         self._start_track_script = build_tracking_script(
@@ -330,7 +342,8 @@ class ClosedOrbitEngine:
     """Parametric closed orbit (``cofind`` + one ``track``) or closed twiss in MAD-NG.
 
     Optical functions and their knob derivatives come from twiss's ``trkopt`` columns; the
-    orbit coordinates from the saved map (``run_closed_twiss_init.mad``).
+    orbit coordinates from the saved map (``run_closed_twiss_init.mad``). With ``extra_knobs``
+    (calibration fits) those zero-valued knobs follow the magnet knobs and ``pt`` is never fitted.
     """
 
     def __init__(
@@ -342,6 +355,7 @@ class ClosedOrbitEngine:
         orbit_coords: Sequence[str],
         worker_id: int,
         logfile: Path | None = None,
+        extra_knobs: Sequence[str] | None = None,
     ) -> None:
         del worker_id
         self.session = _MadngSession(config, init_knobs, logfile)
@@ -349,8 +363,11 @@ class ClosedOrbitEngine:
         self.optics_names = list(optics_names)
         self.orbit_coords = list(orbit_coords)
         #: ``pt`` is fitted (as a parameter after the knobs) when MAD created it as a knob.
-        self.fit_pt = "pt" in self.session.knob_names
-        self._add_extra_knobs()
+        self.fit_pt = "pt" in self.session.knob_names and extra_knobs is None
+        if extra_knobs is not None:
+            if extra_knobs:
+                mad.send("\n".join(f"loaded_sequence['{knob}'] = 0" for knob in extra_knobs))
+            mad["knob_names"] = [n for n in mad["knob_names"] if n != "pt"] + list(extra_knobs)
         #: Parametric knobs in Jacobian column order (magnet knobs, then extra knobs).
         self.knob_names = self.session.fitted_knobs_without_pt()
         self.n_knobs = len(self.knob_names)
@@ -367,9 +384,6 @@ class ClosedOrbitEngine:
         #: Knobs are plain numbers (after a ``jacobian=False`` solve) until the next full solve.
         self._plain = False
         self._names: list[str] | None = None
-
-    def _add_extra_knobs(self) -> None:
-        """Hook for zero-valued knobs after the magnet knobs (:class:`CalibratedClosedOrbitEngine`)."""
 
     def set_knobs(self, knobs: Mapping[str, float]) -> None:
         """See :meth:`accelmo.backend.protocol.ClosedOrbitEngine.set_knobs`."""
@@ -462,38 +476,6 @@ class ClosedOrbitEngine:
         """Close the MAD-NG process."""
         self.session.close()
 
-
-class CalibratedClosedOrbitEngine(ClosedOrbitEngine):
-    """Closed orbit with zero-valued gain knobs after the magnet knobs; ``pt`` is never fitted."""
-
-    def __init__(
-        self,
-        config: WorkerConfig,
-        init_knobs: Mapping[str, float],
-        *,
-        extra_knobs: Sequence[str],
-        optics_names: Sequence[str],
-        orbit_coords: Sequence[str],
-        worker_id: int,
-        logfile: Path | None = None,
-    ) -> None:
-        self._extra_knobs = list(extra_knobs)
-        super().__init__(
-            config,
-            init_knobs,
-            optics_names=optics_names,
-            orbit_coords=orbit_coords,
-            worker_id=worker_id,
-            logfile=logfile,
-        )
-
-    def _add_extra_knobs(self) -> None:
-        self.fit_pt = False
-        mad = self.session.mad
-        if self._extra_knobs:
-            mad.send("\n".join(f"loaded_sequence['{knob}'] = 0" for knob in self._extra_knobs))
-        mad["knob_names"] = [name for name in mad["knob_names"] if name != "pt"] + self._extra_knobs
-
     def scale_globals(self, scaled: Sequence[tuple[str, float, float, str]]) -> None:
         """Set each global ``name`` to the deferred ``kick * (gain + knob)``, so it follows the knob."""
         commands = [
@@ -508,7 +490,7 @@ def open_model(
     accelerator: Accelerator,
     *,
     magnet_range: str,
-    machine_state: object = None,
+    machine_state: MachineState | None = None,
     b2_errors: Path | None = None,
     bad_bpms: list[str] | None = None,
     debug: bool = False,
@@ -535,7 +517,7 @@ def closed_orbit_table(
     accelerator: Accelerator,
     magnet_strengths: Mapping[str, float] | None,
     pt: float,
-    machine_state: object,
+    machine_state: MachineState | None,
     columns: Sequence[str],
 ):
     """Coupled twiss columns at every observed element, ``pt`` pinned on the initial condition."""

@@ -43,7 +43,7 @@ from xtrack_tools.env import initialise_env
 from xtrack_tools.monitors import process_tracking_data
 
 from accelmo.backend.madng.interface import MadInterface
-from accelmo.config import OptimiserConfig, SimulationConfig
+from accelmo.config import OptimiserConfig, TrackingDataConfig, WorkerRuntime
 from accelmo.fitting.config import OutputConfig, SequenceConfig
 from accelmo.machine.accelerators import SPS
 from accelmo.tracking.config.models import MeasurementConfig, MeasurementDetails
@@ -180,8 +180,7 @@ def build_fitter(
     fit_dir = output_dir / case
     fit_dir.mkdir(parents=True, exist_ok=True)
     measurements = {
-        path: MeasurementDetails(interface_options={"machine_state": data.tune_knobs_file})
-        for path in data.files[case]
+        path: MeasurementDetails(machine_state=data.tune_knobs_file) for path in data.files[case]
     }
     return ACDMarkerFitter(
         accelerator,
@@ -194,13 +193,13 @@ def build_fitter(
             warmup_lr_start=5e-8,
             max_lr=1e-6,
             min_lr=1e-7,
-            gradient_converged_value=1e-30,
             optimiser_type="adam",
             adam_eps=1e-30,
         ),
         # Noise-free tracking needs no held-out turns, so the loss-change stop follows
         # the training loss.
-        SimulationConfig(num_workers=8, num_batches=2, validation_fraction=0.0),
+        WorkerRuntime(num_workers=8),
+        TrackingDataConfig(num_batches=2, validation_fraction=0.0),
         SequenceConfig(magnet_range="$start/$end"),
         MeasurementConfig(measurements),
         options=FitterOptions(

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from importlib import import_module
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
     from accelmo.backend.protocol import Backend
@@ -16,7 +16,7 @@ def get_backend(name: str) -> Backend:
     if name not in BACKENDS:
         raise ValueError(f"Unknown backend {name!r}; valid: {BACKENDS}")
     try:
-        return import_module(f"accelmo.backend.{name}.engines")
+        return cast("Backend", import_module(f"accelmo.backend.{name}.engines"))
     except ModuleNotFoundError as err:
         if name == "xtrack" and err.name in {"xtrack", "xtrack_tools"}:
             raise ImportError(

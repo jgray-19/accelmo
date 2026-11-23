@@ -14,9 +14,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
-from scipy.linalg.blas import dsyrk
+from scipy.linalg.blas import dsyrk  # ty: ignore[missing-module-member]
 
-from accelmo.fitting.bpm_gains import ZERO_MEAN_SIGMA
+from accelmo.fitting.priors import ZERO_MEAN_SIGMA, inverse_variances, quadratic_prior
 from accelmo.fitting.uncertainty import covariance
 
 
@@ -52,6 +52,11 @@ class CalibrationBlocks:
     """Summed loss, gradient and Gauss-Newton Hessian blocks (``2 JᵀWJ`` convention, unnormalised)."""
 
     ARRAYS = ("grad_u", "hess_uu", "hess_ub", "hess_bb", "grad_b")
+    grad_u: np.ndarray
+    hess_uu: np.ndarray
+    hess_ub: np.ndarray
+    hess_bb: np.ndarray
+    grad_b: np.ndarray
 
     def __init__(self, n_q: int, n_g: int, n_b: int, buffer=None, *, zero: bool = True) -> None:
         """Blocks backed by ``buffer`` (a shared-memory buffer of :meth:`nbytes`) or by fresh arrays; ``zero=False`` keeps a buffer's contents."""
@@ -94,15 +99,6 @@ class CalibrationBlocks:
         self.hess_ub += other.hess_ub
         self.hess_bb += other.hess_bb
         self.grad_b += other.grad_b
-
-    def scale(self, factor: float) -> None:
-        """Multiply every block by ``factor``."""
-        self.loss *= factor
-        self.grad_u *= factor
-        self.hess_uu *= factor
-        self.hess_ub *= factor
-        self.hess_bb *= factor
-        self.grad_b *= factor
 
     def to_payload(self) -> dict:
         """The scalars; the arrays travel through shared memory (a pickle would copy ~170 MB twice)."""
@@ -175,13 +171,12 @@ def apply_prior(
     b: np.ndarray,
     sigma_g: float,
     sigma_b: float,
-    c: float,
     sigma_q: np.ndarray | None = None,
     *,
     zero_mean: np.ndarray | None = None,
     loss_only: bool = False,
 ):
-    """Gaussian priors ``c * g²/σ_g²``, ``c * b²/σ_b²`` and ``c * q²/σ_q²`` (``c`` converts χ² units to the normalised loss).
+    """Gaussian priors ``g²/σ_g²``, ``b²/σ_b²`` and ``q²/σ_q²`` added to the chi² blocks.
 
     ``sigma_q`` holds one absolute width per magnet knob (the knob's units); an entry of 0 leaves that knob free.
     ``loss_only`` adds the priors to ``blocks.loss`` alone (``blocks`` then needs only ``loss`` and ``n_q``): a loss-only trial
@@ -189,34 +184,24 @@ def apply_prior(
     with width :data:`ZERO_MEAN_SIGMA`.
     """
     n_q = blocks.n_q
+    ridge = np.zeros(len(u))
     if sigma_q is not None:
-        inv_var = np.zeros(n_q)
-        np.divide(1.0, sigma_q**2, out=inv_var, where=sigma_q > 0)
-        q = u[:n_q]
-        blocks.loss += c * float(q @ (inv_var * q))
-        if not loss_only:
-            blocks.grad_u[:n_q] += 2.0 * c * inv_var * q
-            blocks.hess_uu[np.diag_indices(n_q)] += 2.0 * c * inv_var
+        ridge[:n_q] = inverse_variances(sigma_q)
     if sigma_g > 0:
-        g = u[n_q:]
-        blocks.loss += c * float(g @ g) / sigma_g**2
-        if not loss_only:
-            blocks.grad_u[n_q:] += 2.0 * c * g / sigma_g**2
-            blocks.hess_uu[n_q:, n_q:] += np.eye(blocks.n_g) * 2.0 * c / sigma_g**2
-    if zero_mean is not None and len(zero_mean):
-        a = np.zeros(len(u) - n_q)
-        a[zero_mean] = 1.0 / len(zero_mean)
-        mean = float(a @ u[n_q:])
-        w = c / ZERO_MEAN_SIGMA**2
-        blocks.loss += w * mean**2
-        if not loss_only:
-            blocks.grad_u[n_q:] += 2.0 * w * mean * a
-            blocks.hess_uu[n_q:, n_q:] += 2.0 * w * np.outer(a, a)
+        ridge[n_q:] = 1.0 / sigma_g**2
+    groups = (
+        [n_q + np.asarray(zero_mean, dtype=int)] if zero_mean is not None and len(zero_mean) else []
+    )
+    prior = quadratic_prior(ridge, groups, 1.0 / ZERO_MEAN_SIGMA**2)
+    blocks.loss += float(u @ prior @ u)
+    if not loss_only:
+        blocks.grad_u += 2.0 * prior @ u
+        blocks.hess_uu += 2.0 * prior
     if sigma_b > 0:
-        blocks.loss += c * float(b @ b) / sigma_b**2
+        blocks.loss += float(b @ b) / sigma_b**2
         if not loss_only:
-            blocks.grad_b += 2.0 * c * b / sigma_b**2
-            blocks.hess_bb += 2.0 * c / sigma_b**2
+            blocks.grad_b += 2.0 * b / sigma_b**2
+            blocks.hess_bb += 2.0 / sigma_b**2
 
 
 def reduce_blocks(blocks: CalibrationBlocks) -> tuple[np.ndarray, np.ndarray]:
@@ -229,16 +214,13 @@ def reduce_blocks(blocks: CalibrationBlocks) -> tuple[np.ndarray, np.ndarray]:
     return grad, hess
 
 
-def gain_covariance(
-    blocks: CalibrationBlocks, unit: float
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def gain_covariance(blocks: CalibrationBlocks) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Physical normal matrix of ``u``, and the 1-sigma of ``u`` and of ``b``, from blocks that include the priors.
 
-    The blocks are in the normalised loss, ``unit`` times the chi-square, so ``hess / (2 unit)`` is the inverse-variance
-    normal matrix and its inverse the posterior covariance (the priors are part of the fit). ``b`` is marginalised over ``u``:
+    The blocks hold the chi² Hessian, so ``hess / 2`` is the inverse-variance normal matrix and its inverse the posterior covariance (the priors are part of the fit). ``b`` is marginalised over ``u``:
     with the diagonal ``H_bb``, ``Cov_bb = H_bb⁻¹ + H_bb⁻¹ H_ubᵀ Cov_u H_ub H_bb⁻¹`` and only its diagonal is formed.
     """
-    scale = 1.0 / (2.0 * unit)
+    scale = 0.5
     normal_u = reduce_blocks(blocks)[1] * scale
     cov_u = covariance(normal_u)
     inv_bb = 1.0 / (blocks.hess_bb * scale)

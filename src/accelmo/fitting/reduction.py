@@ -18,14 +18,13 @@ if TYPE_CHECKING:
 class Reduced:
     """The sum over the workers that returned a valid loss.
 
-    ``hessian`` and ``normal`` are ``None`` when the workers send none (tracking).
+    ``normal`` is ``None`` when the workers send none (no curvature asked for).
     ``particle_lost`` is set when any worker lost its particles or closed orbit;
     those workers are left out of every sum and of ``n_valid``.
     """
 
     loss: float
     grad: np.ndarray
-    hessian: np.ndarray | None
     normal: np.ndarray | None
     n_valid: int
     particle_lost: bool
@@ -41,10 +40,9 @@ def reduce_replies(replies: Sequence[object], n_knobs: int) -> Reduced:
     """
     if not replies:
         raise RuntimeError("No workers returned results")
-    with_curvature = isinstance(replies[0], GradReply) and replies[0].hessian is not None
+    with_curvature = isinstance(replies[0], GradReply) and replies[0].normal is not None
     loss = 0.0
     grad = np.zeros(n_knobs, dtype=float)
-    hessian = np.zeros((n_knobs, n_knobs)) if with_curvature else None
     normal = np.zeros((n_knobs, n_knobs)) if with_curvature else None
     n_valid = 0
     particle_lost = False
@@ -59,10 +57,9 @@ def reduce_replies(replies: Sequence[object], n_knobs: int) -> Reduced:
             continue
         grad += np.asarray(reply.grad, dtype=float).ravel()
         if with_curvature:
-            hessian += np.asarray(reply.hessian, dtype=float)
             normal += np.asarray(reply.normal, dtype=float)
         if isinstance(reply.extra, np.ndarray):
             extra_sum = reply.extra.copy() if extra_sum is None else extra_sum + reply.extra
         loss += float(reply.loss)
         n_valid += 1
-    return Reduced(loss, grad, hessian, normal, n_valid, particle_lost, extra_sum)
+    return Reduced(loss, grad, normal, n_valid, particle_lost, extra_sum)

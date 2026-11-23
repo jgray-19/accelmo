@@ -15,14 +15,14 @@ There are two fitting engines, built the same way:
   ``ArcByArcFitter``, ``KickerFitter``, ``ACDMarkerFitter`` and ``ACDSinusoidFitter`` fit
   turn-by-turn data with mini-batch gradient descent (Adam or L-BFGS, ``tracking.sgd``) or
   Levenberg-Marquardt (``fitting.lm_loop``), optionally with the start coordinates.
-- **POCO** (``poco``): ``ClosedOrbitFitter``, ``ClosedTwissFitter`` and
-  ``CalibratedClosedOrbitFitter`` fit closed-orbit and closed-twiss data with
+- **POCO** (``poco``): ``ClosedOrbitFitter`` and ``CalibratedClosedOrbitFitter`` fit
+  closed-orbit and closed-twiss series with
   Levenberg-Marquardt (``fitting.lm_loop``).
 
 Both compose a :class:`~accelmo.fitting.setup.MachineSetup`: the MAD-NG model and its BPMs,
-the knobs and their starting values, the output settings and the one
-``SimulationConfig`` every other part reads. A tracking fit adds its BPM ranges
-(``tracking.ranges``).
+the knobs and their starting values and the output settings. Workers run with a
+``WorkerRuntime``; a tracking fit adds its ``TrackingDataConfig``, ``TrackingParameters`` and
+BPM ranges (``tracking.ranges``).
 
 Worker protocol
 ---------------
@@ -32,8 +32,8 @@ the same loop, :meth:`AbstractWorker.run <accelmo.fitting.worker.AbstractWorker.
 
 1. Receive ``Start(knobs)`` and build the MAD-NG session.
 2. Answer each ``Evaluate(knobs, batch)`` with one ``GradReply`` (loss, gradient and,
-   for POCO workers, the Hessian and normal matrix), and each command (``Validate``,
-   ``Diagnose``, ``SetKnobs``, ``UpdateInitCoords``, ``SetUncertaintyMode``) with one
+   for POCO workers, the Hessian and normal matrix), and each command (``TotalChi2``,
+   ``SetKnobs``, ``UpdateInitCoords``, ``SetUncertaintyMode``) with one
    ``Ack`` or ``LossReply``.
 3. On ``Stop``, a training tracking worker replies with its ``UncertaintyPart``, then exits.
 
@@ -129,7 +129,7 @@ Imports only point down this list; the two engines never import each other
     Run-log writer (:class:`~accelmo.runlog.writer.RunLog`) and reader
     (:class:`~accelmo.runlog.reader.StageLog`, :func:`~accelmo.runlog.reader.find_stages`).
 ``accelmo.config``
-    ``OptimiserConfig`` and ``SimulationConfig``. Imports no other ``accelmo`` module.
+    ``OptimiserConfig``, ``WorkerRuntime``, ``TrackingDataConfig`` and ``TrackingParameters``. Imports no other ``accelmo`` module.
 
 Knob conventions
 ----------------

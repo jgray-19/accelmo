@@ -6,14 +6,16 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from accelmo.config import SimulationConfig
+from accelmo.backend.protocol import TrackGeometry
+from accelmo.config import TrackingDataConfig, TrackingParameters, WorkerRuntime
 from accelmo.fitting.pool import WorkerPool
 from accelmo.fitting.protocol import STOP, Ack
-from accelmo.fitting.worker import KickPlane, WorkerConfig
+from accelmo.fitting.worker import WorkerConfig
 from accelmo.machine.accelerators import PSB
-from accelmo.tracking.config.tracking import TrackingPlan, WorkerRangeSpec
+from accelmo.tracking.config.tracking import TrackingPlan
 from accelmo.tracking.data_manager import FileTracks
-from accelmo.tracking.dispatch.setup import WorkerObservationPlan, WorkerSetupHelper
+from accelmo.tracking.dispatch.setup import KickPlane, TrackingWorkerConfig, plan_workers
+from accelmo.tracking.ranges import BpmRanges
 from accelmo.tracking.session import TrackingSession
 from accelmo.tracking.uncertainty import UncertaintyPart, drain_uncertainty
 from accelmo.tracking.worker import PrecomputedTrackingWeights, TrackingData, TrackingWorker
@@ -94,29 +96,24 @@ def _make_psb(tmp_path: Path) -> PSB:
     return PSB(ring=3, sequence_file=seq_file)
 
 
-def _make_setup_helper(
-    tmp_path: Path,
-    *,
-    all_bpms: list[str] | None = None,
-    interface_options_per_file: list[dict] | None = None,
-) -> WorkerSetupHelper:
-    bpms = all_bpms or BPMS
-    return WorkerSetupHelper(
-        accelerator=_make_psb(tmp_path),
-        all_bpms=bpms,
+def _plan_file_workers(tmp_path: Path, file_idx: int) -> list[TrackingWorkerConfig]:
+    """Workers of one file over the first three BPMs, each file with its own machine state."""
+    bpms = BPMS[:3]
+    ranges = BpmRanges(
+        TrackingPlan(),
+        [bpms[0]],
+        [bpms[1]],
+        bpms,
+        use_fixed_bpm=True,
         fixed_start=bpms[0],
         fixed_end=bpms[-1],
-        use_fixed_bpm=True,
-        bad_bpms=None,
-        file_kick_planes=dict.fromkeys(range(4), "xy"),
-        magnet_range="$start/$end",
-        interface_options_per_file=interface_options_per_file
-        or [{"machine_state": tmp_path / "correctors_state.txt"}],
-        debug=False,
-        mad_logfile=None,
-        python_logfile=None,
-        tracking_plan=TrackingPlan(),
     )
+    base = WorkerConfig(
+        accelerator=_make_psb(tmp_path),
+        magnet_range="$start/$end",
+        machine_state=tmp_path / f"corr{file_idx}_state.txt",
+    )
+    return plan_workers(base, ranges, file_idx, "xy", set(bpms))
 
 
 def _make_tracks(all_bpms: list[str], turns: list[int]) -> FileTracks:
@@ -137,23 +134,15 @@ def _make_tracks(all_bpms: list[str], turns: list[int]) -> FileTracks:
 
 
 def test_session_payloads_take_per_file_artifacts_from_the_file_turn_map(tmp_path: Path) -> None:
-    helper = _make_setup_helper(
-        tmp_path,
-        all_bpms=BPMS[:3],
-        interface_options_per_file=[
-            {"machine_state": tmp_path / "corr0_state.txt"},
-            {"machine_state": tmp_path / "corr1_state.txt"},
-        ],
-    )
     session = TrackingSession(
-        helper,
-        SimulationConfig(num_workers=2, num_batches=1, optimise_momenta=False),
+        _make_psb(tmp_path),
+        WorkerRuntime(2),
+        TrackingDataConfig(1, optimise_momenta=False),
+        TrackingParameters(),
         turn_batches=[[2], [202]],
         validation_turn_batches=[],
         file_turn_map={2: 0, 202: 1},
-        worker_plans={
-            f: helper.plan_workers([BPMS[0]], [BPMS[1]], f, set(BPMS[:3])) for f in (0, 1)
-        },
+        worker_plans={f: _plan_file_workers(tmp_path, f) for f in (0, 1)},
         machine_deltaps=[0.0, 1e-3],
     )
 
@@ -165,15 +154,15 @@ def test_session_payloads_take_per_file_artifacts_from_the_file_turn_map(tmp_pat
         turn_batches=[[2], [202]],
     )
 
-    assert [plan.file_idx for _, _, plan in payloads] == [0, 0, 1, 1]
-    assert [config.interface_options for _, config, _ in payloads] == [
-        {"machine_state": tmp_path / "corr0_state.txt"},
-        {"machine_state": tmp_path / "corr0_state.txt"},
-        {"machine_state": tmp_path / "corr1_state.txt"},
-        {"machine_state": tmp_path / "corr1_state.txt"},
+    assert [config.file_idx for _, config in payloads] == [0, 0, 1, 1]
+    assert [config.machine_state for _, config in payloads] == [
+        tmp_path / "corr0_state.txt",
+        tmp_path / "corr0_state.txt",
+        tmp_path / "corr1_state.txt",
+        tmp_path / "corr1_state.txt",
     ]
 
-    init_pts = [float(data.init_pts[0]) for data, _, _ in payloads]
+    init_pts = [float(data.init_pts[0]) for data, _ in payloads]
     assert init_pts[0] == init_pts[1]
     assert init_pts[2] == init_pts[3]
     assert init_pts[0] != init_pts[2]
@@ -202,17 +191,15 @@ def test_validation_worker_keeps_all_held_out_turns_with_nondividing_batch_count
             y=np.ones(shape, dtype=np.float64),
             px=np.ones(shape, dtype=np.float64),
             py=np.ones(shape, dtype=np.float64),
-            scale=1.0,
         ),
     )
-    config = WorkerConfig(
+    config = TrackingWorkerConfig(
         accelerator=accelerator,
-        tracking_start_bpm="BPH.13008",
-        tracking_end_bpm="BPH.13408",
         magnet_range="$start/$end",
-        interface_options={},
-        sdir=1,
         kick_plane="xy",
+        geometry=TrackGeometry(start_bpm="BPH.13008", end_bpm="BPH.13408", sdir=1),
+        file_idx=0,
+        bpm_names=["BPH.13008", "BPH.13408"],
     )
 
     worker = TrackingWorker(
@@ -220,7 +207,9 @@ def test_validation_worker_keeps_all_held_out_turns_with_nondividing_batch_count
         worker_id=0,
         data=data,
         config=config,
-        simulation_config=SimulationConfig(num_workers=1, num_batches=8),
+        runtime=WorkerRuntime(1),
+        tracking_data=TrackingDataConfig(8),
+        parameters=TrackingParameters(),
         validation=True,
     )
 
@@ -238,12 +227,13 @@ def _uncertainty_pool(file_indices: list[int], responses: list[list[object]]) ->
         pool.conns.append(parent)
     pool.workers = [_FakeWorker() for _ in file_indices]  # type: ignore[misc]
     pool.metadata = [
-        WorkerObservationPlan(
-            range_spec=WorkerRangeSpec(BPMS[0], BPMS[-1], 1),
+        TrackingWorkerConfig(
+            accelerator=None,
+            magnet_range="$start/$end",
+            geometry=TrackGeometry(start_bpm=BPMS[0], end_bpm=BPMS[-1]),
             file_idx=file_idx,
-            kick_plane=KickPlane.XY,
             bpm_names=BPMS,
-            bad_bpms=None,
+            kick_plane=KickPlane.XY,
         )
         for file_idx in file_indices
     ]
@@ -261,7 +251,7 @@ def test_drain_uncertainty_merges_shared_readings_per_file() -> None:
     ]
     pool = _uncertainty_pool([0, 1, 0], [[part] for part in parts])
 
-    normal, noise = drain_uncertainty(pool, 2, propagate_uncertainty=True, n_run_turns=1)
+    normal, noise = drain_uncertainty(pool, 2, propagate_uncertainty=True)
 
     shared = g_a + g_b
     np.testing.assert_allclose(normal, 6.0 * np.eye(2))
@@ -271,8 +261,10 @@ def test_drain_uncertainty_merges_shared_readings_per_file() -> None:
 
 def test_terminate_kills_training_and_validation_workers(tmp_path: Path) -> None:
     session = TrackingSession(
-        _make_setup_helper(tmp_path),
-        SimulationConfig(num_workers=1, num_batches=1),
+        _make_psb(tmp_path),
+        WorkerRuntime(1),
+        TrackingDataConfig(1),
+        TrackingParameters(),
         turn_batches=[],
         validation_turn_batches=[],
         file_turn_map={},
@@ -306,7 +298,7 @@ def test_drain_uncertainty_disables_the_hessian_before_shutdown() -> None:
     # Two messages: ack for set_uncertainty_mode, then the empty part on termination
     pool = _uncertainty_pool([0], [[Ack(0), UncertaintyPart.empty(2)]])
 
-    total, _ = drain_uncertainty(pool, 2, propagate_uncertainty=False, n_run_turns=1)
+    total, _ = drain_uncertainty(pool, 2, propagate_uncertainty=False)
 
     np.testing.assert_allclose(total, np.zeros((2, 2), dtype=np.float64))
     assert pool.workers[0].join_calls == 1

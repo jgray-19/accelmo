@@ -12,11 +12,11 @@ from accelmo.poco.closed_orbit import (
     ClosedOrbitFitter,
     ClosedOrbitMeasurement,
     ClosedOrbitSeries,
+    closed_twiss_series,
 )
 from accelmo.poco.fitter import (
     DEFAULT_OBSERVABLES,
     MEASUREMENT_COLUMNS,
-    ClosedTwissFitter,
     LevenbergMarquardtConfig,
     load_measurement,
 )
@@ -28,7 +28,7 @@ __all__ = [
     "ClosedOrbitFitter",
     "ClosedOrbitMeasurement",
     "ClosedOrbitSeries",
-    "ClosedTwissFitter",
     "LevenbergMarquardtConfig",
+    "closed_twiss_series",
     "load_measurement",
 ]

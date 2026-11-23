@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+from typing import Any
 
 import numpy as np
 
@@ -111,7 +112,7 @@ def normalise_lhcbend_magnets(
         (r"(MB[RXWAL]\w*\.)([A-G]?)([0-9]+[LR][1-8].*)\.dk0l", "rbend"),
     ]
 
-    normalised = {}
+    normalised: dict[str, Any] = {}
     counts = {"sbend": 0, "rbend": 0}
 
     for key, value in true_strengths_dict.items():

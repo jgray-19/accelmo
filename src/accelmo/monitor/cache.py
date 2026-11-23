@@ -193,6 +193,7 @@ class OpticsCache:
 
     def _source(self, task: _Task) -> OpticsSource:
         """This thread's source for the task's model, built on first use."""
+        assert self.spec.make_source is not None
         sources = self._local.__dict__.setdefault("sources", {})
         if task.model_key not in sources:
             LOGGER.info("Building optics source for model %s", task.model_key)

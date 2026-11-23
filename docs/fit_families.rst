@@ -76,11 +76,11 @@ readings are compared.
      - All BPMs
    * - :class:`~accelmo.tracking.fitter.KickerFitter`
      - Measured, at the kicker marker rows
-     - ``turns_after_kicker`` turns forward, one worker per file
+     - ``turns_per_track`` turns forward, one worker per file
      - All BPMs
    * - :class:`~accelmo.tracking.fitter.ACDSinusoidFitter`
-     - Measured, at the first flattop turn of each bunch
-     - ``n_run_turns`` turns forward through the model AC kickers
+     - Measured, at the before-marker every ``turns_per_track`` turns
+     - Back-to-back ``turns_per_track``-turn tracks through the model AC kickers
      - All BPMs, every turn
 
 Each fitter builds a tracking plan (``tracking/config/tracking.py``) that fixes the ranges
@@ -103,9 +103,10 @@ described in :doc:`measurement_data`.
 Tracking fit options
 ~~~~~~~~~~~~~~~~~~~~
 
-These :class:`~accelmo.config.SimulationConfig` fields change what a tracking fit
-parameterises. They apply to Levenberg-Marquardt tracking fits
-(``optimiser_type="levenberg_marquardt"``).
+These :class:`~accelmo.config.TrackingParameters` fields (``FitterOptions.parameters``) change
+what a tracking fit parameterises. All but ``bpm_gain_sigma`` need a Levenberg-Marquardt fit
+(``solver=tracking_lm_config(n)``, :func:`~accelmo.tracking.fitter.tracking_lm_config`).
+The last two rows are :class:`~accelmo.config.TrackingDataConfig` fields.
 
 .. list-table::
    :header-rows: 1
@@ -144,17 +145,15 @@ Levenberg-Marquardt.
      - Measurement
      - Fitted in addition to the knobs
    * - :class:`~accelmo.poco.closed_orbit.ClosedOrbitFitter`
-     - :class:`~accelmo.poco.closed_orbit.ClosedOrbitSeries`: closed orbits (``x``, ``y``)
-       and optionally the phase advances ``mu1``, ``mu2``, each with a ``pt`` and a
-       ``machine_state``
+     - :class:`~accelmo.poco.closed_orbit.ClosedOrbitSeries`: closed orbits (``x``, ``y``),
+       each with a ``pt`` and a ``machine_state``; a closed-twiss series
+       (:func:`~accelmo.poco.closed_orbit.closed_twiss_series`) adds beta, alpha, phase and
+       dispersion at one ``pt``, with absolute orbit planes
      - Nothing; ``accelerator.optimise_energy`` fits ``pt``
    * - :class:`~accelmo.poco.calibrated.CalibratedClosedOrbitFitter`
      - Same
      - BPM gains and corrector kick gains, with Gaussian priors ``sigma_bpm`` and
        ``sigma_corrector``
-   * - :class:`~accelmo.poco.fitter.ClosedTwissFitter`
-     - Closed orbit, beta, phase and dispersion at each ``pt``
-     - Nothing
 
 ``machine_state`` is a set of fixed MAD globals (quadrupole strengths, corrector kicks, tune
 knobs). Planes listed in ``absolute_planes`` are fitted as absolute orbits; the other planes
@@ -271,14 +270,14 @@ Solvers
    :header-rows: 1
    :widths: 24 76
 
-   * - ``optimiser_type``
+   * - ``solver``
      - Behaviour
-   * - ``adam``
+   * - ``OptimiserConfig(optimiser_type="adam")``
      - Mini-batch gradient descent: one step per batch, learning rate warmup then decay
-   * - ``lbfgs``
+   * - ``OptimiserConfig(optimiser_type="lbfgs")``
      - Quasi-Newton step with a normalised gradient, history ``lbfgs_history_size``, step
        capped by ``lbfgs_max_step_norm``
-   * - ``levenberg_marquardt``
+   * - ``LevenbergMarquardtConfig`` (``tracking_lm_config``)
      - Gauss-Newton step with damping, over every batch. Required by the options above that
        add parameters
 

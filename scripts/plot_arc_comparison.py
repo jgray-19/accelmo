@@ -18,8 +18,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib import ticker
 
-from accelmo.config import PROJECT_ROOT
-
 logger = logging.getLogger("plot_arc_comparison")
 
 FONT_SIZE = 14
@@ -142,7 +140,7 @@ def find_simulation_results(point_label: str = "0", beam: int = 1) -> Path | Non
         logger.warning(f"Unknown point label: {point_label}")
         return None
 
-    sim_dir = PROJECT_ROOT / "runs" / "dpp_scan_sim" / f"beam{beam}_results"
+    sim_dir = Path("runs") / "dpp_scan_sim" / f"beam{beam}_results"
     # Look for results.txt in the results directory
     if sim_dir.exists():
         results_file = sim_dir / "results.txt"
@@ -351,8 +349,8 @@ def main() -> None:
     beam = args.beam
     point = args.point
 
-    meas_results_path = args.meas_results or (PROJECT_ROOT / f"b{beam}co_results" / f"{point}.txt")
-    output_path = args.output or (PROJECT_ROOT / "plots" / f"arc_comparison_beam{beam}_{point}.png")
+    meas_results_path = args.meas_results or (Path(f"b{beam}co_results") / f"{point}.txt")
+    output_path = args.output or (Path("plots") / f"arc_comparison_beam{beam}_{point}.png")
 
     # Try to find simulation results if not provided
     sim_path = args.sim_results

@@ -26,7 +26,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
 
-    from accelmo.config import SimulationConfig
+    from accelmo.config import TrackingDataConfig
     from accelmo.tracking.config.tracking import TrackingPlan
 
     ShuffleTurns = Callable[[list[int]], None]
@@ -151,7 +151,9 @@ def _read_parquet(source: Path | str, markers: list[str]) -> pd.DataFrame:
     """Read a measurement parquet's in-range marker rows, retrying transient I/O."""
     for attempt in range(_READ_ATTEMPTS):
         try:
-            df = pd.read_parquet(source, columns=FILE_COLUMNS, filters=[("name", "in", markers)])
+            df = pd.read_parquet(
+                source, columns=list(FILE_COLUMNS), filters=[("name", "in", markers)]
+            )
             break
         except OSError as error:
             if attempt == _READ_ATTEMPTS - 1:
@@ -250,7 +252,8 @@ class DataManager:
         self,
         bpms_in_range: list[str],
         all_bpms: list[str],
-        simulation_config: SimulationConfig,
+        tracking_data: TrackingDataConfig,
+        num_workers: int,
         measurement_files: list[Path],
         tracking_plan: TrackingPlan,
         first_bpms: list[str | None] | None = None,
@@ -265,7 +268,8 @@ class DataManager:
                 every run with the same data uses the same turns.
         """
         self.all_bpms = all_bpms
-        self.simulation_config = simulation_config
+        self.tracking_data = tracking_data
+        self.num_workers = num_workers
         self.measurement_files = measurement_files
         self.tracking_plan = tracking_plan
         self.first_bpms = first_bpms or [None] * len(measurement_files)
@@ -335,11 +339,6 @@ class DataManager:
             ),
         )
 
-    @property
-    def file_kick_planes(self) -> dict[int, str]:
-        """Return the inferred excitation plane of each measurement file."""
-        return {idx: tracks.kick_plane for idx, tracks in self.tracks.items()}
-
     def with_updated_momenta(
         self, reconstructions: dict[int, pd.DataFrame]
     ) -> dict[int, FileTracks]:
@@ -365,7 +364,6 @@ class DataManager:
         self.boundary_turns_by_file, self.available_turns = (
             self.tracking_plan.select_available_turns(
                 bunch_turns_by_file=self.bunch_turns_by_file,
-                simulation_config=self.simulation_config,
                 available_turns=self.available_turns,
             )
         )
@@ -375,9 +373,9 @@ class DataManager:
                 "bunch in the measurement data has more than one turn."
             )
         LOGGER.info(
-            "Removed %d boundary turns (n_run_turns=%d), %d available",
+            "Removed %d boundary turns (turns_per_track=%d), %d available",
             sum(len(turns) for turns in self.boundary_turns_by_file.values()),
-            self.simulation_config.n_run_turns,
+            self.tracking_plan.turns_per_track,
             len(self.available_turns),
         )
 
@@ -387,7 +385,8 @@ class DataManager:
 
         self.turn_batches = WorkerTurnPlanner(
             self.tracking_plan,
-            self.simulation_config,
+            self.tracking_data,
+            self.num_workers,
             shuffle_turns=self.shuffle_turns,
         ).build_turn_batches(
             available_turns=train_turns,
@@ -400,7 +399,7 @@ class DataManager:
             raise ValueError(
                 f"Failed to create any training batches. Available turns: "
                 f"{len(self.available_turns)}, training turns after validation split + "
-                f"data_fraction={self.simulation_config.data_fraction}: {len(train_turns)}. "
+                f"data_fraction={self.tracking_data.data_fraction}: {len(train_turns)}. "
                 "Consider raising data_fraction, lowering validation_fraction, or using "
                 "longer bunches."
             )
@@ -426,7 +425,7 @@ class DataManager:
                 "No held-out validation turns were reserved (validation_fraction=%.3f, too "
                 "little data). Validation loss falls back to training loss and CANNOT "
                 "detect overfitting.",
-                self.simulation_config.validation_fraction,
+                self.tracking_data.validation_fraction,
             )
 
     def _split_validation_turns(self) -> tuple[list[int], list[int]]:
@@ -437,11 +436,11 @@ class DataManager:
         """
         if (
             not self.tracking_plan.enable_validation
-            or self.simulation_config.validation_fraction <= 0.0
+            or self.tracking_data.validation_fraction <= 0.0
         ):
             return sorted(self.available_turns), []
 
-        val_frac = self.simulation_config.validation_fraction
+        val_frac = self.tracking_data.validation_fraction
         train_turns: list[int] = []
         validation_turns: list[int] = []
         for turns in self._shuffled_turns_by_file(self.available_turns):
@@ -452,7 +451,7 @@ class DataManager:
 
     def _sample_training_turns(self, train_turns: list[int]) -> list[int]:
         """Keep ``data_fraction`` of the training turns, stratified per file."""
-        frac = self.simulation_config.data_fraction
+        frac = self.tracking_data.data_fraction
         if frac >= 1.0:
             return sorted(train_turns)
 
@@ -475,8 +474,3 @@ class DataManager:
             return []
         by_file = group_turns_by_file(turns, self.file_map)
         return [sorted(by_file[idx]) for idx in sorted(by_file) if by_file[idx]]
-
-    def get_total_turns(self) -> int:
-        """Calculate the number of tracked turns that will actually be processed."""
-        start_turns = sum(len(batch) for batch in self.turn_batches)
-        return start_turns * self.simulation_config.n_run_turns

@@ -1,4 +1,4 @@
-"""Fitter for closed-twiss optimisation (match a measured periodic optics solution)."""
+"""Levenberg-Marquardt base fitter of POCO and the measured-optics observables."""
 
 from __future__ import annotations
 
@@ -7,38 +7,29 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from accelmo.config import SimulationConfig
 from accelmo.fitting.lifecycle import run_with_workers
-from accelmo.fitting.lm_loop import LMPoint, run_levenberg_marquardt
+from accelmo.fitting.lm_loop import LMPoint, LMProblem, run_levenberg_marquardt
 from accelmo.fitting.pool import WorkerPool
+from accelmo.fitting.priors import add_quadratic_prior, inverse_variances, knob_sigma_array
 from accelmo.fitting.protocol import Evaluate, GradReply, Start
 from accelmo.fitting.reduction import reduce_replies
 from accelmo.fitting.results import FitDiagnostics, FitResult
 from accelmo.fitting.setup import MachineSetup
 from accelmo.fitting.uncertainty import hessian_uncertainties, warn_if_singular
-from accelmo.fitting.weights import global_weight_scale, variance_to_weight
 from accelmo.fitting.worker import WorkerConfig
 from accelmo.optimisers.levenberg_marquardt import LevenbergMarquardtConfig
-from accelmo.poco.prior import (
-    apply_prior,
-    prior_alphas,
-    validate_prior_strengths,
-)
-from accelmo.poco.workers.closed_twiss import (
-    ClosedTwissData,
-    ClosedTwissWorker,
-    Observable,
-    ObservableKind,
-)
+from accelmo.poco.workers.closed_twiss import Observable, ObservableKind
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Callable, Mapping
     from pathlib import Path
 
     import pandas as pd
 
+    from accelmo.config import WorkerRuntime
     from accelmo.fitting.config import OutputConfig, SequenceConfig
     from accelmo.machine.accelerators import Accelerator
+    from accelmo.machine.machine_state import MachineState
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +95,45 @@ DEFAULT_OBSERVABLES: tuple[str, ...] = (
 )
 
 
+class _KnobProblem(LMProblem):
+    """The closed-orbit objective over the shared knobs, summed over the workers.
+
+    The workers return the physical chi²; ``prior`` is ``diag(1/sigma²)``, centred on the ideal
+    zero-error lattice (not on the optimisation start).
+    """
+
+    def __init__(
+        self,
+        knob_names: list[str],
+        evaluate_workers: Callable[[dict[str, float]], list[GradReply]],
+        prior: np.ndarray,
+        history: list,
+    ) -> None:
+        self.knob_names = knob_names
+        self.evaluate_workers = evaluate_workers
+        self.prior = prior
+        self.history = history
+
+    def knobs(self, params: np.ndarray) -> dict[str, float]:
+        return dict(zip(self.knob_names, (float(v) for v in params), strict=True))
+
+    def evaluate(self, params: np.ndarray, iteration: int) -> LMPoint:
+        reduced = reduce_replies(self.evaluate_workers(self.knobs(params)), len(self.knob_names))
+        if reduced.normal is None:
+            raise ValueError("The workers returned no Gauss-Newton matrix")
+        if reduced.particle_lost:
+            return LMPoint(reduced.loss, reduced.grad, 2.0 * reduced.normal, failed=True)
+        if iteration == 0:
+            warn_if_singular(reduced.normal, self.knob_names)  # before the prior is added
+        loss, grad, hessian = add_quadratic_prior(
+            reduced.loss, reduced.grad, 2.0 * reduced.normal, params, self.prior
+        )
+        return LMPoint(loss, grad, hessian, failed=False)
+
+    def on_accept(self, params: np.ndarray, point: LMPoint) -> None:
+        self.history.append((self.knobs(params), float(point.loss)))
+
+
 class LMFitter:
     """Shared lifecycle and Levenberg-Marquardt solve of the full-ring closed-orbit/closed-twiss fitters.
 
@@ -122,13 +152,16 @@ class LMFitter:
         accelerator: Accelerator,
         sequence_config: SequenceConfig,
         *,
-        num_workers: int,
+        runtime: WorkerRuntime,
         lm_config: LevenbergMarquardtConfig | None = None,
         initial_knob_strengths: dict[str, float] | None = None,
         true_strengths: Path | dict[str, float] | None = None,
         use_errors: bool = True,
-        prior_strengths: Mapping[str, float] | None = None,
+        knob_sigmas: Mapping[str, float] | None = None,
         output_config: OutputConfig | None = None,
+        b2_errors: Path | None = None,
+        machine_state: MachineState | None = None,
+        debug: bool = False,
     ) -> None:
         if accelerator.optimise_energy and not self.supports_energy:
             raise ValueError(
@@ -137,21 +170,31 @@ class LMFitter:
             )
 
         self.lm_config = lm_config or LevenbergMarquardtConfig()
+        self.sequence_config = sequence_config
         self.diagnostics: FitDiagnostics | None = None
         #: ``(knobs, loss)`` of every accepted iteration, in order
         self.history: list[tuple[dict[str, float], float]] = []
+        #: Posterior inverse covariance (data + prior) at the best knobs of the last run, in knob order.
+        self.posterior_normal: np.ndarray | None = None
         self.machine = MachineSetup(
             accelerator,
-            SimulationConfig(num_workers=num_workers, num_batches=1, use_fixed_bpm=True),
             sequence_config,
             output_config=output_config,
             initial_knob_strengths=initial_knob_strengths,
             true_strengths=true_strengths,
+            debug=debug,
         )
         self.worker_payloads: list = []
+        self.runtime = runtime
+        self.debug = debug
+        #: Known LHC dipole b2 error table, applied to every worker's sequence; the interface
+        #: also needs the tune knobs that compensate it, from ``machine_state``.
+        self.b2_errors = b2_errors
+        self.machine_state = machine_state
 
         self.use_errors = use_errors
-        self.prior_strengths = validate_prior_strengths(prior_strengths)
+        #: Gaussian prior width of each knob (0 = free); see :func:`knob_sigma_array`.
+        self.knob_sigma = knob_sigma_array(self.machine.knob_names, knob_sigmas or {})
 
     def close(self) -> None:
         """Shut down the MAD process of the model; call once the fit (and any use of its model) is done."""
@@ -166,9 +209,9 @@ class LMFitter:
 
         def body() -> tuple[dict[str, float], np.ndarray | None]:
             for worker_id, (config, data) in enumerate(self.worker_payloads):
-                pool.spawn(
-                    self.worker_class, worker_id, data, config, self.machine.simulation_config
-                ).send(Start(dict(initial_knobs)))
+                pool.spawn(self.worker_class, worker_id, data, config, self.runtime).send(
+                    Start(dict(initial_knobs))
+                )
             return self._solve(pool.channels, run_log)
 
         knobs, normal_matrix = run_with_workers(
@@ -178,10 +221,17 @@ class LMFitter:
             run_log=run_log,
         )
         logger.info("%s optimisation complete.", self.fit_label)
+        self.posterior_normal = normal_matrix
+        if not self.machine.output_config.include_uncertainty:
+            sigmas = np.zeros(len(knob_names))
+        elif normal_matrix is None:
+            sigmas = np.full(len(knob_names), np.nan)
+        else:
+            sigmas = hessian_uncertainties(normal_matrix)
         return FitResult(
             knobs=self.machine.accelerator.format_result_knobs(knobs),
             uncertainties=self.machine.accelerator.format_result_knobs(
-                _hessian_uncertainties(normal_matrix, knob_names)
+                dict(zip(knob_names, sigmas.tolist(), strict=False))
             ),
             diagnostics=self.diagnostics,
             extra=self._extra_result(),
@@ -196,8 +246,23 @@ class LMFitter:
         """1-sigma uncertainties of :meth:`_extra_result`."""
         return {}
 
+    def _worker_config(self, measured_bpms: list[str]) -> WorkerConfig:
+        """Full-ring worker config; BPMs without a measurement are bad, so twiss does not observe them."""
+        measured = set(measured_bpms)
+        unmeasured = [bpm for bpm in self.machine.all_bpms if bpm not in measured]
+        return WorkerConfig(
+            accelerator=self.machine.accelerator,
+            magnet_range=self.sequence_config.magnet_range,
+            machine_state=self.machine_state if self.b2_errors is not None else None,
+            b2_errors=self.b2_errors,
+            bad_bpms=unmeasured + list(self.sequence_config.bad_bpms or []),
+            debug=self.debug,
+            mad_logfile=self.machine.output_config.mad_logfile,
+            python_logfile=self.machine.output_config.python_logfile,
+        )
+
     def _solve(self, channels, run_log) -> tuple[dict[str, float], np.ndarray | None]:
-        """Levenberg-Marquardt solve over the shared knobs; returns the best knobs and the physical normal matrix there.
+        """Levenberg-Marquardt solve over the shared knobs; returns the best knobs and the posterior normal matrix there.
 
         The closed twiss is close to linear in the knob strengths over the range
         a fit explores, so a curvature-preconditioned step converges in a few
@@ -205,136 +270,26 @@ class LMFitter:
         conditioned directions made identifiable by the multi-delta measurements.
         """
         knob_names = list(self.machine.knob_names)
-        n_knobs = len(knob_names)
         initial = np.array(
             [float(self.machine.initial_knobs[name]) for name in knob_names], dtype=float
         )
-        # Error knobs are regularised toward the ideal zero-error lattice. The
-        # optimisation start is independent and must not redefine that prior.
-        prior_mean = np.zeros_like(initial)
-        alphas: list[np.ndarray] = []
-
-        def evaluate(params: np.ndarray, iteration: int) -> LMPoint:
-            knobs = dict(zip(knob_names, (float(v) for v in params), strict=False))
-            reduced = reduce_replies(self._evaluate_workers(channels, knobs), n_knobs)
-            loss, grad, hessian = reduced.loss, reduced.grad, reduced.hessian
-            if iteration == 0 and not reduced.particle_lost:
-                warn_if_singular(reduced.normal, knob_names)  # before the prior is added
-            if self.prior_strengths and not reduced.particle_lost:
-                if not alphas:
-                    alphas.append(prior_alphas(self.prior_strengths, hessian, knob_names, log=True))
-                loss, grad, hessian = apply_prior(
-                    loss, grad, hessian, params, prior_mean, alphas[0]
-                )
-            return LMPoint(loss, grad, hessian, reduced.particle_lost)
-
-        def on_accept(params: np.ndarray, point: LMPoint) -> None:
-            self.history.append(
-                (dict(zip(knob_names, (float(v) for v in params), strict=False)), float(point.loss))
-            )
-
-        optimiser, self.diagnostics = run_levenberg_marquardt(
-            initial,
-            evaluate,
-            self.lm_config,
-            on_accept=on_accept,
-            run_log=run_log,
-            param_names=knob_names,
+        problem = _KnobProblem(
+            knob_names,
+            lambda knobs: self._evaluate_workers(channels, knobs),
+            np.diag(inverse_variances(self.knob_sigma)),
+            self.history,
         )
-        best_knobs = dict(zip(knob_names, (float(v) for v in optimiser.best.value), strict=False))
-        # The optimiser's Hessian is in the worker's normalised weight space, so
-        # its inverse is not a covariance in physical knob units. Re-evaluate the
-        # physical normal matrix ``JᵀWJ`` (true inverse-variance weights) at the
-        # solution and regularise it with the same isotropic prior the fit used,
-        # so the reported 1-sigma is the MAP posterior width in real units.
-        reduced = reduce_replies(self._evaluate_workers(channels, best_knobs), n_knobs)
-        normal_matrix = reduced.normal
-        if not reduced.particle_lost and self.prior_strengths:
-            normal_matrix = normal_matrix + np.diag(
-                prior_alphas(self.prior_strengths, normal_matrix, knob_names)
-            )
-        return best_knobs, normal_matrix
+        optimiser, self.diagnostics = run_levenberg_marquardt(
+            initial, problem, self.lm_config, run_log=run_log, param_names=knob_names
+        )
+        # Half the chi² Hessian (prior included) at the best point is the posterior inverse covariance.
+        hessian = optimiser.best_hessian
+        return problem.knobs(optimiser.best.value), None if hessian is None else 0.5 * hessian
 
     def _evaluate_workers(self, channels, knobs: dict[str, float]) -> list[GradReply]:
         """Send ``knobs`` to the workers and return the replies to be summed, in order."""
         channels.send_all(Evaluate(knobs))
         return channels.recv_all()
-
-
-class ClosedTwissFitter(LMFitter):
-    """Optimise knobs so periodic model optics match measured closed twiss."""
-
-    worker_class = ClosedTwissWorker
-    log_suffix = "closed_twiss_opt"
-    fit_label = "Closed-twiss"
-
-    def __init__(
-        self,
-        accelerator: Accelerator,
-        sequence_config: SequenceConfig,
-        measurements: dict[float, pd.DataFrame],
-        observables: tuple[str, ...] = DEFAULT_OBSERVABLES,
-        lm_config: LevenbergMarquardtConfig | None = None,
-        initial_knob_strengths: dict[str, float] | None = None,
-        machine_state: Path | Mapping[str, float] | None = None,
-        true_strengths: Path | dict[str, float] | None = None,
-        use_errors: bool = True,
-        prior_strengths: Mapping[str, float] | None = None,
-        output_config: OutputConfig | None = None,
-    ) -> None:
-        if not measurements:
-            raise ValueError("measurements must contain at least one measured optics set")
-        observables = tuple(observables)
-        if not observables:
-            raise ValueError("At least one observable must be fitted")
-        unknown = [name for name in observables if name not in MEASUREMENT_COLUMNS]
-        if unknown:
-            raise ValueError(f"Unknown observables {unknown}; known: {sorted(MEASUREMENT_COLUMNS)}")
-
-        self.observable_names = observables
-        super().__init__(
-            accelerator,
-            sequence_config,
-            num_workers=len(measurements),
-            lm_config=lm_config,
-            initial_knob_strengths=initial_knob_strengths,
-            true_strengths=true_strengths,
-            use_errors=use_errors,
-            prior_strengths=prior_strengths,
-            output_config=output_config,
-        )
-        self.measurements = {
-            float(pt): load_measurement(frame, observables) for pt, frame in measurements.items()
-        }
-        interface_options = {} if machine_state is None else {"machine_state": machine_state}
-        self.worker_payloads = create_worker_payloads(
-            self.measurements,
-            observables,
-            self.machine.all_bpms,
-            sequence_config.magnet_range,
-            sequence_config.bad_bpms,
-            accelerator,
-            interface_options,
-            self.use_errors,
-            self.machine.output_config.mad_logfile,
-            self.machine.output_config.python_logfile,
-        )
-
-
-def _hessian_uncertainties(
-    normal_matrix: np.ndarray | None, knob_names: list[str]
-) -> dict[str, float]:
-    """1-sigma knob uncertainties from the physical normal matrix ``JᵀWJ``.
-
-    Delegates the covariance numerics to the shared :func:`hessian_uncertainties`
-    (symmetrise + eigenvalue floor) so weakly-constrained directions yield finite,
-    non-negative uncertainties in real knob units. Returns NaN for an absent
-    matrix (e.g. an interrupted fit).
-    """
-    if normal_matrix is None:
-        return {name: float("nan") for name in knob_names}
-    sigmas = hessian_uncertainties(normal_matrix)
-    return dict(zip(knob_names, (float(s) for s in sigmas), strict=False))
 
 
 def load_measurement(measurement: pd.DataFrame, observables: tuple[str, ...]) -> pd.DataFrame:
@@ -347,7 +302,7 @@ def load_measurement(measurement: pd.DataFrame, observables: tuple[str, ...]) ->
     Returns:
         Copy of ``measurement``. Missing error columns are filled with NaN.
         Individual NaN errors drop their own points; an observable whose errors
-        are *all* unusable is rejected by :func:`_build_observable` unless the
+        are *all* unusable is rejected by :func:`build_observable` unless the
         caller passes ``use_errors=False``, because a family with no variances
         cannot be weighted commensurably against families that have them.
     """
@@ -384,143 +339,21 @@ def _advance_targets(
     return np.mod(np.diff(phase), 1.0), np.diff(cumulative_var)
 
 
-def create_worker_payloads(
-    measurements: dict[float, pd.DataFrame],
-    observables: tuple[str, ...],
-    all_bpms: list[str],
-    magnet_range: str,
-    bad_bpms: list[str] | None,
-    accelerator: Accelerator,
-    interface_options: dict,
-    use_errors: bool,
-    mad_logfile: Path | None,
-    python_logfile: Path | None,
-) -> list[tuple[WorkerConfig, ClosedTwissData]]:
-    """Build one full-ring closed-twiss worker payload per measured momentum.
-
-    Every worker shares the same knobs and full-ring config; they differ only in
-    their measurement and its fixed MAD-NG momentum coordinate ``pt``.
-
-    The loss normalisation is stamped on afterwards, from every worker's
-    observables at once: it has to be one common constant, or the workers are not
-    minimising the same objective. See :func:`stamp_global_normalisation`.
-    """
-    payloads = [
-        build_worker_payload(
-            pt,
-            measurement,
-            observables,
-            all_bpms,
-            magnet_range,
-            bad_bpms,
-            accelerator,
-            interface_options,
-            use_errors,
-            mad_logfile,
-            python_logfile,
-        )
-        for pt, measurement in measurements.items()
-    ]
-    stamp_global_normalisation(payloads)
-    return payloads
-
-
-def stamp_global_normalisation(payloads: list[tuple[WorkerConfig, ClosedTwissData]]) -> None:
-    """Give every worker the same weight scale and point count.
-
-    The workers' losses are summed by the fitter, so any per-worker scaling of a
-    worker's own loss is a re-weighting of that momentum in the joint fit. Both
-    normalisations therefore have to be global constants:
-
-    ``weight_scale``
-        The largest inverse-variance weight anywhere in the fit. Dividing by it
-        keeps the numbers near unity without changing any *relative* weight, so
-        the argmin is exactly that of the pooled chi-square. Taking each worker's
-        own maximum instead would divide each momentum by a different number.
-    ``total_points``
-        The total number of weighted points in the fit. This converts the summed
-        chi-square into a mean, which is what the Levenberg-Marquardt damping
-        scale is tuned against; dividing by each worker's own count would make a
-        momentum measured at fewer BPMs count for more per point.
-
-    Both cancel out of the Gauss-Newton step ``H^-1 g`` when applied uniformly, so
-    they must be uniform: the fit is then invariant to them and only the physical
-    inverse-variance weights determine the result.
-    """
-    weights = [
-        variance_to_weight(np.asarray(observable.variances, dtype=float))
-        for _config, data in payloads
-        for observable in data.observables
-    ]
-    scale = global_weight_scale(weights)
-    points = max(1, sum(int(np.count_nonzero(w)) for w in weights))
+def measured_bpms(all_bpms: list[str], measurement: pd.DataFrame, label: str) -> list[str]:
+    """The model BPMs that have a measurement, in model order; at least two."""
+    bpms = [bpm for bpm in all_bpms if bpm in measurement.index]
+    if len(bpms) < 2:
+        raise ValueError(f"Fewer than two model BPMs have a measurement ({label}).")
     logger.info(
-        "Global loss normalisation over %d worker(s): weight scale %.6e, %d weighted points",
-        len(payloads),
-        scale,
-        points,
+        "Fit (%s) over %d measured BPMs (%d model BPMs unobserved)",
+        label,
+        len(bpms),
+        len(all_bpms) - len(bpms),
     )
-    for _config, data in payloads:
-        data.weight_scale = scale
-        data.total_points = points
+    return bpms
 
 
-def build_worker_payload(
-    pt: float,
-    measurement: pd.DataFrame,
-    observables: tuple[str, ...],
-    all_bpms: list[str],
-    magnet_range: str,
-    bad_bpms: list[str] | None,
-    accelerator: Accelerator,
-    interface_options: dict,
-    use_errors: bool,
-    mad_logfile: Path | None,
-    python_logfile: Path | None,
-) -> tuple[WorkerConfig, ClosedTwissData]:
-    """Build a single full-ring closed-twiss worker payload for one momentum.
-
-    BPMs without a measurement are added to ``bad_bpms`` so twiss does not observe
-    them, keeping the model observables aligned with the measured targets.
-    """
-    measured_bpms = [bpm for bpm in all_bpms if bpm in measurement.index]
-    if len(measured_bpms) < 2:
-        raise ValueError(f"Fewer than two model BPMs have a measurement (pt={pt}).")
-
-    unmeasured = [bpm for bpm in all_bpms if bpm not in measurement.index]
-    logger.info(
-        "Closed-twiss fit (pt=%g) over %d measured BPMs (%d model BPMs unobserved)",
-        pt,
-        len(measured_bpms),
-        len(unmeasured),
-    )
-
-    observable_data = [
-        _build_observable(name, measurement, measured_bpms, use_errors, pt) for name in observables
-    ]
-
-    worker_bad_bpms = list(unmeasured) + (list(bad_bpms) if bad_bpms else [])
-    config = WorkerConfig(
-        accelerator=accelerator,
-        tracking_start_bpm="$start",
-        tracking_end_bpm="$end",
-        magnet_range=magnet_range,
-        interface_options=interface_options,
-        cycle_sequence=False,
-        sdir=1,
-        bad_bpms=worker_bad_bpms,
-        mad_logfile=mad_logfile,
-        python_logfile=python_logfile,
-    )
-    data = ClosedTwissData(
-        bpm_names=measured_bpms,
-        observables=observable_data,
-        pt=pt,
-    )
-    return (config, data)
-
-
-def _build_observable(
+def build_observable(
     name: str,
     measurement: pd.DataFrame,
     bpms: list[str],

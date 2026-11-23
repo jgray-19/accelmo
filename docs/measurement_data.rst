@@ -45,10 +45,10 @@ How the fitter reads a file:
   read.
 * A missing row, or a missing value, is not compared: the reading gets weight zero.
 * A variance that is zero, negative or not finite also gives weight zero.
-* The momenta are compared only with ``SimulationConfig.optimise_momenta=True``.
-* Start turns per bunch: arc-by-arc and AC-dipole marker fits skip the first and last
-  ``n_run_turns`` turns (at least one); kicker fits start one track at the bunch's first turn;
-  ``ACDSinusoidFitter`` starts a track every ``n_run_turns`` turns.
+* The momenta are compared only with ``TrackingDataConfig.optimise_momenta=True``.
+* Start turns per bunch: arc-by-arc and AC-dipole marker fits track one turn and skip each
+  bunch's first and last turn; kicker fits start one track at the bunch's first turn;
+  ``ACDSinusoidFitter`` cuts each file into back-to-back tracks of ``turns_per_track`` turns.
 * The file's excited plane (``x``, ``y`` or ``xy``) is read from the data: a plane whose
   coordinates span less than 1e-12, or less than a tenth of the other plane's span, counts as
   not excited. Only the excited planes are compared.
@@ -66,7 +66,7 @@ for that marker.
    * - Fitter
      - Marker rows
    * - :class:`~accelmo.tracking.fitter.KickerFitter`
-     - ``KickerConfig.kicker_name``, with ``x``, ``px``, ``y``, ``py``
+     - The ``kicker_name`` marker, with ``x``, ``px``, ``y``, ``py``
    * - :class:`~accelmo.tracking.fitter.ACDMarkerFitter`,
        :class:`~accelmo.tracking.fitter.ACDSinusoidFitter`
      - ``<acd>_before`` and ``<acd>_after``, where ``<acd>`` is the accelerator's
@@ -86,8 +86,10 @@ Describing the files
 :class:`~accelmo.tracking.config.models.MeasurementConfig` maps each file to a
 :class:`~accelmo.tracking.config.models.MeasurementDetails`:
 
-``interface_options``
-    Keyword arguments for the MAD-NG model of this file, usually ``machine_state``.
+``machine_state``
+    Model globals (tune knobs, corrector kicks) the machine had for this file.
+``b2_errors``
+    LHC dipole b2 error table; needs the tune knobs in ``machine_state``.
 ``machine_deltap``
     Momentum offset of the beam in this file.
 ``first_bpm``
@@ -102,16 +104,16 @@ Describing the files
    measurement_config = MeasurementConfig(
        {
            Path("on_momentum.parquet"): MeasurementDetails(
-               interface_options={"machine_state": Path("knobs_on.txt")},
+               machine_state=Path("knobs_on.txt"),
            ),
            Path("off_momentum.parquet"): MeasurementDetails(
-               interface_options={"machine_state": Path("knobs_off.txt")},
+               machine_state=Path("knobs_off.txt"),
                machine_deltap=3e-4,
            ),
        }
    )
 
-:func:`~accelmo.tracking.config.helpers.create_arc_measurement_config` builds the same
+:func:`~accelmo.tracking.config.helpers.single_measurement_config` builds the same
 mapping for a single file.
 
 Machine state

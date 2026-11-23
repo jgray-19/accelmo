@@ -13,14 +13,15 @@ import pytest
 from accelmo.fitting.config import OutputConfig, SequenceConfig
 from accelmo.machine.accelerators import LHC
 from accelmo.machine.machine_state import merge_machine_states
-from accelmo.tracking.config.helpers import create_arc_measurement_config
-from accelmo.tracking.fitter import ArcByArcFitter, FitterOptions
+from accelmo.tracking.config.helpers import single_measurement_config
+from accelmo.tracking.fitter import ArcByArcFitter, FitterOptions, tracking_lm_config
 from tests.training.controller_test_utils import (
+    LM_TEST_ITERATIONS,
+    QUAD_RUNTIME,
+    QUAD_TRACKING_DATA,
     _generate_nonoise_track,
     _make_optimiser_config_quad,
-    _make_simulation_config_quad,
     evaluate_controller_worker_loss,
-    make_lm_config,
     relative_truth_errors,
 )
 
@@ -77,9 +78,10 @@ def _build_lhc_quad_controller(
             errors={"quad": {"k1"}},
         ),
         optimiser_config or _make_optimiser_config_quad(),
-        _make_simulation_config_quad(),
+        QUAD_RUNTIME,
+        QUAD_TRACKING_DATA,
         SequenceConfig(magnet_range=magnet_range),
-        create_arc_measurement_config(
+        single_measurement_config(
             off_magnet_path, machine_state=merge_machine_states(corrector_file, tune_knobs)
         ),
         bpm_start_points,
@@ -108,7 +110,7 @@ def test_controller_quad_opt_simple(
         seq_b1=seq_b1,
         loaded_interface=loaded_interface,
         start_marker=start_marker,
-        optimiser_config=make_lm_config(),
+        optimiser_config=tracking_lm_config(LM_TEST_ITERATIONS),
     )
     logger.info("Starting controller with logfile at %s", tmp_path / "mad_logfile.log")
     if controller_test_mode == "loss_regression":
@@ -143,7 +145,6 @@ def test_controller_quad_opt_simple_without_early_stopping_reaches_truth(
         optimiser_config=dataclasses.replace(
             _make_optimiser_config_quad(),
             loss_change_tolerance=0.0,
-            gradient_converged_value=-1.0,
             optimiser_type=optimiser_type,
             **LBFGS_SETTINGS.get(optimiser_type, {}),
         ),

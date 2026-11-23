@@ -67,25 +67,22 @@ def resolve_bpm_ranges(
     plan: TrackingPlan,
     bpm_start_points: list[str],
     bpm_end_points: list[str],
+    use_fixed_bpm: bool,
 ) -> BpmRanges:
     """Drop bad BPMs and those outside the observed range, and set the fixed BPM window."""
     sequence_config = machine.sequence_config
-    use_fixed_bpm = machine.simulation_config.use_fixed_bpm
     start_bpms, end_bpms = filter_bad_bpms(
         bpm_start_points, bpm_end_points, sequence_config.bad_bpms
     )
     LOGGER.info(
-        "After filtering bad BPMs, %s: %s; end points: %s",
-        plan.start_point_label,
+        "%s after filtering bad BPMs: start points %s; end points %s",
+        type(plan).__name__,
         start_bpms,
         end_bpms,
     )
 
-    # Marker-anchored modes (kicker/ACD) may start from installed or measured
-    # marker anchors rather than ordinary BPMs, so keep those through the filter.
-    allowed_starts = set(plan.tracking_anchor_sources)
-    if plan.init_marker is not None:
-        allowed_starts.add(plan.init_marker)
+    # Marker-anchored modes start from markers, not BPMs in the observed range.
+    allowed_starts = set(plan.start_points)
     in_range = set(machine.bpms_in_range)
     ranges = BpmRanges(
         plan=plan,
@@ -98,7 +95,7 @@ def resolve_bpm_ranges(
     # With use_fixed_bpm the fixed BPM window comes from magnet_range; otherwise
     # it stays empty and ranges come from start_bpms/end_bpms.
     magnet_range = sequence_config.magnet_range
-    if use_fixed_bpm and plan.uses_fixed_bpm_window:
+    if use_fixed_bpm:
         ranges.fixed_start, ranges.fixed_end = magnet_range.split("/", 1)
         if ranges.fixed_start not in in_range or ranges.fixed_end not in in_range:
             range_label = (
@@ -112,10 +109,4 @@ def resolve_bpm_ranges(
             )
             ranges.fixed_start = ranges.start_bpms[0] if ranges.start_bpms else ranges.fixed_start
             ranges.fixed_end = ranges.end_bpms[0] if ranges.end_bpms else ranges.fixed_end
-    elif use_fixed_bpm:
-        LOGGER.info(
-            "Skipping fixed BPM derivation for this tracking plan; %s: %s",
-            plan.start_point_label,
-            ranges.start_bpms,
-        )
     return ranges

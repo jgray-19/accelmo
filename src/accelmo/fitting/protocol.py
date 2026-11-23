@@ -14,7 +14,7 @@ import resource
 from dataclasses import dataclass
 from multiprocessing.connection import wait
 from multiprocessing.reduction import ForkingPickler
-from typing import TYPE_CHECKING, Any, NoReturn
+from typing import TYPE_CHECKING, Any, NoReturn, cast
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -43,8 +43,8 @@ class Evaluate:
     ``batch`` selects a tracking worker's particle batch. ``loss_only`` asks a
     closed-orbit worker for the loss alone, from plain closed-orbit solves without
     knob derivatives (about 6x cheaper); the LM fit uses it for trial points.
-    ``curvature`` asks a tracking worker for the Gauss-Newton Hessian too, with loss,
-    gradient and Hessian all per particle and point (the tracking LM fit).
+    ``curvature`` asks a tracking worker for the Gauss-Newton matrix ``JᵀWJ`` too (the
+    tracking LM fit); loss and gradient are the chi-square sums either way.
     """
 
     knobs: dict[str, float]
@@ -54,15 +54,8 @@ class Evaluate:
 
 
 @dataclass(frozen=True)
-class Validate:
-    """Held-out loss at ``knobs``; answered with a :class:`LossReply`."""
-
-    knobs: dict[str, float]
-
-
-@dataclass(frozen=True)
-class Diagnose:
-    """Training loss at ``knobs``, summed over batches and per BPM point; a :class:`LossReply`."""
+class TotalChi2:
+    """Chi-square of every batch at ``knobs``; answered with a :class:`LossReply`."""
 
     knobs: dict[str, float]
 
@@ -89,8 +82,8 @@ class SetUncertaintyMode:
 
 
 #: Control commands a tracking worker answers between evaluations with an :class:`Ack`
-#: or, for :class:`Validate` and :class:`Diagnose`, a :class:`LossReply`.
-Command = Validate | Diagnose | SetKnobs | UpdateInitCoords | SetUncertaintyMode
+#: or, for :class:`TotalChi2`, a :class:`LossReply`.
+Command = TotalChi2 | SetKnobs | UpdateInitCoords | SetUncertaintyMode
 
 
 @dataclass(frozen=True)
@@ -111,16 +104,14 @@ class GradReply:
     """One evaluation's result.
 
     ``loss`` is NaN when the worker lost its particles or its closed orbit, and the
-    caller rejects the step. ``hessian`` is the normalised Gauss-Newton Hessian the
-    LM step uses and ``normal`` the physical ``JᵀWJ``; tracking workers send
-    neither. ``extra`` carries worker-specific results: a calibrated worker's block
+    caller rejects the step. ``normal`` is ``JᵀWJ`` (the chi² Gauss-Newton Hessian is
+    twice it), sent only when curvature is asked for. ``extra`` carries worker-specific results: a calibrated worker's block
     header, or the orbit a reference worker published.
     """
 
     worker_id: int
     loss: float
     grad: np.ndarray
-    hessian: np.ndarray | None = None
     normal: np.ndarray | None = None
     extra: Any = None
 
@@ -224,7 +215,7 @@ class WorkerChannels:
         remaining = len(indices)
 
         while remaining:
-            for conn in wait(list(position)):
+            for conn in cast("list[Connection]", wait(list(position))):
                 k = position[conn]
                 if seen[k]:
                     continue

@@ -40,7 +40,7 @@ class Step:
 
 @dataclass(frozen=True)
 class State:
-    """Current knobs, starts (x, px, y, py per particle; ``None``: measured) and loss.
+    """Current knobs, starts (x, px, y, py per particle; ``None``: measured) and chi² per weighted point.
 
     ``hessian`` is the LM Gauss-Newton matrix at the fit (free knobs, then starts). ``gains`` /
     ``gain_uncertainties`` are the BPM gains the fit returned (each fit restarts them at zero).
@@ -66,7 +66,8 @@ def fit_step(
     fitter = make_fitter(Step(errors, fit_start_coords, state.knobs, state.starts, n_turns))
     result = fitter.run()
     starts = fitter.fitted_starts if fit_start_coords else state.starts
-    loss = result.diagnostics.best_loss
+    assert result.diagnostics is not None and fitter.session is not None
+    loss = result.diagnostics.best_loss / fitter.session.n_training_points
     logger.info(f"step {sorted(errors)} starts={fit_start_coords} turns={n_turns}: loss {loss:.6e}")
     return State(
         {**state.knobs, **result.knobs},

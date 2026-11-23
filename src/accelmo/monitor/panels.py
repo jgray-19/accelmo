@@ -8,7 +8,7 @@ panels too.
 from __future__ import annotations
 
 import re
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 from bokeh.events import MouseEnter, MouseLeave
@@ -35,7 +35,12 @@ def message(text: str) -> Div:
 
 
 def step_figure(
-    view: MonitorView, title: str, *, y_axis_type: str = "linear", height: int = 260, **kwargs
+    view: MonitorView,
+    title: str,
+    *,
+    y_axis_type: Literal["linear", "log"] = "linear",
+    height: int = 260,
+    **kwargs,
 ) -> figure:
     """A figure against step with the selected step marked."""
     fig = figure(
@@ -99,7 +104,7 @@ _MIDDLE_FIT_LEAVE = "if (window.__accelmoMiddleFit) window.__accelmoMiddleFit.fi
 def enable_middle_click_fit(model: Model) -> None:
     """Make a middle click on any figure in ``model`` refit its y axis to the data in view."""
     for fig in model.select({"type": Plot}):
-        log = isinstance(fig.y_scale, LogScale)
+        log = isinstance(fig.y_scale, LogScale)  # ty: ignore[missing-attribute]
         fig.js_on_event(MouseEnter, CustomJS(args={"fig": fig, "log": log}, code=_MIDDLE_FIT_ENTER))
         fig.js_on_event(MouseLeave, CustomJS(code=_MIDDLE_FIT_LEAVE))
 
@@ -126,8 +131,8 @@ def scalars_panel(view: MonitorView) -> Model:
     for name in columns:
         values = history[name]
         fig = step_figure(view, name, y_axis_type="log" if _positive(values) else "linear")
-        fig.line(history.index, values, line_width=1.5)
-        fig.scatter(history.index, values, size=3)
+        fig.line(history.index.to_numpy(), values, line_width=1.5)
+        fig.scatter(history.index.to_numpy(), values, size=3)
         figures.append(fig)
     return gridplot(figures, ncols=2, sizing_mode="stretch_width")
 
@@ -143,7 +148,13 @@ def loss_panel(view: MonitorView) -> Model:
     for i, name in enumerate(
         c for c in ("loss", "validation_loss") if c in history and history[c].notna().any()
     ):
-        fig.line(history.index, history[name], legend_label=name, color=PALETTE[i], line_width=2)
+        fig.line(
+            history.index.to_numpy(),
+            history[name],
+            legend_label=name,
+            color=PALETTE[i],
+            line_width=2,
+        )
     best = view.stage.best_step()
     if best is not None and best in history.index:
         fig.scatter(
@@ -183,7 +194,7 @@ def knobs_panel(view: MonitorView) -> Model:
     lines = step_figure(view, f"The {len(movers)} knobs that moved most", height=360)
     for i, name in enumerate(movers):
         lines.line(
-            knobs.index,
+            knobs.index.to_numpy(),
             knobs[name] - start[name],
             legend_label=name,
             color=PALETTE[i % len(PALETTE)],
@@ -237,7 +248,7 @@ def summaries_panel(view: MonitorView) -> Model:
             fig.scatter(values.index, values.to_numpy(), size=4)
             row.append(fig)
         rows.append(row)
-    return gridplot(rows, sizing_mode="stretch_width")
+    return gridplot(rows, sizing_mode="stretch_width")  # ty: ignore[invalid-argument-type]
 
 
 #: The panels every monitor shows, after the machine-specific ones.

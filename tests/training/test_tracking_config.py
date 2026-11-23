@@ -6,17 +6,17 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from accelmo.config import SimulationConfig
+from accelmo.config import OptimiserConfig, TrackingDataConfig, TrackingParameters, WorkerRuntime
 from accelmo.machine.accelerators import PSB
-from accelmo.tracking.config.models import KickerConfig
 from accelmo.tracking.config.tracking import (
     ACDArcByArcTrackingPlan,
-    RangeContext,
+    ACDSinusoidTrackingPlan,
+    ACDTrackingPlan,
+    KickerTrackingPlan,
     TrackingPlan,
-    acd_marker_setup,
-    arc_by_arc_setup,
-    kicker_setup,
 )
+from accelmo.tracking.fitter import ArcByArcFitter, FitterOptions
+from accelmo.tracking.ranges import BpmRanges
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -24,8 +24,7 @@ if TYPE_CHECKING:
 RING = [f"BPM.{i}" for i in range(8)]
 
 
-def _base_simulation_config() -> SimulationConfig:
-    return SimulationConfig(num_workers=2, num_batches=1)
+BASE_TRACKING_DATA = TrackingDataConfig(num_batches=1)
 
 
 @pytest.fixture
@@ -39,10 +38,11 @@ class TestACDArcByArcReroute:
     def _plan(self) -> ACDArcByArcTrackingPlan:
         return ACDArcByArcTrackingPlan(acd_name="ACD")
 
-    def _ctx(self, *, start_bpms: list[str], end_bpms: list[str]) -> RangeContext:
+    def _ctx(self, *, start_bpms: list[str], end_bpms: list[str]) -> BpmRanges:
         # The exciter markers sit adjacent between BPM.3 and BPM.4.
         all_bpms = [*RING[:4], "ACD_before", "ACD_after", *RING[4:]]
-        return RangeContext(
+        return BpmRanges(
+            plan=TrackingPlan(),
             start_bpms=start_bpms,
             end_bpms=end_bpms,
             all_bpms=all_bpms,
@@ -94,7 +94,8 @@ class TestPlainArcByArcPlan:
     def test_plain_arc_by_arc_ranges_are_untouched(self) -> None:
         plan = TrackingPlan()
         all_bpms = RING
-        ctx = RangeContext(
+        ctx = BpmRanges(
+            plan=TrackingPlan(),
             start_bpms=["BPM.2"],
             end_bpms=["BPM.5"],
             all_bpms=all_bpms,
@@ -122,7 +123,8 @@ class TestPlainArcByArcPlan:
     def test_range_starting_and_ending_at_the_same_bpm_is_rejected(
         self, use_fixed_bpm: bool, start_bpms: list[str], end_bpms: list[str]
     ) -> None:
-        ctx = RangeContext(
+        ctx = BpmRanges(
+            plan=TrackingPlan(),
             start_bpms=start_bpms,
             end_bpms=end_bpms,
             all_bpms=RING,
@@ -135,78 +137,82 @@ class TestPlainArcByArcPlan:
             TrackingPlan().build_range_specs(ctx)
 
 
-class TestArcByArcSetup:
-    def test_requires_bpm_start_points(self) -> None:
-        with pytest.raises(ValueError, match="bpm_start_points"):
-            arc_by_arc_setup(
-                accelerator=None,
-                simulation_config=_base_simulation_config(),
-                bpm_start_points=[],
-                bpm_end_points=["BPM.1"],
-                acd_excited=False,
-            )
+class TestModeConfiguration:
+    """Each plan fixes the tracking-data entries and start points its mode needs."""
 
-    def test_acd_excited_requires_bpm_end_points(self, psb_accelerator: PSB) -> None:
-        with pytest.raises(ValueError, match="bpm_end_points"):
-            arc_by_arc_setup(
-                accelerator=psb_accelerator,
-                simulation_config=_base_simulation_config(),
-                bpm_start_points=["BPM.1"],
-                bpm_end_points=[],
-                acd_excited=True,
-            )
+    def test_arc_ranges_are_single_turn(self) -> None:
+        for plan in (TrackingPlan(), ACDArcByArcTrackingPlan(acd_name="ACD")):
+            assert plan.configure(BASE_TRACKING_DATA) == BASE_TRACKING_DATA
+            assert plan.turns_per_track == 1
+            assert plan.start_points == ()
 
-    def test_non_acd_excited_produces_plain_arc_by_arc_plan(self) -> None:
-        setup = arc_by_arc_setup(
-            accelerator=None,
-            simulation_config=_base_simulation_config(),
-            bpm_start_points=["BPM.1"],
-            bpm_end_points=["BPM.2"],
-            acd_excited=False,
-        )
+    def test_kicker_is_one_batch_of_the_kicked_turns_from_the_marker(self) -> None:
+        plan = KickerTrackingPlan(kicker_name="KICKER1", turns_per_track=5)
 
-        assert type(setup.plan) is TrackingPlan
-        assert setup.simulation_config.n_run_turns == 1
+        config = plan.configure(BASE_TRACKING_DATA)
 
-    def test_acd_excited_produces_acd_arc_by_arc_plan(self, psb_accelerator: PSB) -> None:
-        setup = arc_by_arc_setup(
-            accelerator=psb_accelerator,
-            simulation_config=_base_simulation_config(),
-            bpm_start_points=["BPM.1"],
-            bpm_end_points=["BPM.2"],
-            acd_excited=True,
-        )
+        assert (config.num_batches, plan.turns_per_track) == (1, 5)
+        assert plan.start_points == ("KICKER1",)
+        assert plan.first_bpm_fallback == "KICKER1"
 
-        assert isinstance(setup.plan, ACDArcByArcTrackingPlan)
-        assert setup.plan.acd_name == psb_accelerator.ac_dipole_name
-        assert setup.simulation_config.n_run_turns == 1
+    def test_track_plans_reject_non_positive_turns(self, psb_accelerator: PSB) -> None:
+        with pytest.raises(ValueError, match="turns_per_track"):
+            KickerTrackingPlan(kicker_name="KICKER1", turns_per_track=0)
+        with pytest.raises(ValueError, match="turns_per_track"):
+            ACDSinusoidTrackingPlan(psb_accelerator.ac_dipole_name, turns_per_track=0)
 
+    def test_acd_marker_tracks_one_turn_from_both_markers(self, psb_accelerator: PSB) -> None:
+        plan = ACDTrackingPlan(acd_name=psb_accelerator.ac_dipole_name)
 
-class TestKickerSetup:
-    def test_produces_forward_only_config_with_one_worker_per_file(self) -> None:
-        kicker_config = KickerConfig(kicker_name="KICKER1", turns_after_kicker=5)
-
-        setup = kicker_setup(kicker_config, _base_simulation_config())
-
-        # num_workers passes through: one worker per measurement file (momentum).
-        assert setup.simulation_config.num_workers == 2
-        assert setup.simulation_config.num_batches == 1
-        assert setup.simulation_config.n_run_turns == 5
-        assert setup.bpm_start_points == ["KICKER1"]
-        assert setup.first_bpm_fallback == "KICKER1"
-
-    def test_kicker_config_rejects_non_positive_turns(self) -> None:
-        with pytest.raises(ValueError, match="turns_after_kicker"):
-            KickerConfig(kicker_name="KICKER1", turns_after_kicker=0)
-
-
-class TestAcdMarkerSetup:
-    def test_produces_bidirectional_acd_plan(self, psb_accelerator: PSB) -> None:
-        setup = acd_marker_setup(psb_accelerator, _base_simulation_config())
-
-        assert setup.simulation_config.n_run_turns == 1
-        assert setup.bpm_start_points == [
+        assert plan.turns_per_track == 1
+        assert plan.start_points == (
             psb_accelerator.acd_marker_name("after"),
             psb_accelerator.acd_marker_name("before"),
-        ]
-        assert setup.bpm_end_points == []
+        )
+        assert plan.first_bpm_fallback is None
+
+    def test_acd_sinusoid_is_one_batch_from_the_before_marker(self, psb_accelerator: PSB) -> None:
+        plan = ACDSinusoidTrackingPlan(acd_name=psb_accelerator.ac_dipole_name, turns_per_track=30)
+
+        config = plan.configure(TrackingDataConfig(num_batches=4))
+
+        assert (config.num_batches, plan.turns_per_track) == (1, 30)
+        assert plan.start_points == (psb_accelerator.acd_marker_name("before"),)
+
+
+@pytest.mark.parametrize(
+    ("starts", "ends", "missing"),
+    [([], ["BPM.1"], "bpm_start_points"), (["BPM.1"], [], "bpm_end_points")],
+)
+def test_arc_by_arc_fitter_requires_start_and_end_points(
+    starts: list[str], ends: list[str], missing: str
+) -> None:
+    with pytest.raises(ValueError, match=missing):
+        ArcByArcFitter(None, None, WorkerRuntime(2), BASE_TRACKING_DATA, None, None, starts, ends)
+
+
+@pytest.mark.parametrize(
+    "parameters",
+    [
+        TrackingParameters(knob_sigmas={"dk1l": 1e-3}),
+        TrackingParameters(fit_start_coords=True),
+        TrackingParameters(starts_follow_gains=True),
+        TrackingParameters(bpm_gain_sigma=1e-2, bpm_gain_zero_mean_planes=("x",)),
+    ],
+)
+def test_lm_only_parameters_refuse_the_sgd_solver(parameters: TrackingParameters) -> None:
+    sgd = OptimiserConfig(
+        max_epochs=1, warmup_epochs=0, warmup_lr_start=1e-6, max_lr=1e-6, min_lr=1e-6
+    )
+    with pytest.raises(ValueError, match="need the LM solver"):
+        ArcByArcFitter(
+            None,
+            sgd,
+            WorkerRuntime(2),
+            BASE_TRACKING_DATA,
+            None,
+            None,
+            ["BPM.1"],
+            ["BPM.2"],
+            options=FitterOptions(parameters=parameters),
+        )

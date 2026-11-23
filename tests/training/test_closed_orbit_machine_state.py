@@ -6,15 +6,16 @@ observable from the closed orbit. Each ``ClosedOrbitSeries`` carries the ``machi
 (MAD-X globals) it was measured at; the fit sums the series' residual blocks.
 
 ``test_absolute_orbits_at_several_states_recover_quad_offsets``
-    Absolute orbits at several quadrupole states are fitted jointly, and recover the
-    injected ``dx``/``dy`` far better than the same orbit at a single state (relative
-    error ~0.77 -> ~0.25). It plateaus there: the PSB only exposes two quadrupole
-    globals, kbrqf and kbrqd, so every QF scales together and further states add little.
-    Per-quadrupole globals would remove the plateau; the mechanism is the same.
+    Absolute orbits at several quadrupole states are fitted jointly: each fit is the
+    Gaussian posterior mean under the ``dx``/``dy`` prior (the width the truth is drawn from),
+    and five states shrink the posterior variance and the offset error of one state. The
+    gain is small: the PSB only exposes two quadrupole globals, kbrqf and kbrqd, so every QF
+    scales together and the prior still sets most directions.
 
 ``test_reference_subtracted_orbits_at_a_state``
     Orbit changes from the fitter's reference state to each series' state (quadrupole
-    strengths and a corrector trim) reproduce the measured changes (the relative mode of the same fitter).
+    strengths and a corrector trim), in the relative mode of the same fitter: the posterior
+    mean, reproducing the measured changes within the MAP chi² bound.
 
 ``test_mixed_absolute_and_relative_series``
     One absolute and one relative series, at different states, in one fit.
@@ -54,6 +55,7 @@ import pytest
 from pymadng_utils.io.utils import save_knobs
 
 from accelmo.backend.madng import MadInterface
+from accelmo.config import WorkerRuntime
 from accelmo.fitting.config import SequenceConfig
 from accelmo.machine.accelerators import PSB
 from accelmo.poco import (
@@ -64,7 +66,7 @@ from accelmo.poco import (
 )
 from accelmo.poco.closed_orbit import difference_orbit
 
-from .test_closed_twiss_fitter import _knob_names
+from .test_closed_twiss_fitter import _knob_names, assert_map_of_noise_free_data
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -72,6 +74,7 @@ if TYPE_CHECKING:
 pytestmark = [pytest.mark.serial, pytest.mark.slow]
 
 KWARGS = {"misalignments": {"quad": {"dx", "dy"}}}
+TRUTH_HALF_WIDTH = 5e-5
 BPM_RESOLUTION = 5e-5  # m
 CORRECTOR = "kbr3dhz2l4"
 TRIM = 2e-4  # rad
@@ -122,20 +125,30 @@ def _orbit(
     )
 
 
-def _fit(seq_psb: Path, series: list[ClosedOrbitSeries], **kwargs) -> dict[str, float]:
+def _fitted(
+    seq_psb: Path, series: list[ClosedOrbitSeries], **kwargs
+) -> tuple[dict[str, float], ClosedOrbitFitter]:
     fitter = ClosedOrbitFitter(
         accelerator=PSB(ring=3, sequence_file=seq_psb, **KWARGS),
         sequence_config=SequenceConfig(magnet_range="$start/$end"),
         series=series,
-        lm_config=LevenbergMarquardtConfig(max_iterations=40, gradient_converged_value=1e-12),
-        prior_strengths={"dx": 1e-6, "dy": 1e-6},
+        lm_config=LevenbergMarquardtConfig(max_iterations=40),
+        knob_sigmas=dict.fromkeys(("dx", "dy"), TRUTH_HALF_WIDTH / np.sqrt(3)),
         **kwargs,
     )
     try:
         knobs = fitter.run().knobs
     finally:
         fitter.close()
-    return knobs
+    return knobs, fitter
+
+
+def _fit(seq_psb: Path, series: list[ClosedOrbitSeries], **kwargs) -> dict[str, float]:
+    return _fitted(seq_psb, series, **kwargs)[0]
+
+
+def _orbit_chi2(measured: pd.DataFrame, refit: pd.DataFrame, variance: float) -> float:
+    return float((((refit[["X", "Y"]] - measured[["X", "Y"]]) ** 2) / variance).to_numpy().sum())
 
 
 def _truth(seq_psb: Path, seed: int = 0) -> dict[str, float]:
@@ -143,7 +156,9 @@ def _truth(seq_psb: Path, seed: int = 0) -> dict[str, float]:
     rng = np.random.default_rng(seed)
     return {
         name: float(value)
-        for name, value in zip(names, rng.uniform(-5e-5, 5e-5, len(names)), strict=True)
+        for name, value in zip(
+            names, rng.uniform(-TRUTH_HALF_WIDTH, TRUTH_HALF_WIDTH, len(names)), strict=True
+        )
     }
 
 
@@ -181,26 +196,44 @@ def test_absolute_orbits_at_several_states_recover_quad_offsets(seq_psb: Path) -
     truth = _truth(seq_psb)
     series = [_absolute_series(seq_psb, truth, label) for label in STATES]
 
-    single = _knob_error(_fit(seq_psb, series[:1]), truth)
-    joint = _knob_error(_fit(seq_psb, series), truth)
+    fits = {n: _fitted(seq_psb, series[:n]) for n in (1, len(series))}
+    for n, (fitted, fitter) in fits.items():
+        chi2 = sum(
+            _orbit_chi2(
+                item.measurements[0].orbit,
+                _absolute_series(seq_psb, fitted, item.label).measurements[0].orbit,
+                BPM_RESOLUTION**2,
+            )
+            for item in series[:n]
+        )
+        assert_map_of_noise_free_data(fitter, fitted, truth, chi2)
 
-    assert joint < 0.5 * single, f"five states ({joint:.2f}) should beat one ({single:.2f})"
-    assert joint < 0.3, f"relative offset error {joint:.2f} after fitting five states"
+    (single, one), (joint, five) = fits.values()
+    variance_one = np.trace(np.linalg.inv(one.posterior_normal))
+    variance_five = np.trace(np.linalg.inv(five.posterior_normal))
+    print(f"knob error {_knob_error(single, truth):.3f} -> {_knob_error(joint, truth):.3f}")
+    print(f"posterior variance {variance_one:.4e} -> {variance_five:.4e}")
+    assert variance_five < variance_one
+    assert _knob_error(joint, truth) < _knob_error(single, truth)
 
 
 def test_reference_subtracted_orbits_at_a_state(seq_psb: Path) -> None:
     truth = _truth(seq_psb, seed=1)
     series = [_relative_series(seq_psb, truth, label) for label in ("nominal", "both", "opposite")]
 
-    fitted = _fit(seq_psb, series, machine_state=REFERENCE)
+    fitted, fitter = _fitted(seq_psb, series, machine_state=REFERENCE)
 
+    # A difference of two orbits has twice the BPM variance.
+    chi2 = 0.0
     for item in series:
-        refit = _relative_series(seq_psb, fitted, item.label)
-        measured = item.measurements[0].orbit
-        residual = refit.measurements[0].orbit[["X", "Y"]] - measured[["X", "Y"]]
-        assert float(np.abs(residual).to_numpy().max()) < 0.05 * float(
-            np.abs(measured[["X", "Y"]]).to_numpy().max()
+        measurement = item.measurements[0]
+        refit = _relative_series(seq_psb, fitted, item.label).measurements[0]
+        chi2 += _orbit_chi2(
+            measurement.orbit[["X", "Y"]] - measurement.reference[["X", "Y"]],
+            refit.orbit[["X", "Y"]] - refit.reference[["X", "Y"]],
+            2 * BPM_RESOLUTION**2,
         )
+    assert_map_of_noise_free_data(fitter, fitted, truth, chi2)
 
 
 def test_mixed_absolute_and_relative_series(seq_psb: Path) -> None:
@@ -225,8 +258,8 @@ def test_machine_state_does_not_leak_between_series(seq_psb: Path) -> None:
     truth = _truth(seq_psb, seed=3)
     series = [_absolute_series(seq_psb, truth, label) for label in STATES]
 
-    batched = _fit(seq_psb, series, max_workers=1)
-    parallel = _fit(seq_psb, series, max_workers=len(series))
+    batched = _fit(seq_psb, series, runtime=WorkerRuntime(1))
+    parallel = _fit(seq_psb, series, runtime=WorkerRuntime(len(series)))
 
     assert max(abs(batched[name] - parallel[name]) for name in truth) < 1e-9
 
@@ -267,8 +300,8 @@ def test_series_state_is_the_change_from_the_fitter_state(seq_psb: Path) -> None
         accelerator=PSB(ring=3, sequence_file=seq_psb, **KWARGS),
         sequence_config=SequenceConfig(magnet_range="$start/$end"),
         series=[series],
-        lm_config=LevenbergMarquardtConfig(max_iterations=40, gradient_converged_value=1e-12),
-        prior_strengths={"dx": 1e-6, "dy": 1e-6},
+        lm_config=LevenbergMarquardtConfig(max_iterations=40),
+        knob_sigmas=dict.fromkeys(("dx", "dy"), TRUTH_HALF_WIDTH / np.sqrt(3)),
         machine_state=standing,
     )
     try:

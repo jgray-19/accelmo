@@ -8,13 +8,13 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from accelmo.config import OptimiserConfig, SimulationConfig
+from accelmo.config import TrackingDataConfig, TrackingParameters, WorkerRuntime
 from accelmo.fitting.config import OutputConfig, SequenceConfig
 from accelmo.machine.accelerators import PSB
 from accelmo.machine.machine_state import merge_machine_states
 from accelmo.tracking.config import MeasurementConfig
-from accelmo.tracking.config.helpers import create_arc_measurement_config
-from accelmo.tracking.fitter import ACDSinusoidFitter, FitterOptions
+from accelmo.tracking.config.helpers import single_measurement_config
+from accelmo.tracking.fitter import ACDSinusoidFitter, FitterOptions, tracking_lm_config
 from accelmo.tracking.ic_iteration import State, Step, cold_joint, fit_step, joint
 from tests.training.controller.test_controller_acd import (
     PSB_HORIZONTAL_ACD_VOLTAGE,
@@ -31,6 +31,7 @@ from tests.training.controller.test_controller_acd_sinusoid import (
     kick_error,
     kick_knobs,
 )
+from tests.training.controller_test_utils import UNIT_LOSS
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -70,7 +71,7 @@ def _setup(
     for bpm, gain in (gains or {}).items():  # the BPMs report (1 + g) x position
         frame.loc[frame["name"] == bpm, ["x", "y"]] *= 1.0 + gain
     frame.to_parquet(data, index=False)
-    measurement = create_arc_measurement_config(
+    measurement = single_measurement_config(
         data, machine_state=merge_machine_states(correctors, tune_knobs)
     )
     if drop_turns:
@@ -89,25 +90,16 @@ def _setup(
         )
         return ACDSinusoidFitter(
             accelerator,
-            OptimiserConfig(
-                max_epochs=200,
-                warmup_epochs=0,
-                warmup_lr_start=1e-3,
-                max_lr=1e-3,
-                min_lr=1e-3,
-                optimiser_type="levenberg_marquardt",
-                gradient_converged_value=1e-14,
-            ),
-            SimulationConfig(
-                num_workers=1,
-                num_batches=1,
-                n_run_turns=min(step.n_turns or FLATTOP_TURNS, FLATTOP_TURNS - 1),
-                fit_start_coords=step.fit_start_coords,
-                bpm_gain_sigma=gain_sigma,
-            ),
-            SequenceConfig(magnet_range="$start/$end"),
+            tracking_lm_config(200),
+            WorkerRuntime(num_workers=1),
+            TrackingDataConfig(num_batches=1),
+            SequenceConfig(),
             measurement,
+            min(step.n_turns or FLATTOP_TURNS, FLATTOP_TURNS - 1),
             options=FitterOptions(
+                parameters=TrackingParameters(
+                    fit_start_coords=step.fit_start_coords, bpm_gain_sigma=gain_sigma
+                ),
                 initial_knob_strengths=step.knobs,
                 initial_starts=step.starts,
                 output_config=OutputConfig(mad_logfile=tmp_path / "mad.log", write_run_log=False),
@@ -135,7 +127,7 @@ def test_ic_step_recovers_start_and_kick_at_truth_k(
     kick_err = kick_error(state.knobs)
     start_error = np.max(np.abs(state.starts[0] - truth_start) / np.abs(truth_start))
     print(f"loss {state.loss:.3e} kick {kick_err:.3e} start {start_error:.3e}")
-    assert state.loss < 1e-18
+    assert state.loss < 1e-18 * UNIT_LOSS
     assert kick_err < 1e-6
     assert start_error < 5e-5
 
@@ -157,7 +149,7 @@ def test_windowed_ic_step_recovers_kick(
     start_error = np.min(np.max(np.abs(state.starts - truth_start) / np.abs(truth_start), axis=1))
     print(f"windows {len(state.starts)} loss {state.loss:.3e} kick {kick_err:.3e}")
     assert len(state.starts) == (FLATTOP_TURNS - 1) // WINDOW
-    assert state.loss < 1e-18
+    assert state.loss < 1e-18 * UNIT_LOSS
     assert kick_err < 1e-6
     assert start_error < 5e-5
 
@@ -183,8 +175,8 @@ def test_kick_per_file(tmp_path: Path, seq_psb: Path, loaded_psb_interface: MadI
     errors = [kick_error(state.knobs, truth) for truth in truth_per_file]
     print(f"starts {len(state.starts)} loss {state.loss:.3e} kick errors {errors}")
     assert len(state.starts) == 4
-    # measured 2026-11-12: loss 2.0e-20, kick 5.5e-7 (file 0), 1.1e-6 (file 1)
-    assert state.loss < 1e-18
+    # measured 2026-11-23: chi²/point 1.2e-10, kick 3.3e-7 (file 0), 1.4e-6 (file 1)
+    assert state.loss < 1e-18 * UNIT_LOSS
     assert max(errors) < 2e-6
 
 
@@ -198,7 +190,7 @@ def test_k_step_keeps_fixed_kick(
         make_fitter, State(knobs, truth_start[None, :], np.inf), K_ERRORS, fit_start_coords=False
     )
     print(f"loss {state.loss:.3e}")
-    assert state.loss < 1e-18
+    assert state.loss < 1e-18 * UNIT_LOSS
 
 
 def _loss_at(make_fitter, state: State, errors, *, fit_start_coords: bool) -> float:
@@ -244,8 +236,8 @@ def test_joint_recovers_quads(
     print(
         f"joint loss {final.loss:.3e} k {k_error:.3e} kick {kick_err:.3e} start {start_error:.3e}"
     )
-    # measured 2026-11-13: loss 2.35e-21, k 1.33e-5, kick 7.7e-7, start 3.0e-6
-    assert final.loss < 1e-20
+    # measured 2026-11-23: chi²/point 6.5e-11, k 1.35e-5, kick 7.7e-7, start 3.0e-6
+    assert final.loss < 1e-20 * UNIT_LOSS
     assert k_error < 2e-5
     assert kick_err < 2e-6
     assert start_error < 1e-5
@@ -266,9 +258,9 @@ def test_cold_joint_recovers_quads(
         f"cold losses {[f'{s.loss:.2e}' for s in history[1:]]} "
         f"k {k_error:.3e} kick {kick_err:.3e} start {start_error:.3e}"
     )
-    # measured 2026-11-12: loss 2.22e-21, k 8.4e-5, kick 7.6e-7, start 3.3e-6; k is set by
+    # measured 2026-11-23: chi²/point 6.5e-11, k 1.3e-5, kick 7.7e-7, start 3.0e-6; k is set by
     # the floor along the weakest direction (normal-matrix cond 3e7 at 29 turns, BR.QFO dk1l)
-    assert final.loss < 1e-20
+    assert final.loss < 1e-20 * UNIT_LOSS
     assert k_error < 1e-4
     assert kick_err < 2e-6
     assert start_error < 1e-5

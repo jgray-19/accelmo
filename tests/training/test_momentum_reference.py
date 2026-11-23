@@ -76,8 +76,8 @@ def _both(seq: Path) -> PSB:
     return _accelerator(seq, errors={"bend": {"k0"}, "quad": {"k1"}})
 
 
-def _truth(seq: Path, seed: int = 7) -> dict[str, float]:
-    """Relative field errors on every bend and quad, expressed as knob values.
+def _widths(seq: Path) -> dict[str, float]:
+    """1-sigma relative field error of every bend and quad, as a signed integrated knob scale.
 
     The knobs are *integrated* perturbations while the accelerator reports
     un-integrated k0/k1, so element lengths turn a relative error into a knob.
@@ -90,14 +90,17 @@ def _truth(seq: Path, seed: int = 7) -> dict[str, float]:
     lengths = dict(zip(frame["name"].tolist(), frame["l"].to_numpy(dtype=float), strict=True))
     del iface
 
-    rng = np.random.default_rng(seed)
-    truth = {}
+    widths = {}
     for knob in knobs:
         element, suffix = knob.rsplit(".dk", 1)
         integrated = float(absolute[f"{element}.k{suffix[0]}"]) * float(lengths[element])
-        relative = BEND_REL if suffix[0] == "0" else QUAD_REL
-        truth[knob] = float(rng.normal(0.0, relative) * integrated)
-    return truth
+        widths[knob] = (BEND_REL if suffix[0] == "0" else QUAD_REL) * integrated
+    return widths
+
+
+def _truth(widths: dict[str, float], seed: int = 7) -> dict[str, float]:
+    rng = np.random.default_rng(seed)
+    return {knob: float(rng.standard_normal() * width) for knob, width in widths.items()}
 
 
 def _measurement(
@@ -145,10 +148,16 @@ def _px_rms_error(reference: pd.DataFrame, machine: pd.DataFrame) -> float:
 @pytest.fixture(scope="module")
 def fitted(seq_psb: Path):
     """Truth, the machine's closed orbit, and the fit from orbit + phase."""
-    truth = _truth(seq_psb)
+    widths = _widths(seq_psb)
+    truth = _truth(widths)
     rng = np.random.default_rng(8)
     measurements = {d: _measurement(seq_psb, truth, d, rng) for d in DELTAS}
-    reference = fit_momentum_reference(_both(seq_psb), measurements, observables=ORBIT_AND_PHASE)
+    reference = fit_momentum_reference(
+        _both(seq_psb),
+        measurements,
+        observables=ORBIT_AND_PHASE,
+        knob_sigmas={knob: abs(width) for knob, width in widths.items()},
+    )
     machine = closed_orbit_at(_both(seq_psb), truth, 0.0)
     return truth, machine, reference
 
@@ -190,7 +199,7 @@ def test_reference_carries_angles_the_measurement_cannot(fitted) -> None:
 def test_a_single_momentum_is_rejected(seq_psb: Path) -> None:
     """One momentum leaves the per-magnet Jacobians degenerate."""
     with pytest.raises(ValueError, match="at least two momenta"):
-        fit_momentum_reference(_both(seq_psb), {0.0: pd.DataFrame()})
+        fit_momentum_reference(_both(seq_psb), {0.0: pd.DataFrame()}, knob_sigmas={})
 
 
 def test_orbit_alone_with_quad_knobs_is_rejected(seq_psb: Path) -> None:

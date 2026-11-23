@@ -259,7 +259,7 @@ class TestPerformOrbitCorrection:
             loaded_interface.perform_orbit_correction(machine_deltap=0.0, plane="z")
 
     def test_correct_tunes_requires_targets(self, loaded_interface: MadInterface) -> None:
-        with pytest.raises(ValueError, match="target tunes"):
+        with pytest.raises(ValueError, match="target_qx and target_qy are required"):
             loaded_interface.perform_orbit_correction(machine_deltap=0.0, correct_tunes=True)
 
     def test_filters_bpms_and_correctors(self, loaded_interface: MadInterface, tmp_path) -> None:

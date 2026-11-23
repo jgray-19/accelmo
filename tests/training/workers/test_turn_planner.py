@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-
+from accelmo.config import TrackingDataConfig
 from accelmo.tracking.dispatch.turn_planner import WorkerTurnPlanner
 
 
@@ -20,7 +19,8 @@ def _plan(num_workers: int, num_files: int, turns_per_file: int = 50):
             file_map[f * turns_per_file + t] = f
     planner = WorkerTurnPlanner(
         _Plan(),
-        SimpleNamespace(num_workers=num_workers, num_batches=1, use_fixed_bpm=True),
+        TrackingDataConfig(num_batches=1),
+        num_workers,
         shuffle_turns=lambda _turns: None,
     )
     batches = planner.build_turn_batches(

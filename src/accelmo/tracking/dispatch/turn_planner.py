@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from accelmo.config import TrackingDataConfig
     from accelmo.tracking.config.tracking import TrackingPlan
 
     ShuffleTurns = Callable[[list[int]], None]
@@ -78,7 +79,8 @@ class WorkerTurnPlanner:
     def __init__(
         self,
         tracking_plan: TrackingPlan,
-        simulation_config,
+        tracking_data: TrackingDataConfig,
+        num_workers: int,
         *,
         shuffle_turns: ShuffleTurns,
     ) -> None:
@@ -86,11 +88,13 @@ class WorkerTurnPlanner:
 
         Args:
             tracking_plan: Tracking-mode policy for BPM/range expansion.
-            simulation_config: Worker and batching configuration.
+            tracking_data: Batching configuration.
+            num_workers: Number of training workers.
             shuffle_turns: In-place turn ordering.
         """
         self.tracking_plan = tracking_plan
-        self.simulation_config = simulation_config
+        self.tracking_data = tracking_data
+        self.num_workers = num_workers
         self.shuffle_turns = shuffle_turns
 
     def build_turn_batches(
@@ -107,7 +111,7 @@ class WorkerTurnPlanner:
         fans out to, so the batches never spawn more than ``num_workers`` workers.
         """
         turns_by_file = group_turns_by_file(available_turns, file_map)
-        num_workers = self.simulation_config.num_workers
+        num_workers = self.num_workers
         # A batch must hold at least one turn, so the number of batches cannot
         # exceed the number of available training turns.
         worker_turn_batches = max(1, num_workers // max(1, workers_per_batch))
@@ -153,7 +157,7 @@ class WorkerTurnPlanner:
             num_turn_batches,
             workers_per_batch,
             num_turn_batches * workers_per_batch,
-            self.simulation_config.num_batches,
+            self.tracking_data.num_batches,
         )
 
         return self._materialise_turn_batches(turns_by_file, num_turn_batches)
@@ -171,7 +175,7 @@ class WorkerTurnPlanner:
             self.shuffle_turns(turns)
 
         batches_per_file = allocate_batches_per_file(turns_by_file, num_turn_batches)
-        mad_num_batches = self.simulation_config.num_batches
+        mad_num_batches = self.tracking_data.num_batches
 
         turn_batches: list[list[int]] = []
         for file_idx in sorted(batches_per_file):

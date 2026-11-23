@@ -55,7 +55,7 @@ def prepare_knob_creation(
 ) -> None:
     """Install PSB AC kickers, run each attribute's ``_KNOB_PREPARATION``, read LHC bend lengths."""
     if isinstance(accelerator, PSB) and accelerator.acd_drive_tunes is not None:
-        iface.install_ac_kickers((0.0,) * len(AC_KICKERS), accelerator.acd_drive_tunes[0])
+        iface.install_ac_kickers((0.0, 0.0, 0.0, 0.0), accelerator.acd_drive_tunes[0])
     grouped: dict[tuple[str, str], list[str]] = {}
     for spec in specs:
         body = _KNOB_PREPARATION.get(spec.attribute)

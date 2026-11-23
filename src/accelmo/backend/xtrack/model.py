@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 from xtrack_tools.env import create_xsuite_environment
 
-from accelmo.machine.machine_state import resolve_machine_state
+from accelmo.machine.machine_state import MachineState, resolve_machine_state
 from accelmo.machine.patterns import lua_to_regex
 
 if TYPE_CHECKING:
@@ -89,7 +89,7 @@ class XtrackModel:
         magnet_range: str = "$start/$end",
         bpm_range: str | None = None,
         bad_bpms: Sequence[str] | None = None,
-        machine_state: object = None,
+        machine_state: MachineState | None = None,
         initial_model_values: Mapping[str, float] | None = None,
     ) -> None:
         if accelerator.seq_dir != 1:

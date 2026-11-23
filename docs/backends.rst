@@ -27,20 +27,21 @@ A backend is the module ``accelmo.backend.<name>.engines`` with:
    * - ``TrackingEngine(config, plan: TrackRequest, init_knobs, *, worker_id, logfile)``
      - ``set_knobs``, ``load_particles``, ``set_pts``, ``set_start_coords``,
        ``preflight``, ``track(batch, *, start_derivatives) -> TrackResult``, ``close``
-   * - ``ClosedOrbitEngine(config, init_knobs, *, optics_names, orbit_coords, worker_id, logfile)``
+   * - ``ClosedOrbitEngine(config, init_knobs, *, optics_names, orbit_coords, worker_id, logfile, extra_knobs=None)``
      - ``knob_names``, ``fit_pt``, ``set_knobs``, ``get_vars``, ``set_vars``, ``set_pt``,
        ``set_warm_start``, ``solve(observables, *, jacobian=True) -> ClosedSolution | None``,
-       ``close``
+       ``close``. ``extra_knobs`` (zero-valued BPM-gain/corrector-gain knobs, ``pt`` not fitted)
+       and ``scale_globals`` are MAD-NG only
    * - ``closed_orbit_table(accelerator, magnet_strengths, pt, machine_state, columns)``
      - Plain closed-orbit table (momentum reference)
-   * - ``CalibratedClosedOrbitEngine`` (optional)
-     - ``ClosedOrbitEngine`` plus zero-valued BPM-gain/corrector-gain knobs and
-       ``scale_globals``; MAD-NG only
 
 Shapes and conventions (docstrings of :mod:`accelmo.backend.protocol`):
 
 * Knobs are named as in :mod:`accelmo.machine.knob_names` (``MQ.1.dk1l``); ``pt`` is fitted
   as the last Jacobian column when ``fit_pt`` is true.
+* ``TrackRequest.geometry`` (a ``TrackGeometry``) is the tracked segment: observed BPM range,
+  ``sdir``, start marker, cycle target and anchors. A ``ClosedOrbitEngine`` has none: it
+  observes the whole ring and does not cycle.
 * ``TrackResult.obs[o]`` is ``(P, N)``, ``d_dk[o]`` ``(P, K, N)``, ``d_dc0[o]`` ``(P, 4, N)``.
 * ``ClosedSolution.values`` is ``(n_observables, n_bpms)`` and ``jacobian``
   ``(n_observables, n_bpms, n_knobs)``, rows in the requested observable order;

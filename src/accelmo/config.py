@@ -1,22 +1,15 @@
-# src/accelmo/config.py
-"""
-Configuration constants for the knob optimisation pipeline.
-"""
+"""Settings of the gradient-descent optimiser, the worker processes and the tracking fit."""
 
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from pathlib import Path
 
-# =============================================================================
-# OPTIMISATION SETTINGS
-# =============================================================================
-
-logger = logging.getLogger(__name__)
+#: Optimisers :class:`OptimiserConfig` can name.
+OPTIMISER_TYPES = ("adam", "lbfgs")
 
 
-@dataclass
+@dataclass(frozen=True)
 class OptimiserConfig:
     """Configuration for gradient descent optimiser algorithms.
 
@@ -29,12 +22,10 @@ class OptimiserConfig:
     warmup_lr_start: float
     max_lr: float
     min_lr: float
-    gradient_converged_value: float
-    optimiser_type: str = field(default="adam")  # "adam", "lbfgs" or "levenberg_marquardt"
+    optimiser_type: str = field(default="adam")  # one of OPTIMISER_TYPES
 
-    # Smoothing factor of the moving averages of the gradient norm and the
-    # relative loss change that the stopping rules use.
-    grad_norm_alpha: float = field(default=0.2)
+    # Smoothing factor of the moving average of the relative loss change the stopping rule uses.
+    loss_change_alpha: float = field(default=0.2)
     # Stop once the smoothed relative loss change falls below this, after at least
     # loss_change_min_epoch_fraction * max_epochs epochs. 0 disables the rule.
     loss_change_tolerance: float = field(default=1e-6)
@@ -57,26 +48,46 @@ class OptimiserConfig:
     # below the default, or eps rather than the gradient scale sets the step size.
     adam_eps: float | None = field(default=None)
 
-    # Computed fields
-    decay_epochs: int = field(init=False)
-
     def __post_init__(self):
-        self.decay_epochs = (self.stage_epochs or self.max_epochs) - self.warmup_epochs
+        if self.optimiser_type not in OPTIMISER_TYPES:
+            raise ValueError(
+                f"Unknown optimiser type {self.optimiser_type!r}; choose from {OPTIMISER_TYPES}"
+            )
 
-    def log_state(self) -> None:
-        """Log the current optimiser config settings."""
-        logger.info("OptimiserConfig: %s", self)
+    @property
+    def decay_epochs(self) -> int:
+        """Epochs of learning-rate decay after the warmup, per stage."""
+        return (self.stage_epochs or self.max_epochs) - self.warmup_epochs
 
 
-@dataclass
-class SimulationConfig:
-    """Configuration for simulation and worker process settings.
-
-    Controls parallel worker distribution, tracking data, and which
-    physical parameters (energy, quadrupoles, bends) to optimise.
-    """
+@dataclass(frozen=True)
+class WorkerRuntime:
+    """How the worker processes run: how many, their log level and BLAS threads."""
 
     num_workers: int
+
+    # Logging level for worker processes (separate from main process)
+    logging_level: int = field(default=logging.WARNING)
+
+    # BLAS/LAPACK threads per worker process. Every worker does dense linear algebra
+    # (e.g. the Gauss-Newton Hessian) while the other workers do the same, so the
+    # library default (one thread per core, per worker) oversubscribes the machine:
+    # 16 closed-orbit workers took 3.4x longer per Hessian and pushed the load
+    # average to ~290 on a 64-core host. 1 (default) keeps one thread per worker;
+    # None leaves the library default.
+    blas_threads: int | None = field(default=1)
+
+    def __post_init__(self):
+        if self.num_workers < 1:
+            raise ValueError(f"WorkerRuntime.num_workers must be >= 1, got {self.num_workers}")
+
+
+@dataclass(frozen=True)
+class TrackingDataConfig:
+    """Which tracking data the fit uses and how its turns are batched."""
+
+    # Batches each worker's turns are split into. Kicker and ACD-sinusoid fits use 1
+    # whatever is set here: each worker holds a single track.
     num_batches: int
 
     # Fraction of the post-validation-split training data to use and
@@ -95,43 +106,39 @@ class SimulationConfig:
     # When False, only positions (x, y) are used for optimisation
     optimise_momenta: bool = field(default=True)
 
-    # Number of turns tracked from each start turn. Arc-by-arc and AC-dipole
-    # marker modes force this to 1; kicker mode sets it to the kicker track length.
-    n_run_turns: int = field(default=1)
+    def __post_init__(self):
+        if not 0.0 < self.data_fraction <= 1.0:
+            raise ValueError(
+                f"TrackingDataConfig.data_fraction must be in (0, 1], got {self.data_fraction}"
+            )
+        if not 0.0 <= self.validation_fraction < 1.0:
+            raise ValueError(
+                "TrackingDataConfig.validation_fraction must be in [0, 1), "
+                f"got {self.validation_fraction}"
+            )
 
-    # How start x end BPM points expand into ranges. True (default) pairs every
-    # start with one fixed end and every end with one fixed start; False takes the
-    # full cartesian product, giving many more (but more correlated) ranges.
-    use_fixed_bpm: bool = field(default=True)
 
-    # Logging level for worker processes (separate from main process)
-    worker_logging_level: int = field(default=logging.WARNING)
+@dataclass(frozen=True)
+class TrackingParameters:
+    """What a tracking fit fits besides the magnet knobs, and every prior width."""
 
-    # BLAS/LAPACK threads per worker process. Every worker does dense linear algebra
-    # (e.g. the Gauss-Newton Hessian) while the other workers do the same, so the
-    # library default (one thread per core, per worker) oversubscribes the machine:
-    # 16 closed-orbit workers took 3.4x longer per Hessian and pushed the load
-    # average to ~290 on a 64-core host. 1 (default) keeps one thread per worker;
-    # None leaves the library default.
-    worker_blas_threads: int | None = field(default=1)
-
-    # Tracking fit: fit one gain per BPM and plane on the positions, reading =
-    # (1 + g) * position, with a Gaussian prior of this width. None fits no gains.
+    # Fit one gain per BPM and plane on the positions, reading = (1 + g) * position, with a
+    # Gaussian prior of this width. None fits no gains.
     bpm_gain_sigma: float | None = field(default=None)
 
-    # Tracking LM fit: zero-centred Gaussian prior widths, as POCO's knob_sigmas: keyed by knob
+    # LM only: zero-centred Gaussian prior widths, as POCO's knob_sigmas: keyed by knob
     # name or terminal attribute (e.g. dk1l); a BPM gain named here overrides bpm_gain_sigma.
     knob_sigmas: dict[str, float] | None = field(default=None)
 
-    # Tracking LM fit: also fit every particle's start x, px, y, py.
+    # LM only: also fit every particle's start x, px, y, py.
     fit_start_coords: bool = field(default=False)
 
-    # Tracking LM fit: the starts are functions of the BPM gains, s(g) = s_ref + S (g - g_ref),
+    # LM only: the starts are functions of the BPM gains, s(g) = s_ref + S (g - g_ref),
     # given by the initial-conditions callback as a StartGainMap; the gains' gradient and
     # Gauss-Newton blocks include the path through the starts (docs/start_gain_chain_rule.md).
     starts_follow_gains: bool = field(default=False)
 
-    # Tracking LM fit: planes ("x", "y") whose mean BPM gain is held at 0, for a common scale the data leave free.
+    # LM only: planes ("x", "y") whose mean BPM gain is held at 0, for a common scale the data leave free.
     bpm_gain_zero_mean_planes: tuple[str, ...] = field(default=())
 
     @property
@@ -140,26 +147,10 @@ class SimulationConfig:
         return self.fit_start_coords or self.starts_follow_gains
 
     def __post_init__(self):
-        if self.n_run_turns < 1:
-            raise ValueError("SimulationConfig.n_run_turns must be >= 1")
-        if not 0.0 < self.data_fraction <= 1.0:
-            raise ValueError(
-                f"SimulationConfig.data_fraction must be in (0, 1], got {self.data_fraction}"
-            )
-        if not 0.0 <= self.validation_fraction < 1.0:
-            raise ValueError(
-                "SimulationConfig.validation_fraction must be in [0, 1), "
-                f"got {self.validation_fraction}"
-            )
-
         if unknown := set(self.bpm_gain_zero_mean_planes) - {"x", "y"}:
             raise ValueError(f"bpm_gain_zero_mean_planes takes 'x' and 'y', got {sorted(unknown)}")
         if self.bpm_gain_zero_mean_planes and self.bpm_gain_sigma is None:
             raise ValueError("bpm_gain_zero_mean_planes needs fitted gains (bpm_gain_sigma)")
-
-    def log_state(self) -> None:
-        """Log the current simulation config settings."""
-        logger.info("SimulationConfig: %s", self)
 
 
 # Global schema constant for data files (this is appropriate as a global)
@@ -176,22 +167,3 @@ FILE_COLUMNS: tuple[str, ...] = (
     "var_px",
     "var_py",
 )
-
-# =============================================================================
-# FILE PATHS
-# =============================================================================
-
-PROJECT_ROOT = Path(__file__).absolute().parent.parent.parent
-ARTIFACTS_ROOT = PROJECT_ROOT / "artifacts"
-TRAINING_RUNS_ROOT = ARTIFACTS_ROOT / "training" / "runs"
-logger.info(f"Current project root: {PROJECT_ROOT}")
-
-# Data files
-NO_NOISE_FILE = PROJECT_ROOT / "data/track_data.parquet"  # Measurement Parquet file
-CLEANED_FILE = PROJECT_ROOT / "data/filtered_data.parquet"  # Filtered TFS file
-
-# Other files
-# Ground-truth knob strengths
-TRUE_STRENGTHS_FILE = PROJECT_ROOT / "data/true_strengths.txt"
-# Where to write final strengths
-OUTPUT_KNOBS = PROJECT_ROOT / "data/final_knobs.txt"

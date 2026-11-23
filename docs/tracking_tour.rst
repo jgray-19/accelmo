@@ -23,7 +23,7 @@ Package map
 -----------
 
 ``accelmo.config``
-    ``OptimiserConfig`` and ``SimulationConfig``.
+    ``OptimiserConfig``, ``WorkerRuntime``, ``TrackingDataConfig`` and ``TrackingParameters``.
 
 ``accelmo.tracking``
     The tracking fitters.
@@ -103,9 +103,6 @@ backward (orange), for one turn. With ``acd_excited=True``, a range containing t
    * -
      - ArcByArcFitter
      - ACDMarkerFitter
-   * - Setup function
-     - ``arc_by_arc_setup``
-     - ``acd_marker_setup``
    * - :term:`Plan <plan>` class
      - ``TrackingPlan`` or ``ACDArcByArcTrackingPlan``
      - ``ACDTrackingPlan``
@@ -226,7 +223,7 @@ From ``fitter = ArcByArcFitter(...)`` to ``fitter.run()``. Paths are relative to
    * - Step
      - ``tracking/sgd/loop.py``
      - Sums the gradients from all workers and updates the knobs with Adam or
-       L-BFGS. With ``optimiser_type="levenberg_marquardt"`` the fit runs the
+       L-BFGS. With a ``LevenbergMarquardtConfig`` solver the fit runs the
        Levenberg-Marquardt loop over every batch instead.
    * - End of :term:`epoch`
      - ``tracking/sgd/loop.py``

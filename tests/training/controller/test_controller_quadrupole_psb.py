@@ -8,17 +8,17 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from accelmo.config import OptimiserConfig
+from accelmo.config import OptimiserConfig, WorkerRuntime
 from accelmo.fitting.config import OutputConfig, SequenceConfig
 from accelmo.machine.accelerators import PSB
 from accelmo.machine.machine_state import merge_machine_states
-from accelmo.tracking.config.helpers import create_arc_measurement_config
-from accelmo.tracking.fitter import ArcByArcFitter, FitterOptions
+from accelmo.tracking.config.helpers import single_measurement_config
+from accelmo.tracking.fitter import ArcByArcFitter, FitterOptions, tracking_lm_config
 from tests.training.controller_test_utils import (
+    LM_TEST_ITERATIONS,
+    QUAD_TRACKING_DATA,
     _generate_nonoise_track,
-    _make_simulation_config_quad,
     evaluate_controller_worker_loss,
-    make_lm_config,
     relative_truth_errors,
 )
 
@@ -56,11 +56,6 @@ def _build_psb_arc_quad_controller(
         target_qx=PSB_TARGET_QX,
         target_qy=PSB_TARGET_QY,
     )
-    simulation_config = dataclasses.replace(
-        _make_simulation_config_quad(),
-        num_workers=4,
-        num_batches=1,
-    )
     ctrl = ArcByArcFitter(
         PSB(
             ring=3,
@@ -74,12 +69,12 @@ def _build_psb_arc_quad_controller(
             warmup_lr_start=1e-6,
             max_lr=3e-4,
             min_lr=3e-4,
-            gradient_converged_value=1e-13,
             optimiser_type="adam",
         ),
-        simulation_config,
+        WorkerRuntime(num_workers=4),
+        dataclasses.replace(QUAD_TRACKING_DATA, num_batches=1),
         SequenceConfig("$start/$end"),
-        create_arc_measurement_config(
+        single_measurement_config(
             off_magnet_path, machine_state=merge_machine_states(corrector_file, tune_knobs)
         ),
         bpm_start_points=PSB_BPM_START_POINTS,
@@ -161,16 +156,10 @@ def test_controller_quad_opt_psb_ring3(
         target_qy=PSB_TARGET_QY,
     )
 
-    base_sim = _make_simulation_config_quad()
-    simulation_config = dataclasses.replace(
-        base_sim,
-        num_workers=4,
-        num_batches=4,
-    )
-    optimiser_config = make_lm_config()
+    optimiser_config = tracking_lm_config(LM_TEST_ITERATIONS)
 
     sequence_config = SequenceConfig("$start/$end")
-    measurement_config = create_arc_measurement_config(
+    measurement_config = single_measurement_config(
         off_magnet_path, machine_state=merge_machine_states(corrector_file, tune_knobs)
     )
     accelerator = PSB(
@@ -183,7 +172,8 @@ def test_controller_quad_opt_psb_ring3(
     ctrl = ArcByArcFitter(
         accelerator,
         optimiser_config,
-        simulation_config,
+        WorkerRuntime(num_workers=4),
+        dataclasses.replace(QUAD_TRACKING_DATA, num_batches=4),
         sequence_config,
         measurement_config,
         bpm_start_points=PSB_BPM_START_POINTS,

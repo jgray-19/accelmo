@@ -226,6 +226,8 @@ class Monitor:
             return
 
         stage = self._stage()
+        if stage is None:
+            return
         knobs = stage.knob_history()
         if knobs.empty:
             self.status.object = f"No knob history recorded yet in `{stage.directory}`."
@@ -266,8 +268,10 @@ class Monitor:
             step=step,
             history=stage.history(),
             knobs=knobs,
-            references=self.cache.references(metadata) if references else None,
-            optics=self.cache.optics(metadata, knobs.loc[step], SELECTED) if optics else None,
+            references=self.cache.references(metadata) if references and self.cache else None,
+            optics=self.cache.optics(metadata, knobs.loc[step], SELECTED)
+            if optics and self.cache
+            else None,
             summaries=self._read_summaries(stage, knobs),
             s_range=DataRange1d(),  # fresh: a range kept across draws keeps every old figure alive
         )

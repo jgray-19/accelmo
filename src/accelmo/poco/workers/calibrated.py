@@ -20,9 +20,17 @@ from accelmo.poco.workers.closed_orbit import ClosedOrbitWorker
 
 if TYPE_CHECKING:
     from accelmo.fitting.protocol import Evaluate
+    from accelmo.poco.calibration import CalibrationSpec
     from accelmo.poco.workers.closed_orbit import SeriesState
 
 LOGGER = logging.getLogger(__name__)
+
+
+def _spec(series: SeriesState) -> CalibrationSpec:
+    """The calibration layout of a series."""
+    if series.data.calibration is None:
+        raise ValueError("A calibrated worker needs a CalibrationSpec on every series")
+    return series.data.calibration
 
 
 class CalibratedClosedOrbitWorker(ClosedOrbitWorker):
@@ -35,17 +43,11 @@ class CalibratedClosedOrbitWorker(ClosedOrbitWorker):
     either state) gets no gain knob and is never scaled.
 
     The knob dict it receives carries the gains next to the magnet knobs (names from :mod:`accelmo.poco.calibration`);
-    the engine never sees them. Its reply carries the blocks' header (``b`` coupling, diagonal, gradient, loss-normalisation
-    constant) in :attr:`~accelmo.fitting.protocol.GradReply.extra`, followed on the pipe by the blocks' arrays.
+    the engine never sees them. Its reply carries the blocks' header (sizes and chi²) in :attr:`~accelmo.fitting.protocol.GradReply.extra`, followed on the pipe by the blocks' arrays.
     """
 
     def _make_engine(self, knobs: dict[str, float]):
-        engine = getattr(self.backend, "CalibratedClosedOrbitEngine", None)
-        if engine is None:
-            raise NotImplementedError(
-                f"backend {self.config.accelerator.backend!r} has no corrector calibration"
-            )
-        return engine(
+        return self.backend.ClosedOrbitEngine(
             self.config,
             knobs,
             extra_knobs=self._gain_knobs(),
@@ -65,8 +67,7 @@ class CalibratedClosedOrbitWorker(ClosedOrbitWorker):
                     *series.data.machine_state.items(),
                     *series.data.reference_state.items(),
                 )
-                if (corrector := series.data.calibration.corrector_of(name))
-                in series.data.calibration.correctors
+                if (corrector := _spec(series).corrector_of(name)) in _spec(series).correctors
                 and value != 0.0
             )
         )
@@ -87,7 +88,7 @@ class CalibratedClosedOrbitWorker(ClosedOrbitWorker):
         """
         state = self._states[role]
         self.engine.set_vars(state)
-        spec = self.series[0].data.calibration
+        spec = _spec(self.series[0])
         scaled = []
         for name, kick in state.items():
             corrector = spec.corrector_of(name)
@@ -96,16 +97,13 @@ class CalibratedClosedOrbitWorker(ClosedOrbitWorker):
                 scaled.append((name, kick, gain, corrector_gain_knob_name(corrector)))
         self.engine.scale_globals(scaled)
 
-    def _loss_unit(self) -> float:
-        return 1.0 / (self.weight_scale * self.normalisation_points)
-
     def evaluate(self, message: Evaluate) -> GradReply:
         """Loss, gradient and calibration blocks at ``message.knobs``."""
         if message.loss_only:
             return self._loss_only(message.knobs)
         knob_updates = message.knobs
         self.engine.set_knobs(knob_updates)
-        spec = self.series[0].data.calibration
+        spec = _spec(self.series[0])
         n_g, n_b = len(spec.correctors), len(PLANES) * len(spec.bpms)
         blocks = CalibrationBlocks(
             self.n_q, n_g, n_b, self._shared_buffer(CalibrationBlocks.nbytes(self.n_q, n_g, n_b))
@@ -114,20 +112,22 @@ class CalibratedClosedOrbitWorker(ClosedOrbitWorker):
             if not self._evaluate_calibrated(series, knob_updates, spec, blocks):
                 return GradReply(self.worker_id, float("nan"), np.zeros(1), extra={})
         blocks.symmetrise()
-        blocks.scale(1.0 / self.normalisation_points)
         payload = blocks.to_payload()
-        payload["loss_unit"] = self._loss_unit()
-        payload["shared_memory"] = self._shared.name
-        # The fitter reads the arrays from the shared block and everything else from the payload (already normalised).
+        payload["shared_memory"] = self._shared_block().name
+        # The fitter reads the arrays from the shared block and everything else from the payload.
         return GradReply(self.worker_id, blocks.loss, np.zeros(1), extra=payload)
 
     _shared: shared_memory.SharedMemory | None = None
 
-    def _shared_buffer(self, size: int):
+    def _shared_block(self, size: int = 0) -> shared_memory.SharedMemory:
         """The worker's block of shared memory the blocks are accumulated in, created on first use and reused every iteration."""
         if self._shared is None:
             self._shared = shared_memory.SharedMemory(create=True, size=size)
-        return self._shared.buf
+        return self._shared
+
+    def _shared_buffer(self, size: int):
+        """The buffer of :meth:`_shared_block`."""
+        return self._shared_block(size).buf
 
     def close(self) -> None:
         """Close the engine."""
@@ -140,8 +140,7 @@ class CalibratedClosedOrbitWorker(ClosedOrbitWorker):
     def _loss_only(self, knob_updates: dict[str, float]) -> GradReply:
         """Data loss alone, from plain closed-orbit solves (no knob parameters, no Jacobian, no Hessian).
 
-        The same loss as the blocks' ``loss`` of a full evaluation; the reply's ``extra`` is
-        ``{"loss": normalised loss, "loss_unit": ...}``.
+        The same chi² as the blocks' ``loss`` of a full evaluation.
         """
         self.engine.set_knobs(knob_updates)
         total = 0.0
@@ -150,22 +149,19 @@ class CalibratedClosedOrbitWorker(ClosedOrbitWorker):
             if part is None:
                 return GradReply(self.worker_id, float("nan"), np.zeros(1), extra={})
             total += part
-        loss = total / self.normalisation_points
-        return GradReply(
-            self.worker_id, loss, np.zeros(1), extra={"loss": loss, "loss_unit": self._loss_unit()}
-        )
+        return GradReply(self.worker_id, total, np.zeros(1))
 
     def _evaluate_calibrated_loss(
         self, series: SeriesState, knob_updates: dict[str, float]
     ) -> float | None:
         """One series' ``sum w ((1 + b) * model - target)^2`` as in :func:`add_series`, from orbit values only."""
         loss = 0.0
-        names = series.twiss_bpm_order
+        names, alignment = series.aligned()
         with self._in_series(series):
             for index, model in self._models(series, knob_updates, self._orbit_plain):
                 if model is None:
                     return None
-                observables, targets, weights, _raw = series.alignment[index]
+                observables, targets, weights = alignment[index]
                 for o, observable in enumerate(observables):
                     gains = bpm_gains(knob_updates, observable.name, names)
                     residual = bpm_reading(model[o], gains) - np.asarray(targets[o], dtype=float)
@@ -174,9 +170,14 @@ class CalibratedClosedOrbitWorker(ClosedOrbitWorker):
         return loss
 
     def _evaluate_calibrated(
-        self, series: SeriesState, knob_updates: dict[str, float], spec, blocks: CalibrationBlocks
+        self,
+        series: SeriesState,
+        knob_updates: dict[str, float],
+        spec: CalibrationSpec,
+        blocks: CalibrationBlocks,
     ) -> bool:
         """Add one series' blocks to ``blocks``; ``False`` if its closed orbit is lost."""
+        names, alignment = series.aligned()
         bpm_index = {name: i for i, name in enumerate(spec.bpms)}
         corrector_indices = [spec.correctors.index(corrector) for corrector in self._correctors]
         with self._in_series(series):
@@ -184,8 +185,7 @@ class CalibratedClosedOrbitWorker(ClosedOrbitWorker):
                 if model is None:
                     return False
                 values, jacobian = model
-                observables, targets, weights, _raw = series.alignment[index]
-                names = series.twiss_bpm_order
+                observables, targets, weights = alignment[index]
                 cols = np.empty((len(observables), len(names)), dtype=int)
                 gains = np.empty((len(observables), len(names)))
                 for o, observable in enumerate(observables):

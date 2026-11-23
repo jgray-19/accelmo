@@ -6,10 +6,11 @@ import multiprocessing as mp
 
 import numpy as np
 
-from accelmo.config import SimulationConfig
+from accelmo.backend.protocol import TrackGeometry
+from accelmo.config import TrackingDataConfig, TrackingParameters, WorkerRuntime
 from accelmo.fitting.bpm_gains import bpm_gain_names, point_gain_index
-from accelmo.fitting.worker import WorkerConfig
 from accelmo.machine.accelerators import PSB
+from accelmo.tracking.dispatch.setup import TrackingWorkerConfig
 from accelmo.tracking.worker import PrecomputedTrackingWeights, TrackingData, TrackingWorker
 
 BPMS = ("B1", "B2", "B3")
@@ -35,19 +36,22 @@ def _worker(tmp_path, optimise_momenta: bool) -> TrackingWorker:
         init_variances=np.ones((N_PARTICLES, 4)),
         start_turn_offsets=np.zeros(N_PARTICLES, dtype=np.int64),
         precomputed_weights=PrecomputedTrackingWeights(
-            **{o: rng.uniform(0.5, 2.0, shape) for o in ("x", "y", "px", "py")}, scale=1.0
+            **{o: rng.uniform(0.5, 2.0, shape) for o in ("x", "y", "px", "py")}
         ),
         gain_bpms=BPMS,
         point_gain_index=point_gain_index(POINTS, BPMS),
     )
-    config = WorkerConfig(
+    config = TrackingWorkerConfig(
         accelerator=PSB(ring=3, sequence_file=seq_file),
-        tracking_start_bpm="BR3.BPM1L3",
-        tracking_end_bpm="BR3.BPM3L3",
         magnet_range="$start/$end",
+        geometry=TrackGeometry(start_bpm="BR3.BPM1L3", end_bpm="BR3.BPM3L3"),
+        file_idx=0,
+        bpm_names=["BR3.BPM1L3", "BR3.BPM2L3", "BR3.BPM3L3"],
     )
-    sim = SimulationConfig(num_workers=1, num_batches=1, optimise_momenta=optimise_momenta)
-    return TrackingWorker(mp.Pipe()[1], 0, data, config, sim)
+    tracking_data = TrackingDataConfig(num_batches=1, optimise_momenta=optimise_momenta)
+    return TrackingWorker(
+        mp.Pipe()[1], 0, data, config, WorkerRuntime(1), tracking_data, TrackingParameters()
+    )
 
 
 class _LinearModel:

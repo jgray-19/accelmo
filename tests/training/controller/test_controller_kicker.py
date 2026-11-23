@@ -2,24 +2,25 @@
 
 from __future__ import annotations
 
-import dataclasses
 import logging
 from typing import TYPE_CHECKING
 
 import numpy as np
 import pytest
 
+from accelmo.config import TrackingParameters
 from accelmo.fitting.config import OutputConfig, SequenceConfig
 from accelmo.machine.accelerators import PSB
 from accelmo.machine.machine_state import merge_machine_states
-from accelmo.tracking.config.helpers import create_arc_measurement_config
-from accelmo.tracking.config.models import KickerConfig
-from accelmo.tracking.fitter import FitterOptions, KickerFitter
+from accelmo.tracking.config.helpers import single_measurement_config
+from accelmo.tracking.fitter import FitterOptions, KickerFitter, tracking_lm_config
 from tests.training.controller_test_utils import (
+    LM_TEST_ITERATIONS,
+    QUAD_RUNTIME,
+    QUAD_TRACKING_DATA,
+    UNIT_LOSS,
     _generate_kicker_track,
-    _make_simulation_config_quad,
     evaluate_controller_worker_loss,
-    make_lm_config,
     relative_truth_errors,
 )
 
@@ -38,7 +39,7 @@ def _build_kicker_controller(
     seq_psb: Path,
     loaded_psb_interface: MadInterface,
     flattop_turns: int = 10,
-    **simulation_overrides: object,
+    **parameters: object,
 ) -> tuple[KickerFitter, dict[str, float]]:
     magnet_range = "$start/$end"
     off_magnet_path = tmp_path / "track_kicker_off_magnet.parquet"
@@ -50,7 +51,7 @@ def _build_kicker_controller(
         dpp_value=0.0,
         bpm_pattern=r"(?i)br3\.bpm.*",
     )
-    optimiser_config = make_lm_config()
+    optimiser_config = tracking_lm_config(LM_TEST_ITERATIONS)
 
     ctrl = KickerFitter(
         PSB(
@@ -60,21 +61,21 @@ def _build_kicker_controller(
             errors={"quad": {"k1"}},
         ),
         optimiser_config,
-        dataclasses.replace(_make_simulation_config_quad(), **simulation_overrides),
+        QUAD_RUNTIME,
+        QUAD_TRACKING_DATA,
         SequenceConfig(magnet_range=magnet_range),
-        create_arc_measurement_config(
+        single_measurement_config(
             off_magnet_path, machine_state=merge_machine_states(corrector_file, tune_knobs)
         ),
-        KickerConfig(
-            kicker_name=kicker_name,
-            turns_after_kicker=flattop_turns,
-        ),
+        kicker_name,
+        flattop_turns,
         options=FitterOptions(
             output_config=OutputConfig(
                 mad_logfile=tmp_path / "mad_logfile_kicker.log",
                 write_run_log=False,
             ),
             true_strengths=magnet_strengths.copy(),
+            parameters=TrackingParameters(**parameters),
         ),
     )
     return ctrl, magnet_strengths.copy()
@@ -164,7 +165,7 @@ def test_fitted_start_uncertainty_is_the_marginal_of_the_joint_fit(
     assert result.diagnostics.converged
     names = ctrl.knob_names
     n_knobs = len(names)
-    joint = ctrl.lm_hessian  # loss units, knobs then the 4 start coordinates
+    joint = ctrl.lm_hessian  # chi² Hessian, knobs then the 4 start coordinates
     assert joint.shape == (n_knobs + 4, n_knobs + 4)
 
     # The uncertainty normal matrix is the joint one with the start projected out (Schur).
@@ -213,13 +214,12 @@ def test_knob_prior_bounds_the_reported_uncertainty(
     result = ctrl.run()
     assert result.diagnostics.converged
     reported = np.array([result.uncertainties[name] for name in ctrl.knob_names])
-    # A + P from the LM Hessian at the best point (starts projected out), scaled so P = 1/width²
+    # A + P is half the LM chi-square Hessian at the best point, starts projected out
     joint = ctrl.lm_hessian
     n_knobs = len(ctrl.knob_names)
     k, s = slice(0, n_knobs), slice(n_knobs, None)
     schur = joint[k, k] - joint[k, s] @ np.linalg.solve(joint[s, s], joint[s, k])
-    scale = 1.0 / (width**2 * ctrl._lm_prior_hessian[0, 0])
-    posterior = np.sqrt(np.diag(np.linalg.inv(scale * schur)))
+    posterior = np.sqrt(np.diag(np.linalg.inv(0.5 * schur)))
     assert np.all(reported < width)
     np.testing.assert_allclose(reported, posterior, rtol=1e-10)
 
@@ -247,7 +247,7 @@ def test_controller_quad_opt_with_kicker(
     if loss_regression:
         true_loss = evaluate_controller_worker_loss(ctrl, magnet_strengths)
         # Round-off only: a run at the true strengths lands around 1e-18.
-        assert true_loss < 1e-16, (
+        assert true_loss < 1e-16 * UNIT_LOSS, (
             f"True-strength kicker loss should be numerically tiny, got {true_loss:.3e}"
         )
         assert true_loss < initial_loss * 1e-3, (

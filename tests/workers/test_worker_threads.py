@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 from threadpoolctl import threadpool_info, threadpool_limits
 
-from accelmo.config import SimulationConfig
+from accelmo.config import WorkerRuntime
 from accelmo.fitting.worker import AbstractWorker
 
 
@@ -15,15 +15,13 @@ def _blas_threads() -> set[int]:
     return {lib["num_threads"] for lib in threadpool_info() if lib["user_api"] == "blas"}
 
 
-def _configure(worker_blas_threads: int | None) -> None:
-    simulation_config = SimulationConfig(
-        num_workers=1, num_batches=1, worker_blas_threads=worker_blas_threads
-    )
-    AbstractWorker.configure_worker_threads(SimpleNamespace(simulation_config=simulation_config))
+def _configure(blas_threads: int | None) -> None:
+    runtime = WorkerRuntime(num_workers=1, blas_threads=blas_threads)
+    AbstractWorker.configure_worker_threads(SimpleNamespace(runtime=runtime))
 
 
 def test_default_is_one_blas_thread() -> None:
-    assert SimulationConfig(num_workers=1, num_batches=1).worker_blas_threads == 1
+    assert WorkerRuntime(num_workers=1).blas_threads == 1
 
 
 def test_configure_worker_threads_limits_blas() -> None:

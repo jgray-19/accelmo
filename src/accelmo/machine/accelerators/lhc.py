@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from pymadng_utils.accelerators.lhc import LHC as BaseLHC  # noqa: N811
 
@@ -135,7 +135,7 @@ class LHC(BaseLHC, Accelerator):
 
     def copy_with(self, **overrides) -> LHC:
         """Return a new LHC instance with selected parameters overridden."""
-        kwargs = {
+        kwargs: dict[str, Any] = {
             "beam": self.beam,
             "sequence_file": self.sequence_file,
             "kinetic_energy": self.kinetic_energy,

@@ -18,7 +18,7 @@ dependencies = [
     "pandas",
     "tfs-pandas",
     "pymadng>=0.10.0",
-    "pymadng-utils>=0.0.1",
+    "pymadng-utils>=0.0.2",
     "matplotlib",
     "uncertainties",
     "scipy>=1.17.1",

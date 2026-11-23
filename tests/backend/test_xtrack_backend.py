@@ -17,7 +17,7 @@ import numpy as np
 import pytest
 
 from accelmo.backend import get_backend
-from accelmo.backend.protocol import TrackRequest
+from accelmo.backend.protocol import TrackGeometry, TrackRequest
 from accelmo.fitting.worker import WorkerConfig
 from accelmo.machine.accelerators import PSB
 
@@ -52,11 +52,8 @@ def test_same_knobs_and_bpms_as_madng(seq_psb: Path) -> None:
 def _orbit(seq_psb: Path, backend: str, state: dict[str, float], knobs: dict[str, float]):
     config = WorkerConfig(
         accelerator=_accelerator(seq_psb, backend),
-        tracking_start_bpm="$start",
-        tracking_end_bpm="$end",
         magnet_range="$start/$end",
-        cycle_sequence=False,
-        interface_options={"machine_state": state},
+        machine_state=state,
     )
     engine = get_backend(backend).ClosedOrbitEngine(
         config, knobs, optics_names=[], orbit_coords=["x", "y"], worker_id=0
@@ -80,19 +77,12 @@ def test_corrector_state_gives_madng_closed_orbit(seq_psb: Path, variable: str, 
 
 def _tracking(seq_psb: Path, backend: str, knobs: dict[str, float]):
     _, bpms = _knob_names(seq_psb, "madng")
-    config = WorkerConfig(
-        accelerator=_accelerator(seq_psb, backend),
-        tracking_start_bpm=bpms[0],
-        tracking_end_bpm=bpms[-1],
-        magnet_range="$start/$end",
-    )
+    config = WorkerConfig(accelerator=_accelerator(seq_psb, backend), magnet_range="$start/$end")
     plan = TrackRequest(
+        geometry=TrackGeometry(start_bpm=bpms[0], end_bpm=bpms[-1]),
         observables=("x", "px", "y", "py"),
         batch_size=2,
         num_batches=1,
-        tracking_range=config.tracking_range,
-        n_run_turns=1,
-        start_on_first_turn=False,
         validation=False,
         file_index=0,
         turn_offset=0,
@@ -171,19 +161,18 @@ def test_kicker_start_matches_madng(seq_psb: Path) -> None:
     results = {}
     for backend in ("madng", "xtrack"):
         config = WorkerConfig(
-            accelerator=_accelerator(seq_psb, backend),
-            tracking_start_bpm="$start",
-            tracking_end_bpm="$end",
-            magnet_range="$start/$end",
-            initial_condition_marker="BE3.KFA14L1",
+            accelerator=_accelerator(seq_psb, backend), magnet_range="$start/$end"
         )
         plan = TrackRequest(
+            geometry=TrackGeometry(
+                start_bpm="$start",
+                end_bpm="$end",
+                initial_condition_marker="BE3.KFA14L1",
+                n_turns=5,
+            ),
             observables=("x", "y"),
             batch_size=1,
             num_batches=1,
-            tracking_range=config.tracking_range,
-            n_run_turns=5,
-            start_on_first_turn=True,
             validation=True,
             file_index=0,
             turn_offset=0,

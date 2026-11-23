@@ -12,7 +12,7 @@ Two families of fit are provided:
 |---|---|---|
 | Tracking | Turn-by-turn BPM data, tracked through the model | `ArcByArcFitter`, `ACDMarkerFitter`, `KickerFitter` |
 | Closed orbit | Closed orbit and phase advance, at one or more machine states | `ClosedOrbitFitter`, `CalibratedClosedOrbitFitter` |
-| Closed twiss | Closed orbit, phase advance, beta and dispersion | `ClosedTwissFitter` |
+| Closed twiss | Closed orbit, phase advance, beta and dispersion | `ClosedOrbitFitter` with `closed_twiss_series` |
 
 Supported machines: LHC, PSB, SPS and FCC.
 
@@ -66,7 +66,7 @@ strengths for diagnostics, output and checkpoint settings, callbacks) go in a
 ```python
 from pathlib import Path
 
-from accelmo.config import OptimiserConfig, SimulationConfig
+from accelmo.config import OptimiserConfig, TrackingDataConfig, WorkerRuntime
 from accelmo.fitting.config import OutputConfig, SequenceConfig
 from accelmo.machine.accelerators import LHC
 from accelmo.tracking import (
@@ -80,15 +80,15 @@ accelerator = LHC(beam=1, sequence_file="lhcb1.seq", errors={"quad": {"k1"}})
 
 fitter = ArcByArcFitter(
     accelerator=accelerator,
-    optimiser_config=OptimiserConfig(
+    solver=OptimiserConfig(
         max_epochs=200,
         warmup_epochs=10,
         warmup_lr_start=1e-6,
         max_lr=1e-4,
         min_lr=1e-6,
-        gradient_converged_value=1e-12,
     ),
-    simulation_config=SimulationConfig(num_workers=8, num_batches=4),
+    runtime=WorkerRuntime(num_workers=8),
+    tracking_data=TrackingDataConfig(num_batches=4),
     sequence_config=SequenceConfig(magnet_range="$start/$end"),
     measurement_config=MeasurementConfig({Path("measurement.parquet"): MeasurementDetails()}),
     bpm_start_points=["BPM.12R1.B1"],
@@ -107,9 +107,9 @@ Further examples are in `tests/training/`, which exercise each fitter end to end
 |---|---|---|
 | `ArcByArcFitter` | BPM at the start of each range | Forward and backward over the configured BPM ranges |
 | `ACDMarkerFitter` | AC-dipole `before`/`after` markers | Bidirectional, whole ring observed |
-| `KickerFitter` | Kicker marker | Single worker, forward only, `turns_after_kicker` turns |
+| `KickerFitter` | Kicker marker | Single worker, forward only, `turns_per_track` turns |
 
-`KickerFitter` additionally takes a `KickerConfig(kicker_name, turns_after_kicker)`.
+`KickerFitter` additionally takes the `kicker_name` and `turns_per_track`.
 The measurement data must contain `x`, `px`, `y`, `py` at the kicker marker, and the
 sequence must include the kicker element.
 
@@ -118,11 +118,11 @@ sequence must include the kicker element.
 The closed-twiss and closed-orbit fitters live in `accelmo.poco` (Parametric
 Optimisation of Closed Orbits) and return the same `FitResult` as the tracking fitters.
 
-`ClosedTwissFitter` fits knobs so that the model's periodic optics match measured
-closed orbit, beta, phase and dispersion simultaneously, using a single parametric
-MAD-NG `twiss`. It takes `measurements`, a mapping from the measurement momentum `pt` to a
-measurement file or dataframe, and uses a Levenberg-Marquardt solver configured by
-`LevenbergMarquardtConfig`.
+`ClosedOrbitFitter(series=closed_twiss_series(measurements, observables))` fits knobs so that
+the model's periodic optics match measured closed orbit, beta, phase and dispersion
+simultaneously, using a single parametric MAD-NG `twiss`. `measurements` maps the measurement
+momentum `pt` to a measured optics dataframe; each becomes one absolute series. The solver is
+Levenberg-Marquardt, configured by `LevenbergMarquardtConfig`.
 
 ### Closed-orbit fits
 

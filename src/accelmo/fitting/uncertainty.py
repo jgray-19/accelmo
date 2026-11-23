@@ -18,8 +18,8 @@ HESSIAN_MIN_EIGENVALUE = 1e-35
 SINGULAR_REL_TOLERANCE = 1e-8
 
 
-def _floored_inverse(matrix: np.ndarray, min_eigenvalue: float) -> np.ndarray:
-    """Inverse of the symmetrised ``matrix`` with eigenvalues floored to ``min_eigenvalue``."""
+def covariance(matrix: np.ndarray, *, min_eigenvalue: float = HESSIAN_MIN_EIGENVALUE) -> np.ndarray:
+    """Covariance ``A⁻¹`` of a physical normal matrix: symmetrised, eigenvalues floored to ``min_eigenvalue``."""
     matrix = np.asarray(matrix, dtype=np.float64)
     sym = 0.5 * (matrix + matrix.T)
     eigenvalues, eigenvectors = np.linalg.eigh(sym)
@@ -34,13 +34,6 @@ def _floored_inverse(matrix: np.ndarray, min_eigenvalue: float) -> np.ndarray:
             min_eigenvalue,
         )
     return (eigenvectors / clipped) @ eigenvectors.T
-
-
-def covariance(
-    normal_matrix: np.ndarray, *, min_eigenvalue: float = HESSIAN_MIN_EIGENVALUE
-) -> np.ndarray:
-    """Parameter covariance ``A⁻¹`` of a physical normal matrix, eigenvalues floored as in :func:`hessian_uncertainties`."""
-    return _floored_inverse(normal_matrix, min_eigenvalue)
 
 
 def warn_if_singular(
@@ -88,12 +81,11 @@ def sandwich_uncertainties(
 ) -> np.ndarray:
     """1-sigma uncertainties ``sqrt(diag(A⁻¹ B A⁻¹))``.
 
-    Invariant to the loss-weight scale (``A ∝ w``, ``B ∝ w²``), so ``A`` and ``B`` may
-    be built from the globally normalised loss weights.
+    Invariant to a common scale of the loss weights (``A ∝ w``, ``B ∝ w²``).
     """
-    inverse = _floored_inverse(normal_matrix, min_eigenvalue)
-    covariance = inverse @ np.asarray(noise_matrix, dtype=np.float64) @ inverse
-    return np.sqrt(np.clip(np.diag(covariance), 0.0, None))
+    inverse = covariance(normal_matrix, min_eigenvalue=min_eigenvalue)
+    sandwich = inverse @ np.asarray(noise_matrix, dtype=np.float64) @ inverse
+    return np.sqrt(np.clip(np.diag(sandwich), 0.0, None))
 
 
 def hessian_uncertainties(
@@ -119,6 +111,5 @@ def hessian_uncertainties(
     non-negative uncertainties rather than blowing up or turning negative through
     accumulated numerical noise.
     """
-    covariance = _floored_inverse(normal_matrix, min_eigenvalue)
-    variances = np.clip(np.diag(covariance), 0.0, None)
-    return np.sqrt(variances)
+    variances = np.diag(covariance(normal_matrix, min_eigenvalue=min_eigenvalue))
+    return np.sqrt(np.clip(variances, 0.0, None))

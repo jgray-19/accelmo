@@ -10,10 +10,13 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 from accelmo.fitting.results import FitDiagnostics
-from accelmo.optimisers.levenberg_marquardt import LevenbergMarquardtOptimiser
+from accelmo.optimisers.levenberg_marquardt import (
+    LevenbergMarquardtOptimiser,
+    LevenbergMarquardtUpdate,
+)
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Sequence
 
     from accelmo.optimisers.levenberg_marquardt import LevenbergMarquardtConfig
     from accelmo.runlog import RunLog
@@ -36,30 +39,46 @@ class LMPoint:
     extra: Any = None
 
 
+class LMProblem:
+    """What :func:`run_levenberg_marquardt` asks of a fit; subclasses override the hooks they use."""
+
+    #: Score each trial point by :meth:`trial_loss` first and evaluate it in full only if it
+    #: improves on the best loss, so a rejected step costs a cheap loss evaluation.
+    loss_only_trials = False
+
+    def evaluate(self, params: np.ndarray, iteration: int) -> LMPoint:
+        """The full objective at ``params``."""
+        raise NotImplementedError
+
+    def trial_loss(self, params: np.ndarray) -> float | None:
+        """The loss alone at ``params``, ``None`` when the orbit is lost."""
+        raise NotImplementedError
+
+    def on_accept(self, params: np.ndarray, point: LMPoint) -> None:
+        """Sees every accepted point."""
+
+    def after_step(self, params: np.ndarray, optimiser: LevenbergMarquardtOptimiser) -> None:
+        """Runs once the next point is chosen."""
+
+    def refresh(self, params: np.ndarray) -> bool:
+        """Runs at every newly accepted point; True if it changed the objective.
+
+        E.g. the tracking start conditions were rebuilt from the fitted model. The old losses
+        then no longer compare: the optimiser forgets its best point and the same point is
+        evaluated again before the next step is taken.
+        """
+        return False
+
+
 def run_levenberg_marquardt(
     params: np.ndarray,
-    evaluate: Callable[[np.ndarray, int], LMPoint],
+    problem: LMProblem,
     config: LevenbergMarquardtConfig,
     *,
-    trial_loss: Callable[[np.ndarray], float | None] | None = None,
-    on_accept: Callable[[np.ndarray, LMPoint], None] | None = None,
-    after_step: Callable[[np.ndarray, LevenbergMarquardtOptimiser], None] | None = None,
-    refresh: Callable[[np.ndarray], bool] | None = None,
     run_log: RunLog | None = None,
     param_names: Sequence[str] | None = None,
 ) -> tuple[LevenbergMarquardtOptimiser, FitDiagnostics]:
     """Minimise with Levenberg-Marquardt steps ``(H + lam·diag H) delta = -g``.
-
-    ``evaluate(params, iteration)`` returns the full :class:`LMPoint`. With
-    ``trial_loss``, a trial point is first scored by its loss alone (``None`` when
-    the orbit is lost) and only one that improves on the best loss is evaluated in
-    full, so a rejected step costs a cheap loss evaluation. ``on_accept`` sees every
-    accepted point; ``after_step`` runs once the next point is chosen.
-
-    ``refresh(params)`` runs at every newly accepted point and returns whether it changed
-    the objective (e.g. rebuilt the tracking start conditions from the fitted model). If so,
-    the old losses no longer compare: the optimiser forgets its best point and the same
-    point is evaluated again before the next step is taken.
 
     A rejected step is not a no-op: the optimiser retries from its best point with
     more damping, so the next point still needs evaluating. Only the terminal
@@ -72,8 +91,6 @@ def run_levenberg_marquardt(
     Returns the optimiser, whose ``best_params`` are the solution, and how the fit ended.
     """
     optimiser = LevenbergMarquardtOptimiser(config, initial_params=params)
-    n = len(params)
-    zero_grad, zero_hess = np.zeros(n), np.zeros((n, n))
     run_start = time.time()
     last_update = None
     completed_iterations = 0
@@ -85,27 +102,17 @@ def run_levenberg_marquardt(
 
     for iteration in range(config.max_iterations):
         completed_iterations = iteration + 1
-        update = None
-        point = None
-        if trial_loss is not None and optimiser.best_hessian is not None:
-            loss = trial_loss(params)
-            if loss is None:
-                update = optimiser.update(params, float("nan"), zero_grad, zero_hess, failed=True)
-            elif not loss < optimiser.best.loss:
-                update = optimiser.update(params, loss, zero_grad, zero_hess, failed=False)
-        if update is None:
-            point = evaluate(params, iteration)
-            update = optimiser.update(params, point.loss, point.grad, point.hessian, point.failed)
+        update, point = _next_update(problem, optimiser, params, iteration)
         last_update = update
         accepted_params = params
         if update.accepted:
+            assert point is not None  # loss-only trials are never accepted
             accepted_evaluations += 1
-            if on_accept is not None:
-                on_accept(params, point)
+            problem.on_accept(params, point)
         params = update.next_params
 
-        if update.accepted and refresh is not None:
-            if not just_refreshed and refresh(accepted_params):
+        if update.accepted:
+            if not just_refreshed and problem.refresh(accepted_params):
                 optimiser.reset_objective(accepted_params)
                 params, just_refreshed = accepted_params, True
                 continue
@@ -119,23 +126,9 @@ def run_levenberg_marquardt(
                 update.damping,
             )
             break
-        if after_step is not None:
-            after_step(params, optimiser)
-        if update.reason == "failed":
-            logger.warning(
-                "Iter %d: closed orbit lost; retrying from best (lam=%.1e)",
-                iteration,
-                update.damping,
-            )
-            continue
+        problem.after_step(params, optimiser)
         if not update.accepted:
-            logger.info(
-                "Iter %d: step rejected (loss %.6e >= best %.6e); retrying from best (lam=%.1e)",
-                iteration,
-                update.loss,
-                optimiser.best.loss,
-                update.damping,
-            )
+            _log_unaccepted(iteration, update, optimiser.best.loss)
             continue
 
         _log_iteration(iteration, update.loss, update.grad_norm, update.damping, run_start)
@@ -165,6 +158,40 @@ def run_levenberg_marquardt(
             best_loss=diagnostics.best_loss,
         )
     return optimiser, diagnostics
+
+
+def _next_update(
+    problem: LMProblem, optimiser: LevenbergMarquardtOptimiser, params: np.ndarray, iteration: int
+) -> tuple[LevenbergMarquardtUpdate, LMPoint | None]:
+    """The optimiser's verdict on ``params`` and the full point it was given, if one was evaluated."""
+    if problem.loss_only_trials and optimiser.best_hessian is not None:
+        loss = problem.trial_loss(params)
+        n = len(params)
+        if loss is None:
+            update = optimiser.update(
+                params, float("nan"), np.zeros(n), np.zeros((n, n)), failed=True
+            )
+            return update, None
+        if not loss < optimiser.best.loss:
+            update = optimiser.update(params, loss, np.zeros(n), np.zeros((n, n)), failed=False)
+            return update, None
+    point = problem.evaluate(params, iteration)
+    return optimiser.update(params, point.loss, point.grad, point.hessian, point.failed), point
+
+
+def _log_unaccepted(iteration: int, update: LevenbergMarquardtUpdate, best_loss: float) -> None:
+    if update.reason == "failed":
+        logger.warning(
+            "Iter %d: closed orbit lost; retrying from best (lam=%.1e)", iteration, update.damping
+        )
+    else:
+        logger.info(
+            "Iter %d: step rejected (loss %.6e >= best %.6e); retrying from best (lam=%.1e)",
+            iteration,
+            update.loss,
+            best_loss,
+            update.damping,
+        )
 
 
 def _named(names: Sequence[str], params: np.ndarray) -> dict[str, float]:

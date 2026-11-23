@@ -12,9 +12,6 @@ import numpy as np
 PREFIX = "bpmgain"
 PLANES = ("x", "y")
 
-#: Width of the prior that holds a zero-mean gain group's mean at 0 (a near-exact constraint).
-ZERO_MEAN_SIGMA = 1e-5
-
 
 def bpm_gain_name(plane: str, bpm: str) -> str:
     """Fit-parameter name of the gain of ``bpm`` in ``plane``."""
@@ -46,7 +43,7 @@ def bpm_gains(knobs: dict[str, float], plane: str, bpms: list[str] | tuple[str, 
     return np.array([knobs.get(bpm_gain_name(plane, bpm), 0.0) for bpm in bpms])
 
 
-def bpm_reading(position: np.ndarray, gains: np.ndarray) -> np.ndarray:
+def bpm_reading(position: np.ndarray | float, gains: np.ndarray) -> np.ndarray:
     """What a BPM with ``gains`` reports for ``position`` (gains broadcast on the last axis)."""
     return (1.0 + gains) * position
 

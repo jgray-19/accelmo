@@ -24,11 +24,8 @@ def _engine(seq_psb: Path):
     accelerator = PSB(ring=3, sequence_file=seq_psb, errors={"quad": {"k1"}})
     config = WorkerConfig(
         accelerator=accelerator,
-        tracking_start_bpm="$start",
-        tracking_end_bpm="$end",
         magnet_range="$start/$end",
-        cycle_sequence=False,
-        interface_options={"machine_state": CORRECTOR_STATE},
+        machine_state=CORRECTOR_STATE,
     )
     model = get_backend("madng").open_model(accelerator, magnet_range="$start/$end")
     knobs = dict.fromkeys(model.knob_names, 0.0)

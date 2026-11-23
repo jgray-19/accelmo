@@ -20,7 +20,6 @@ def _make_loop(
     knob_names: list[str],
     *,
     max_epochs: int = 2,
-    gradient_converged_value: float = 1e-6,
     true_strengths: dict[str, float] | None = None,
 ) -> SGDLoop:
     optimiser_config = OptimiserConfig(
@@ -29,7 +28,6 @@ def _make_loop(
         warmup_lr_start=1e-3,
         max_lr=1e-3,
         min_lr=1e-3,
-        gradient_converged_value=gradient_converged_value,
         optimiser_type="adam",
     )
     return SGDLoop(
@@ -52,7 +50,6 @@ def test_load_checkpoint_allows_current_knob_superset(tmp_path) -> None:
         "best_knobs": {"k1": 1.0, "k2": -1.0},
         "best_loss": 0.25,
         "prev_loss": 0.3,
-        "smoothed_grad_norm": 1e-3,
         "smoothed_loss_change": 2e-3,
         "max_clipping_ratio": 1.2,
         "optimiser_state": {
@@ -208,7 +205,7 @@ def test_epoch_end_hook_called_once_per_epoch() -> None:
     """epoch_end_hook must be invoked exactly once after each completed epoch."""
     n_epochs, n_batches = 2, 1
     # Pin the loop to exactly n_epochs and disable gradient-norm early stopping.
-    loop = _make_loop(["k1"], max_epochs=n_epochs, gradient_converged_value=-1.0)
+    loop = _make_loop(["k1"], max_epochs=n_epochs)
 
     hook_calls: list[dict[str, float]] = []
 
@@ -218,7 +215,7 @@ def test_epoch_end_hook_called_once_per_epoch() -> None:
     loop.run(
         {"k1": 0.0},
         _make_channels(1, n_epochs * n_batches),
-        total_turns=1,
+        n_points=1,
         epoch_end_hook=hook,
     )
 
@@ -229,7 +226,7 @@ def test_epoch_end_hook_called_once_per_epoch() -> None:
 def test_epoch_end_hook_receives_updated_knobs() -> None:
     """The hook must receive knob values *after* the gradient update for that epoch."""
     n_epochs, n_batches = 2, 1
-    loop = _make_loop(["k1"], max_epochs=n_epochs, gradient_converged_value=-1.0)
+    loop = _make_loop(["k1"], max_epochs=n_epochs)
 
     seen_knobs: list[float] = []
 
@@ -239,7 +236,7 @@ def test_epoch_end_hook_receives_updated_knobs() -> None:
     loop.run(
         {"k1": 0.0},
         _make_channels(1, n_epochs * n_batches, losses=(1.0,), grad=1.0),
-        total_turns=1,
+        n_points=1,
         epoch_end_hook=hook,
     )
 
@@ -256,7 +253,7 @@ def test_epoch_end_hook_note_is_appended_to_the_epoch_log_line(caplog) -> None:
     import logging
 
     n_epochs, n_batches = 2, 1
-    loop = _make_loop(["k1"], max_epochs=n_epochs, gradient_converged_value=-1.0)
+    loop = _make_loop(["k1"], max_epochs=n_epochs)
 
     notes = iter(["dic=1.00e-09", "dic=2.00e-09"])
 
@@ -267,7 +264,7 @@ def test_epoch_end_hook_note_is_appended_to_the_epoch_log_line(caplog) -> None:
         loop.run(
             {"k1": 0.0},
             _make_channels(1, n_epochs * n_batches),
-            total_turns=1,
+            n_points=1,
             epoch_end_hook=hook,
         )
 
@@ -283,13 +280,13 @@ def test_epoch_line_omits_the_note_when_the_hook_returns_none(caplog) -> None:
     """A hook that did nothing this epoch must not leave an empty field behind."""
     import logging
 
-    loop = _make_loop(["k1"], max_epochs=1, gradient_converged_value=-1.0)
+    loop = _make_loop(["k1"], max_epochs=1)
 
     with caplog.at_level(logging.INFO, logger="accelmo.tracking.sgd.loop"):
         loop.run(
             {"k1": 0.0},
             _make_channels(1, 1),
-            total_turns=1,
+            n_points=1,
             epoch_end_hook=lambda _knobs, _best: None,
         )
 
@@ -302,25 +299,25 @@ def test_epoch_line_omits_the_note_when_the_hook_returns_none(caplog) -> None:
 def test_epoch_end_hook_none_does_not_raise() -> None:
     """Passing epoch_end_hook=None (the default) must not raise."""
     n_epochs, n_batches = 1, 1
-    loop = _make_loop(["k1"], max_epochs=n_epochs, gradient_converged_value=-1.0)
+    loop = _make_loop(["k1"], max_epochs=n_epochs)
 
     loop.run(
         {"k1": 0.0},
         _make_channels(1, n_epochs * n_batches),
-        total_turns=1,
+        n_points=1,
         epoch_end_hook=None,
     )
 
 
-def test_epoch_loss_averages_only_the_workers_with_a_valid_loss() -> None:
-    """A worker that lost its particles (NaN loss) must not dilute the epoch loss."""
-    loop = _make_loop(["k0"], max_epochs=1, gradient_converged_value=-1.0)
+def test_epoch_loss_is_the_valid_chi2_per_weighted_point() -> None:
+    """The epoch loss is the summed chi-square / n_points; a lost worker (NaN) adds nothing."""
+    loop = _make_loop(["k0"], max_epochs=1)
     losses: list[float] = []
 
     loop.run(
         {"k0": 0.0},
         _make_channels(1, 1, losses=(2.0, 4.0, float("nan"))),
-        total_turns=1,
+        n_points=2,
         loss_callback=lambda _epoch, loss, *_: losses.append(loss),
     )
 
@@ -329,16 +326,14 @@ def test_epoch_loss_averages_only_the_workers_with_a_valid_loss() -> None:
 
 def test_best_epoch_is_the_lowest_loss_even_when_further_from_the_truth() -> None:
     """Best-selection uses the loss alone; the true strengths are only diagnostics."""
-    loop = _make_loop(
-        ["k0"], max_epochs=2, gradient_converged_value=-1.0, true_strengths={"k0": 0.0}
-    )
+    loop = _make_loop(["k0"], max_epochs=2, true_strengths={"k0": 0.0})
     epoch_knobs: list[dict[str, float]] = []
 
     best = loop.run(
         {"k0": 0.0},
         # A tiny loss improvement while the gradient pushes k0 away from its truth.
         _make_channels(1, 2, losses=([1.0, 1.0 - 1e-6],), grad=1.0),
-        total_turns=1,
+        n_points=1,
         epoch_end_hook=lambda knobs, _best: epoch_knobs.append(knobs.copy()),
     )
 
@@ -348,23 +343,23 @@ def test_best_epoch_is_the_lowest_loss_even_when_further_from_the_truth() -> Non
 
 def test_run_leaves_the_callers_knobs_untouched() -> None:
     """Seeding a zero ``pt`` must not write into the dict the caller passed."""
-    loop = _make_loop(["k0", "pt"], max_epochs=1, gradient_converged_value=-1.0)
+    loop = _make_loop(["k0", "pt"], max_epochs=1)
     knobs = {"k0": 0.0, "pt": 0.0}
 
-    loop.run(knobs, _make_channels(2, 1), total_turns=1)
+    loop.run(knobs, _make_channels(2, 1), n_points=1)
 
     assert knobs == {"k0": 0.0, "pt": 0.0}
 
 
 def test_final_checkpoint_records_the_epoch_that_triggered_the_loss_stop(tmp_path) -> None:
     """The epoch that stops on a converged loss still counts as completed."""
-    loop = _make_loop(["k0"], max_epochs=5, gradient_converged_value=-1.0)
+    loop = _make_loop(["k0"], max_epochs=5)
     checkpoint_path = tmp_path / "checkpoint.json"
 
     loop.run(
         {"k0": 0.0},
         _make_channels(1, 5, losses=(1.0,), grad=1.0),
-        total_turns=1,
+        n_points=1,
         checkpoint_config=CheckpointConfig(
             checkpoint_path=checkpoint_path, checkpoint_every_n_epochs=10
         ),
@@ -378,13 +373,13 @@ def test_final_checkpoint_records_the_epoch_that_triggered_the_loss_stop(tmp_pat
 def test_run_log_records_every_epoch_and_how_the_fit_ended(tmp_path) -> None:
     from accelmo.runlog import RunLog, StageLog
 
-    loop = _make_loop(["k0"], max_epochs=3, gradient_converged_value=-1.0)
+    loop = _make_loop(["k0"], max_epochs=3)
     run_log = RunLog(tmp_path, name="tracking_opt")
 
     loop.run(
         {"k0": 0.0},
         _make_channels(1, 3, losses=([3.0, 2.0, 1.0],), grad=1.0),
-        total_turns=1,
+        n_points=1,
         run_log=run_log,
     )
     run_log.close()
@@ -405,7 +400,6 @@ def test_staged_loop_decays_each_stage_and_never_stops_early() -> None:
         warmup_lr_start=1e-9,
         max_lr=1e-6,
         min_lr=1e-8,
-        gradient_converged_value=1.0,
         loss_change_tolerance=1.0,
         loss_change_min_epoch_fraction=0.0,
     )

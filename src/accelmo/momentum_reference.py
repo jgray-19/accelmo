@@ -12,14 +12,14 @@ requirements:
 
 1. **Regularisation.** With 80 knobs against 17 BPMs at realistic resolution, an
    unregularised fit recovers an error vector ~6x larger than the true one, because
-   noise is absorbed into compensating magnet errors. A Tikhonov prior changes the
-   result from 2.7x worse than nominal to 22x better, hence the non-zero default.
+   noise is absorbed into compensating magnet errors, so ``knob_sigmas`` (a Gaussian
+   prior of the expected error size) is required.
 2. **Knob families matched to observables.** The closed orbit is insensitive to
    gradient errors (a quadrupole on a centred orbit produces no deflection), so
    free quadrupole knobs in an orbit-only fit worsen the result by ~2.6x. Phase
    advance responds to gradients; with phase included the same knobs improve it ~4x.
 3. **More than one momentum.** At a single momentum the per-magnet Jacobians are
-   degenerate; see :class:`~accelmo.poco.workers.closed_twiss.ClosedTwissData`.
+   degenerate.
 
 Observables
 -----------
@@ -56,10 +56,7 @@ from typing import TYPE_CHECKING, Any
 from accelmo.backend import get_backend
 from accelmo.fitting.config import SequenceConfig
 from accelmo.machine.machine_state import resolve_machine_state
-from accelmo.poco import (
-    ClosedTwissFitter,
-    LevenbergMarquardtConfig,
-)
+from accelmo.poco import ClosedOrbitFitter, LevenbergMarquardtConfig, closed_twiss_series
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -80,18 +77,6 @@ ORBIT_AND_PHASE: tuple[str, ...] = ("x", "y", "mu1", "mu2")
 #: not: a gradient error on a centred orbit produces no deflection.
 GRADIENT_SENSITIVE: frozenset[str] = frozenset({"mu1", "mu2", "betx", "bety", "dx", "dy"})
 
-#: Dimensionless Tikhonov prior towards zero magnet error, scaled internally to
-#: ``median(diag H)``. Non-zero by default because an unregularised fit of this
-#: size is worse than no fit, but it must stay at the *low* end of the broad
-#: useful range (1e-2 to 1e-1): the prior is a shrinkage, so a knob at the family
-#: median curvature is fitted a factor ``1/(1 + strength)`` too small. At 1e-1
-#: that is a 9.1% systematic under-estimate of every bend error, and since the
-#: bends are what carry the closed-orbit *angle*, it biases the reconstructed
-#: ``px`` by the same 9.1% -- 1.3e-4 rad against a 1.4e-3 rad true angle, which
-#: is most of the residual and swamps the 9.2e-5 rad noise floor. A prior scan on
-#: the PSB reference fixture puts the fit on that noise floor by 1e-2 with no
-#: sign of ill-conditioning, so the extra regularisation bought nothing.
-DEFAULT_PRIOR_STRENGTH: float = 1e-2
 
 #: Columns of the returned closed-orbit reference.
 REFERENCE_COLUMNS: tuple[str, ...] = ("x", "y", "px", "py")
@@ -114,7 +99,7 @@ class MomentumReference:
             reconstruction against this reference are offsets from it, not
             absolute ``pt`` values.
         observables: Observables the fit actually used.
-        prior_strength: Tikhonov prior used.
+        knob_sigmas: Gaussian prior widths used.
     """
 
     magnet_strengths: dict[str, float]
@@ -122,7 +107,7 @@ class MomentumReference:
     closed_orbit: pd.DataFrame
     reference_pt: float
     observables: tuple[str, ...]
-    prior_strength: float
+    knob_sigmas: dict[str, float]
     momentum_points: tuple[float, ...]
     bpm_coverage: dict[float, tuple[str, ...]]
     fit_settings: dict[str, Any] = field(default_factory=dict)
@@ -173,7 +158,7 @@ def fit_momentum_reference(
     measurements: Mapping[float, pd.DataFrame],
     *,
     observables: Sequence[str] = ORBIT_AND_PHASE,
-    prior_strength: float = DEFAULT_PRIOR_STRENGTH,
+    knob_sigmas: Mapping[str, float],
     reference_pt: float = 0.0,
     sequence_config: SequenceConfig | None = None,
     lm_config: LevenbergMarquardtConfig | None = None,
@@ -191,8 +176,8 @@ def fit_momentum_reference(
             measurement was taken at. At least two momenta are required: at one
             momentum the per-magnet Jacobians are degenerate.
         observables: What to fit. Defaults to closed orbit plus phase advance.
-        prior_strength: Tikhonov prior towards zero magnet error. Do not set this
-            to zero without a specific reason; see the module docstring.
+        knob_sigmas: Gaussian prior widths towards zero magnet error, by knob name or
+            terminal attribute (see :func:`~accelmo.fitting.priors.knob_sigma_array`).
         reference_pt: MAD-NG ``pt`` at which to evaluate the returned closed orbit.
         sequence_config: Sequence range; defaults to the full ring.
         lm_config: Optimiser settings.
@@ -202,8 +187,7 @@ def fit_momentum_reference(
         A :class:`MomentumReference`.
 
     Raises:
-        ValueError: If fewer than two momenta are supplied, or *prior_strength*
-            is negative.
+        ValueError: If fewer than two momenta are supplied.
     """
     momentum_points = tuple(sorted(float(pt) for pt in measurements))
     if len(set(momentum_points)) < 2:
@@ -212,37 +196,17 @@ def fit_momentum_reference(
             f"got {list(momentum_points)}. At a single momentum the per-magnet "
             "Jacobians are degenerate and the fit cannot separate the magnets."
         )
-    if prior_strength < 0.0:
-        raise ValueError("prior_strength must be >= 0")
-    if prior_strength == 0.0:
-        LOGGER.warning(
-            "prior_strength=0 requested. An unregularised fit of this size was "
-            "measured to be worse than not fitting at all; prefer %g.",
-            DEFAULT_PRIOR_STRENGTH,
-        )
 
     observables = tuple(observables)
     _check_observable_knob_match(accelerator, observables)
 
-    fitter = ClosedTwissFitter(
+    fitter = ClosedOrbitFitter(
         accelerator=accelerator,
         sequence_config=sequence_config or SequenceConfig(magnet_range="$start/$end"),
-        measurements=dict(measurements),
-        observables=observables,
+        series=closed_twiss_series(measurements, observables),
         lm_config=lm_config,
         initial_knob_strengths=dict(initial_knob_strengths) if initial_knob_strengths else None,
-        prior_strengths=(
-            {
-                {
-                    "k0": "dk0l",
-                    "k1": "dk1l",
-                    "k2": "dk2l",
-                }.get(spec.attribute, spec.attribute): prior_strength
-                for spec in accelerator.get_knob_specs()
-            }
-            if prior_strength > 0.0
-            else None
-        ),
+        knob_sigmas=knob_sigmas,
         machine_state=machine_state,
         output_config=output_config,
     )
@@ -255,11 +219,10 @@ def fit_momentum_reference(
         fitter.close()
 
     LOGGER.info(
-        "Fitted %d knobs against %s at momenta %s (prior %g)",
+        "Fitted %d knobs against %s at momenta %s",
         len(magnet_strengths),
         observables,
         momentum_points,
-        prior_strength,
     )
 
     reference = closed_orbit_at(
@@ -272,13 +235,14 @@ def fit_momentum_reference(
     coverage = {
         float(pt): tuple(str(name) for name in frame.index) for pt, frame in measurements.items()
     }
+    assert result.diagnostics is not None
     return MomentumReference(
         magnet_strengths=dict(magnet_strengths),
         uncertainties=uncertainty_map,
         closed_orbit=reference,
         reference_pt=float(reference_pt),
         observables=observables,
-        prior_strength=float(prior_strength),
+        knob_sigmas=dict(knob_sigmas),
         momentum_points=momentum_points,
         bpm_coverage=coverage,
         fit_settings={
@@ -298,7 +262,6 @@ def fit_momentum_reference(
 
 
 __all__ = [
-    "DEFAULT_PRIOR_STRENGTH",
     "GRADIENT_SENSITIVE",
     "ORBIT_AND_PHASE",
     "REFERENCE_COLUMNS",

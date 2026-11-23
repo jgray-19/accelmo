@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from accelmo.machine.accelerators.base import Accelerator, MagnetFamily
 
@@ -57,7 +57,7 @@ class SPS(Accelerator):
 
     def copy_with(self, **overrides) -> SPS:
         """Return a new SPS instance with selected parameters overridden."""
-        kwargs = {
+        kwargs: dict[str, Any] = {
             "sequence_file": self.sequence_file,
             "kinetic_energy": self.kinetic_energy,
             "bpm_pattern": self.bpm_pattern,

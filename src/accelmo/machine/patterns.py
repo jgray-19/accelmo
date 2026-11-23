@@ -45,31 +45,8 @@ def lua_to_regex(pattern: str) -> re.Pattern[str]:
                 out.append(re.escape(nxt))
             i += 2
         elif char == "[":
-            j = i + 1
-            body = ["["]
-            if j < n and pattern[j] == "^":
-                body.append("^")
-                j += 1
-            first = True
-            while j < n and (pattern[j] != "]" or first):
-                first = False
-                if pattern[j] == "%":
-                    letter = pattern[j + 1]
-                    body.append(
-                        _class(letter)[1:-1]
-                        if letter.isalpha() and letter.islower()
-                        else re.escape(letter)
-                        if not letter.isalpha()
-                        else _unsupported(pattern)
-                    )
-                    j += 2
-                    continue
-                body.append("\\" + pattern[j] if pattern[j] in "\\[]" else pattern[j])
-                j += 1
-            if j >= n:
-                raise ValueError(f"Unterminated set in {pattern!r}")
-            out.append("".join(body) + "]")
-            i = j + 1
+            body, i = _translate_set(pattern, i)
+            out.append(body)
         elif char == "-":
             out.append("*?" if out else re.escape(char))
             i += 1
@@ -88,5 +65,32 @@ def lua_to_regex(pattern: str) -> re.Pattern[str]:
     return re.compile("".join(out))
 
 
-def _unsupported(pattern: str) -> str:
+def _translate_set(pattern: str, start: int) -> tuple[str, int]:
+    """The regex for the Lua set opening at ``pattern[start]`` and the index just after it."""
+    n = len(pattern)
+    j = start + 1
+    body = ["["]
+    if j < n and pattern[j] == "^":
+        body.append("^")
+        j += 1
+    first = True
+    while j < n and (pattern[j] != "]" or first):
+        first = False
+        if pattern[j] == "%":
+            body.append(_set_escape(pattern, pattern[j + 1]))
+            j += 2
+            continue
+        body.append("\\" + pattern[j] if pattern[j] in "\\[]" else pattern[j])
+        j += 1
+    if j >= n:
+        raise ValueError(f"Unterminated set in {pattern!r}")
+    return "".join(body) + "]", j + 1
+
+
+def _set_escape(pattern: str, letter: str) -> str:
+    """``%letter`` inside a set: a class body, or the escaped literal."""
+    if not letter.isalpha():
+        return re.escape(letter)
+    if letter.islower():
+        return _class(letter)[1:-1]
     raise ValueError(f"Negated class inside a set is not supported: {pattern!r}")

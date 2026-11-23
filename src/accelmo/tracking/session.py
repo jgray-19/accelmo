@@ -18,25 +18,22 @@ import numpy as np
 
 from accelmo.fitting.pool import WorkerPool
 from accelmo.fitting.protocol import (
-    Diagnose,
     LossReply,
     SetKnobs,
     Start,
+    TotalChi2,
     UpdateInitCoords,
-    Validate,
 )
 from accelmo.tracking.dispatch.payloads import WorkerPayloadBuilder
 from accelmo.tracking.uncertainty import drain_uncertainty
 from accelmo.tracking.worker import TrackingWorker
 
 if TYPE_CHECKING:
-    from accelmo.config import SimulationConfig
+    from accelmo.config import TrackingDataConfig, TrackingParameters, WorkerRuntime
+    from accelmo.machine.accelerators import Accelerator
     from accelmo.tracking.data_manager import FileTracks
     from accelmo.tracking.dispatch.payloads import WorkerPayload
-    from accelmo.tracking.dispatch.setup import (
-        WorkerObservationPlan,
-        WorkerSetupHelper,
-    )
+    from accelmo.tracking.dispatch.setup import TrackingWorkerConfig
 
 LOGGER = logging.getLogger(__name__)
 
@@ -47,32 +44,35 @@ class TrackingSession:
     ``turn_batches`` and ``validation_turn_batches`` are the training and held-out
     turns, one list per worker batch; ``file_turn_map`` maps each turn to its
     measurement file and ``worker_plans`` each file to the workers one of its batches
-    fans out to (:meth:`WorkerSetupHelper.plan_workers`). Pass an empty
+    fans out to (:func:`~accelmo.tracking.dispatch.setup.plan_workers`). Pass an empty
     ``validation_turn_batches`` to run without validation workers.
     """
 
     def __init__(
         self,
-        setup_helper: WorkerSetupHelper,
-        simulation_config: SimulationConfig,
+        accelerator: Accelerator,
+        runtime: WorkerRuntime,
+        tracking_data: TrackingDataConfig,
+        parameters: TrackingParameters,
         *,
         turn_batches: list[list[int]],
         validation_turn_batches: list[list[int]],
         file_turn_map: dict[int, int],
-        worker_plans: dict[int, list[WorkerObservationPlan]],
+        worker_plans: dict[int, list[TrackingWorkerConfig]],
         machine_deltaps: list[float],
         gain_bpms: tuple[str, ...] = (),
     ) -> None:
-        self.setup_helper = setup_helper
-        self.simulation_config = simulation_config
+        self.runtime = runtime
+        self.tracking_data = tracking_data
+        self.parameters = parameters
         self.turn_batches = turn_batches
         self.validation_turn_batches = validation_turn_batches
         self.file_turn_map = file_turn_map
         self.worker_plans = worker_plans
         self.machine_deltaps = machine_deltaps
-        self.payload_builder = WorkerPayloadBuilder(setup_helper.accelerator, gain_bpms)
-        self.training: WorkerPool[WorkerObservationPlan] = WorkerPool()
-        self.validation: WorkerPool[WorkerObservationPlan] = WorkerPool()
+        self.payload_builder = WorkerPayloadBuilder(accelerator, gain_bpms)
+        self.training: WorkerPool[TrackingWorkerConfig] = WorkerPool()
+        self.validation: WorkerPool[TrackingWorkerConfig] = WorkerPool()
 
     def start(self, tracks: dict[int, FileTracks], initial_knobs: dict[str, float]) -> None:
         """Spawn the training and validation workers, each starting from ``initial_knobs``."""
@@ -82,15 +82,15 @@ class TrackingSession:
             len(training_payloads),
             len(validation_payloads),
         )
-        # Converts a physical chi-square to the loop's loss units (see SGDLoop.run's prior).
-        n_points = np.mean([data.position_comparisons.shape[1] for data, _, _ in training_payloads])
-        self.chi2_to_loss = 1.0 / (training_payloads[0][0].precomputed_weights.scale * n_points)
         self.training = self._spawn(training_payloads, 0, initial_knobs, validation=False)
         self.validation = self._spawn(
             validation_payloads, len(training_payloads), initial_knobs, validation=True
         )
         if validation_payloads:
-            covered = {(m.file_idx, m.range_spec) for m in self.validation.metadata}
+            covered = {
+                (m.file_idx, m.geometry.bpm_range, m.geometry.sdir)
+                for m in self.validation.metadata
+            }
             LOGGER.info(
                 "Validation setup: payloads=%d, covered_ranges=%d, tracks=%d",
                 len(validation_payloads),
@@ -101,10 +101,9 @@ class TrackingSession:
     def build_payloads(
         self, tracks: dict[int, FileTracks]
     ) -> tuple[list[WorkerPayload], list[WorkerPayload]]:
-        """Weighted training and held-out validation payloads from ``tracks``.
+        """Weighted training and held-out validation payloads from ``tracks``, from disjoint turns.
 
-        The two sets come from disjoint turns. Weights are normalised across the
-        *combined* set so training and validation losses live on the same scale.
+        Sets :attr:`n_training_points` and :attr:`n_validation_points`, the weighted points of each.
         """
         training = self.create_worker_payloads(tracks, self.turn_batches)
         validation = (
@@ -112,29 +111,36 @@ class TrackingSession:
             if self.validation_turn_batches
             else []
         )
-        self.payload_builder.attach_global_weights(
-            training + validation, optimise_momenta=self.simulation_config.optimise_momenta
+        momenta = self.tracking_data.optimise_momenta
+        self.n_training_points = WorkerPayloadBuilder.attach_weights(
+            training, optimise_momenta=momenta
         )
+        self.n_validation_points = WorkerPayloadBuilder.attach_weights(
+            validation, optimise_momenta=momenta
+        )
+        if not self.n_training_points or (validation and not self.n_validation_points):
+            raise ValueError(
+                "Every training or validation reading has zero weight (no finite variance)"
+            )
         return training, validation
 
     def create_worker_payloads(
         self, tracks: dict[int, FileTracks], turn_batches: list[list[int]]
     ) -> list[WorkerPayload]:
-        """One payload per (worker plan, turn batch); each batch belongs to one file."""
+        """One payload per (worker, turn batch); each batch belongs to one file."""
         payloads: list[WorkerPayload] = []
         for batch_idx, turn_batch in enumerate(turn_batches):
             if not turn_batch:
                 raise ValueError(f"Empty turn batch {batch_idx}")
-            for plan in self.worker_plans[self.file_turn_map[turn_batch[0]]]:
+            for config in self.worker_plans[self.file_turn_map[turn_batch[0]]]:
                 data = self.payload_builder.make_tracking_data(
                     turn_batch=turn_batch,
                     file_turn_map=self.file_turn_map,
-                    plan=plan,
+                    config=config,
                     machine_deltaps=self.machine_deltaps,
                     tracks=tracks,
-                    n_run_turns=self.simulation_config.n_run_turns,
                 )
-                payloads.append((data, self.setup_helper.make_worker_config(plan), plan))
+                payloads.append((data, config))
 
         self._log_file_usage(
             payloads,
@@ -144,8 +150,8 @@ class TrackingSession:
 
     def _log_file_usage(self, payloads: list[WorkerPayload], files_covered: frozenset[int]) -> None:
         """Log measurement-file usage and check that at least one worker exists."""
-        num_files = len(self.setup_helper.interface_options_per_file)
-        file_usage = Counter(plan.file_idx for _, _, plan in payloads)
+        num_files = len(self.worker_plans)
+        file_usage = Counter(config.file_idx for _, config in payloads)
         LOGGER.info(
             "Created %d workers using files: %s",
             len(payloads),
@@ -170,33 +176,40 @@ class TrackingSession:
         initial_knobs: dict[str, float],
         *,
         validation: bool,
-    ) -> WorkerPool[WorkerObservationPlan]:
-        """Start one worker per payload, send it the initial knobs and record its metadata."""
-        pool: WorkerPool[WorkerObservationPlan] = WorkerPool()
-        for worker_id, (data, config, plan) in enumerate(payloads, start=first_id):
+    ) -> WorkerPool[TrackingWorkerConfig]:
+        """Start one worker per payload, send it the initial knobs and record its config."""
+        pool: WorkerPool[TrackingWorkerConfig] = WorkerPool()
+        for worker_id, (data, config) in enumerate(payloads, start=first_id):
             pool.spawn(
-                TrackingWorker, worker_id, data, config, self.simulation_config, validation
+                TrackingWorker,
+                worker_id,
+                data,
+                config,
+                self.runtime,
+                self.tracking_data,
+                self.parameters,
+                validation,
             ).send(Start(initial_knobs))
-            pool.metadata.append(plan)
+            pool.metadata.append(config)
             pool.particle_counts.append(len(data.init_coords))
             LOGGER.debug(
                 "%s worker %d: file=%d, range=%s/%s, sdir=%d, kick_plane=%s, observed_bpms=%d, tracks=%d",
                 "Val" if validation else "Trn",
                 worker_id,
-                plan.file_idx,
-                config.tracking_start_bpm,
-                config.tracking_end_bpm,
-                config.sdir,
+                config.file_idx,
+                config.geometry.start_bpm,
+                config.geometry.end_bpm,
+                config.geometry.sdir,
                 config.kick_plane,
-                len(plan.bpm_names),
+                len(config.bpm_names),
                 len(data.init_coords),
             )
         return pool
 
     def training_losses(self, knobs: dict[str, float]) -> list[float]:
-        """Each training worker's loss per BPM point at ``knobs``."""
+        """Each training worker's chi-square at ``knobs``."""
         channels = self.training.channels
-        channels.send_all(Diagnose(knobs))
+        channels.send_all(TotalChi2(knobs))
         replies = channels.recv_all()
         for reply in replies:
             if not isinstance(reply, LossReply):
@@ -244,32 +257,25 @@ class TrackingSession:
         """
         training, validation = self.build_payloads(tracks)
         return np.concatenate(
-            [data.init_coords[:, :4] for data, _config, _file_idx in training + validation]
+            [data.init_coords[:, :4] for data, _config in training + validation]
         ).astype(np.float64)
 
     def validation_loss(self, knobs: dict[str, float]) -> float | None:
-        """The held-out loss at ``knobs``, or ``None`` without validation workers.
+        """Held-out chi-square per weighted point at ``knobs``, or ``None`` without validation workers.
 
         The validation workers track turns that were removed from training, so this
-        is a genuine out-of-sample loss; with ``None`` the caller falls back to the
-        training loss.
+        is a genuine out-of-sample loss on the training loss's scale.
         """
         if not self.validation:
             return None
 
         channels = self.validation.channels
-        channels.send_all(Validate(knobs))
+        channels.send_all(TotalChi2(knobs))
         results = channels.recv_all()
-        losses: list[float] = []
         for result in results:
             if not isinstance(result, LossReply):
                 raise RuntimeError(f"Unexpected validation reply from worker: {result!r}")
-            losses.append(float(result.loss))
-
-        # Each validation worker already reports a per-turn, per-BPM-point loss, so
-        # combine them with an unweighted mean over workers -- the same reduction the
-        # training loop uses. This keeps the validation number on the training scale.
-        return float(np.mean(np.asarray(losses, dtype=np.float64)))
+        return sum(float(result.loss) for result in results) / self.n_validation_points
 
     def set_training_knobs(self, knobs: dict[str, float]) -> None:
         """Load ``knobs`` into every training worker, e.g. the best knobs before the uncertainty."""
@@ -280,9 +286,7 @@ class TrackingSession:
     ) -> tuple[np.ndarray, np.ndarray]:
         """Stop every worker and return the normal matrix ``A`` and noise ``B`` of the training workers."""
         LOGGER.info("Terminating workers...")
-        normal, noise = drain_uncertainty(
-            self.training, n_knobs, propagate_uncertainty, self.simulation_config.n_run_turns
-        )
+        normal, noise = drain_uncertainty(self.training, n_knobs, propagate_uncertainty)
         self.validation.stop()
         return normal, noise
 

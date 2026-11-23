@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from pymadng_utils.accelerators.fcc import FCC as BaseFCC  # noqa: N811
 
@@ -65,7 +65,7 @@ class FCC(BaseFCC, Accelerator):
 
     def copy_with(self, **overrides) -> FCC:
         """Return a new FCC instance with selected parameters overridden."""
-        kwargs = {
+        kwargs: dict[str, Any] = {
             "sequence_file": self.sequence_file,
             "kinetic_energy": self.kinetic_energy,
             "particle": self.particle,

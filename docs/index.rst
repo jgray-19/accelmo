@@ -25,7 +25,8 @@ Two families of fit are provided:
        :class:`~accelmo.poco.calibrated.CalibratedClosedOrbitFitter`
    * - Closed twiss
      - Closed orbit, phase advance, beta and dispersion
-     - :class:`~accelmo.poco.fitter.ClosedTwissFitter`
+     - :class:`~accelmo.poco.closed_orbit.ClosedOrbitFitter` with
+       :func:`~accelmo.poco.closed_orbit.closed_twiss_series`
 
 All fitters return a :class:`~accelmo.fitting.results.FitResult`.
 
