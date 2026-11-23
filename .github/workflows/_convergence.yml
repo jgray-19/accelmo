@@ -39,4 +39,16 @@ jobs:
         run: |
           pytest -ra \
             ${{ matrix.tests }} \
-            -m convergence
+            -m convergence \
+            --cov=accelmo \
+            --cov-branch \
+            --cov-report=xml:coverage.xml
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: accelmo/coverage.xml
+          disable_search: true
+          flags: convergence
+          name: convergence-${{ matrix.target }}
