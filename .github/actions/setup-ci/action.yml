@@ -10,13 +10,6 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Checkout pymadng-utils
-      uses: actions/checkout@v5
-      with:
-        repository: jgray-19/pymadng-utils
-        path: pymadng-utils
-        persist-credentials: false
-
     - name: Checkout xtrack-tools
       uses: actions/checkout@v5
       with:
@@ -32,7 +25,6 @@ runs:
         activate-environment: true
         cache-dependency-glob: |
           accelmo/pyproject.toml
-          pymadng-utils/pyproject.toml
           xtrack-tools/pyproject.toml
 
     - name: Install package and local dependencies
@@ -41,6 +33,5 @@ runs:
       run: |
         uv pip install --upgrade pip setuptools wheel
         uv pip install \
-          -e ../pymadng-utils \
           -e ../xtrack-tools \
           -e '.[test,tracking]'

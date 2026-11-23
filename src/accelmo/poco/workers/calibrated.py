@@ -177,7 +177,6 @@ class CalibratedClosedOrbitWorker(ClosedOrbitWorker):
         blocks: CalibrationBlocks,
     ) -> bool:
         """Add one series' blocks to ``blocks``; ``False`` if its closed orbit is lost."""
-        names, alignment = series.aligned()
         bpm_index = {name: i for i, name in enumerate(spec.bpms)}
         corrector_indices = [spec.correctors.index(corrector) for corrector in self._correctors]
         with self._in_series(series):
@@ -185,6 +184,8 @@ class CalibratedClosedOrbitWorker(ClosedOrbitWorker):
                 if model is None:
                     return False
                 values, jacobian = model
+                # The first solve aligns the series to the model BPM order.
+                names, alignment = series.aligned()
                 observables, targets, weights = alignment[index]
                 cols = np.empty((len(observables), len(names)), dtype=int)
                 gains = np.empty((len(observables), len(names)))

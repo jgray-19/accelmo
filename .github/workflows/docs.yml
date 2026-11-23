@@ -33,11 +33,6 @@ jobs:
         with:
           path: accelmo
 
-      - uses: actions/checkout@v5
-        with:
-          repository: jgray-19/pymadng-utils
-          path: pymadng-utils
-
       - name: Install uv and Python
         uses: astral-sh/setup-uv@v6
         with:
