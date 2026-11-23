@@ -14,7 +14,6 @@ pytest --cov=accelmo
 | `regression` | Fast behavioural regression contracts |
 | `integration` | Multi-component integration |
 | `convergence` | Full optimiser convergence |
-| `e2e` | Full machine-to-optimisation end to end |
 | `lhc`, `sps`, `psb` | Machine-specific |
 | `serial` | Must not run in parallel (do not combine with `-n`) |
 
@@ -28,5 +27,3 @@ pytest --cov=accelmo
 | `measurements/`, `model_creator/` | Measurement preparation and model construction |
 | `optimisers/`, `analysis/` | Optimisers and degeneracy analysis |
 | `data/` | Input data and model files |
-
-Unit tests for BPM phase utilities are in the `tmom-recon` repository.

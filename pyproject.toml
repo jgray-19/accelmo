@@ -4,10 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "accelmo"
-version = "0.1.0"
-description = "Knob strength optimisation using PyMAD-NG"
+version = "0.0.1"
+description = "Accelerator Effective Lattice Modelling and Optimisation"
 authors = [
-    { name="Your Name", email="you@example.com" },
+    { name = "Joshua Gray" },
 ]
 readme = "README.md"
 license = { text = "MIT" }
@@ -17,39 +17,36 @@ dependencies = [
     "threadpoolctl",
     "pandas",
     "tfs-pandas",
-    "pymadng>=0.3.0",
-    "pymadng-utils",
+    "pymadng>=0.10.0",
+    "pymadng-utils>=0.0.2",
     "matplotlib",
     "uncertainties",
+    "scipy>=1.17.1",
 ]
+
+[project.urls]
+Repository = "https://github.com/jgray-19/accelmo"
 
 [project.scripts]
 accelmo-monitor = "accelmo.monitor.__main__:main"
 
 [project.optional-dependencies]
-measurements = [
-    "tmom-recon",
-]
 test = [
     "pytest",
     "pytest-cov",
     "pytest-xdist",
-    "xtrack-tools",
 ]
 docs = [
     "sphinx>=7.0",
     "sphinx-autodoc-typehints>=2.0",
     "myst-parser>=2.0",
-    "shibuya>=2026.1.9",
+    "furo>=2025.12.19",
 ]
 tracking = [
     "omc3 > 0.26.0",
     "cpymad",
     "pyarrow",
     "psutil",
-]
-cern = [
-    "nxcals",
 ]
 monitor = [
     "panel>=1.5",
@@ -58,29 +55,15 @@ dev = [
     "pre-commit",
     "ruff",
 ]
-all = [
-    "pytest",
-    "pytest-cov",
-    "pytest-xdist",
-    "sphinx>=7.0",
-    "sphinx-autodoc-typehints>=2.0",
-    "myst-parser>=2.0",
-    "shibuya>=2026.1.9",
-    "omc3 > 0.26.0",
-    "cpymad",
-    "pyarrow",
-    "psutil",
-    "nxcals",
-    "pre-commit",
-    "ruff",
-    "tmom-recon",
+all = ["accelmo[test,docs,tracking,monitor,dev]"]
+
+[dependency-groups]
+dev = [
     "xtrack-tools",
 ]
 
 [tool.uv.sources]
-pymadng-utils = { path = "../pymadng-utils", editable = true }
-tmom-recon = { path = "../tmom-recon", editable = true }
-xtrack-tools = { path = "../xtrack-tools", editable = true }
+xtrack-tools = { git = "https://github.com/jgray-19/xtrack_tools", rev = "0e6779d35546db12182a99d25c1cba60d395c90e" }
 
 
 [tool.setuptools]
@@ -89,6 +72,9 @@ package-dir = {"" = "src"}
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["accelmo*"]
+
+[tool.setuptools.package-data]
+"accelmo.backend.madng" = ["mad_scripts/*.mad"]
 
 [tool.coverage.run]
 # Use the importable package name so coverage can map executed files correctly
@@ -104,7 +90,6 @@ markers = [
     "regression: fast behavioural regression contracts",
     "integration: multi-component integration tests",
     "convergence: full optimiser convergence tests",
-    "e2e: full machine-to-optimisation end-to-end tests",
     "lhc: LHC-specific tests",
     "sps: SPS-specific tests",
     "psb: PSB-specific tests",
@@ -128,8 +113,7 @@ exclude = [
   "dist",
 ]
 
-# Assume Python 3.10+
-target-version = "py310"
+target-version = "py311"
 
 line-length = 100
 indent-width = 4
@@ -142,6 +126,9 @@ ignore = [
   "FBT001",  # boolean-type-hint-positional-argument
   "FBT002",  # boolean-default-value-positional-argument
   "PT019",  # pytest-fixture-param-without-value (but suggested solution fails)
+  "TRY004",  # config validation raises ValueError by design
+  "RUF012",  # class-level family tables are constants
+  "UP042",  # str-mixin enums keep their string behaviour
 ]
 extend-select = [
     "F",        # Pyflakes rules
@@ -163,10 +150,17 @@ extend-select = [
     "TC",       # Enforce importing certain types in a TYPE_CHECKING block
     "PTH",      # Use pathlib instead of os.path
     "NPY",      # Some numpy-specific things
+    "D101",     # public class without docstring
+    "D102",     # public method without docstring
+    "D103",     # public function without docstring
 ]
 # Allow fix for all enabled rules (when `--fix`) is provided.
 fixable = ["ALL"]
 unfixable = []
+
+[tool.ruff.lint.per-file-ignores]
+# Docstrings are required in the package only.
+"!src/**" = ["D101", "D102", "D103"]
 
 
 [tool.ty.src]

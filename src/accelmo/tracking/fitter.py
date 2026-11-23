@@ -20,44 +20,80 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from accelmo.fitting.bpm_gains import bpm_gain_names, only_bpm_gains, without_bpm_gains
+from accelmo.config import TrackingParameters
+from accelmo.fitting.bpm_gains import (
+    bpm_gain_names,
+    only_bpm_gains,
+    without_bpm_gains,
+)
 from accelmo.fitting.config import OutputConfig
 from accelmo.fitting.lifecycle import run_with_workers
-from accelmo.fitting.results import FitResult
+from accelmo.fitting.lm_loop import run_levenberg_marquardt
+from accelmo.fitting.priors import knob_sigma_array
+from accelmo.fitting.results import FitDiagnostics, FitResult
 from accelmo.fitting.setup import MachineSetup
 from accelmo.fitting.uncertainty import sandwich_uncertainties
+from accelmo.fitting.worker import WorkerConfig
+from accelmo.optimisers.levenberg_marquardt import LevenbergMarquardtConfig
 from accelmo.tracking.config.tracking import (
-    TrackingModeSetup,
-    acd_marker_setup,
-    arc_by_arc_setup,
-    kicker_setup,
+    ACDArcByArcTrackingPlan,
+    ACDSinusoidTrackingPlan,
+    ACDTrackingPlan,
+    KickerTrackingPlan,
+    TrackingPlan,
 )
 from accelmo.tracking.data_manager import DataManager
-from accelmo.tracking.dispatch.setup import WorkerSetupHelper
+from accelmo.tracking.dispatch.setup import TrackingWorkerConfig, plan_workers
+from accelmo.tracking.lm_problem import StartGainMap, TrackingLMProblem
 from accelmo.tracking.ranges import resolve_bpm_ranges
 from accelmo.tracking.session import TrackingSession
 from accelmo.tracking.sgd.loop import SGDLoop
+
+#: LM stops after this many accepted steps in a row that each lower the chi² by less than this fraction.
+LM_STALL_TOLERANCE = 1e-6
+#: Below this chi² the stall test is absolute: |Δχ²| < 1e-12 ends a noise-free fit.
+LM_CHI2_FLOOR = 1e-6
+LM_STALL_PATIENCE = 5
+#: TrackingParameters fields only the LM solver fits.
+LM_ONLY_PARAMETERS = (
+    "knob_sigmas",
+    "fit_start_coords",
+    "starts_follow_gains",
+    "bpm_gain_zero_mean_planes",
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
 
     from accelmo.analysis import DegeneracyReport
-    from accelmo.config import OptimiserConfig, SimulationConfig
+    from accelmo.config import OptimiserConfig, TrackingDataConfig, WorkerRuntime
     from accelmo.fitting.config import SequenceConfig
     from accelmo.machine.accelerators import Accelerator
     from accelmo.tracking.config.models import (
         CheckpointConfig,
-        KickerConfig,
         MeasurementConfig,
     )
 
-    #: ``(current_knobs, best_knobs) -> new x, px, y, py start coordinates or None``
-    InitialConditionsCallback = Callable[[dict[str, float], dict[str, float]], np.ndarray | None]
+    #: ``(current_knobs, best_knobs) -> new x, px, y, py start coordinates or None``; the LM fit
+    #: with ``starts_follow_gains`` takes a :class:`StartGainMap` instead.
+    InitialConditionsCallback = Callable[
+        [dict[str, float], dict[str, float]], np.ndarray | StartGainMap | None
+    ]
     #: ``(epoch, train_loss, validation_loss, grad_norm, true_diff)``
     LossCallback = Callable[[int, float, float | None, float, float], None]
 
 logger = logging.getLogger(__name__)
+
+
+def tracking_lm_config(max_iterations: int) -> LevenbergMarquardtConfig:
+    """The tracking LM solver: stops after several stalled steps, since early steps can be tiny."""
+    return LevenbergMarquardtConfig(
+        max_iterations=max_iterations,
+        loss_relative_tolerance=LM_STALL_TOLERANCE,
+        loss_relative_floor=LM_CHI2_FLOOR,
+        loss_stall_patience=LM_STALL_PATIENCE,
+    )
 
 
 @dataclass(frozen=True)
@@ -75,6 +111,9 @@ class FitterOptions:
         initial_conditions_callback: Epoch-end hook that returns refreshed start
             coordinates for every worker, or ``None`` to keep them.
         loss_callback: Called after every epoch with its losses.
+        initial_starts: Start (x, px, y, py) per particle in session order, replacing
+            the measured starts before the first evaluation.
+        parameters: BPM gains, start coordinates and prior widths fitted with the knobs.
     """
 
     initial_knob_strengths: dict[str, float] | None = None
@@ -84,6 +123,8 @@ class FitterOptions:
     checkpoint_config: CheckpointConfig | None = None
     initial_conditions_callback: InitialConditionsCallback | None = None
     loss_callback: LossCallback | None = None
+    initial_starts: np.ndarray | None = None
+    parameters: TrackingParameters = field(default_factory=TrackingParameters)
 
 
 class TrackingFitter:
@@ -93,91 +134,110 @@ class TrackingFitter:
     BPM ranges, starting knobs), the measurement :class:`DataManager`, a
     :class:`~accelmo.tracking.session.TrackingSession` per run and the
     :class:`~accelmo.tracking.sgd.loop.SGDLoop`. It is not constructed
-    directly: the ``setup`` comes from one of the public subclasses
-    (:class:`ArcByArcFitter`, :class:`KickerFitter`, :class:`ACDMarkerFitter`).
+    directly: the ``plan`` comes from one of the public subclasses
+    (:class:`ArcByArcFitter`, :class:`KickerFitter`, :class:`ACDMarkerFitter`,
+    :class:`ACDSinusoidFitter`). Marker-anchored plans fix their own start points.
 
     All inputs and results are in optimisation space.
     """
 
     def __init__(
         self,
-        setup: TrackingModeSetup,
+        plan: TrackingPlan,
         *,
         accelerator: Accelerator,
-        optimiser_config: OptimiserConfig,
+        solver: OptimiserConfig | LevenbergMarquardtConfig,
+        runtime: WorkerRuntime,
+        tracking_data: TrackingDataConfig,
         sequence_config: SequenceConfig,
         measurement_config: MeasurementConfig,
+        bpm_start_points: list[str] | None = None,
+        bpm_end_points: list[str] | None = None,
+        use_fixed_bpm: bool = False,
         options: FitterOptions | None = None,
     ):
         options = options if options is not None else FitterOptions()
+        if not isinstance(solver, LevenbergMarquardtConfig) and (
+            lm_only := [name for name in LM_ONLY_PARAMETERS if getattr(options.parameters, name)]
+        ):
+            raise ValueError(f"{lm_only} need the LM solver")
+        tracking_data = plan.configure(tracking_data)
         accelerator.log_optimisation_targets()
-        if setup.simulation_config.optimise_momenta:
+        if tracking_data.optimise_momenta:
             logger.info("Including momenta (px, py) in loss function")
         else:
             logger.info("Using position-only optimisation (x, y only)")
-        optimiser_config.log_state()
 
-        self.tracking_plan = setup.plan
+        self.tracking_plan = plan
         self.options = options
+        self.runtime = runtime
+        self.tracking_data = tracking_data
+        self.parameters = options.parameters
         self.measurement_config = measurement_config
         details = measurement_config.details
-        self.interface_options = [d.interface_options for d in details]
+        self.details = details
         self.machine_deltaps = [d.machine_deltap for d in details]
         # Per-file BPM the measurement turns are recorded from; in kicker mode,
         # fall back to the marker when a file does not set its own.
-        self.first_bpms = [d.first_bpm or setup.first_bpm_fallback for d in details]
+        self.first_bpms = [d.first_bpm or plan.first_bpm_fallback for d in details]
 
         self.machine = MachineSetup(
             accelerator,
-            setup.simulation_config,
             sequence_config,
             output_config=options.output_config,
-            cycle_marker=setup.plan.cycle_marker,
-            anchor_mode=setup.plan.tracking_anchor_mode,
-            anchor_markers=setup.plan.tracking_anchor_sources,
+            cycle_marker=plan.cycle_marker,
+            anchor_mode=plan.tracking_anchor_mode,
+            anchor_markers=plan.tracking_anchor_sources,
             initial_knob_strengths=options.initial_knob_strengths,
             true_strengths=options.true_strengths,
             debug=options.debug,
-            **_first_set(self.interface_options, ("machine_state", "b2_errors")),
+            # The fitter's own model matches the workers': the first file that sets each.
+            machine_state=next((d.machine_state for d in details if d.machine_state), None),
+            b2_errors=next((d.b2_errors for d in details if d.b2_errors), None),
         )
         self.ranges = resolve_bpm_ranges(
-            self.machine, setup.plan, setup.bpm_start_points, setup.bpm_end_points
+            self.machine,
+            plan,
+            list(plan.start_points) or list(bpm_start_points or []),
+            list(bpm_end_points or []),
+            use_fixed_bpm,
         )
+        #: Per file, the workers one of its turn batches fans out to.
+        self.worker_plans: dict[int, list[TrackingWorkerConfig]]
         self.data_manager: DataManager | None = self._load_data()
-        simulation_config = self.machine.simulation_config
         for worker_module in ("accelmo.fitting.worker", "accelmo.tracking.worker"):
-            logging.getLogger(worker_module).setLevel(simulation_config.worker_logging_level)
-        output_config = self.machine.output_config
-        self.worker_setup = WorkerSetupHelper(
-            accelerator=accelerator,
-            all_bpms=self.machine.all_bpms,
-            fixed_start=self.ranges.fixed_start,
-            fixed_end=self.ranges.fixed_end,
-            use_fixed_bpm=simulation_config.use_fixed_bpm,
-            bad_bpms=sequence_config.bad_bpms,
-            file_kick_planes=self.data_manager.file_kick_planes,
-            magnet_range=sequence_config.magnet_range,
-            interface_options_per_file=self.interface_options,
-            debug=options.debug,
-            mad_logfile=output_config.mad_logfile,
-            python_logfile=output_config.python_logfile,
-            tracking_plan=self.tracking_plan,
-        )
+            logging.getLogger(worker_module).setLevel(runtime.logging_level)
         # Every BPM the fit reads gets an x and a y gain; markers are not BPMs.
         self.gain_bpms: tuple[str, ...] = (
             tuple(b for b in self.machine.all_bpms if b not in self.tracking_plan.extra_markers)
-            if simulation_config.bpm_gain_sigma is not None
+            if self.parameters.bpm_gain_sigma is not None
             else ()
         )
         self.gain_names = bpm_gain_names(self.gain_bpms)
         #: Every fitted parameter, in uncertainty order: magnet knobs, then gains.
         self.knob_names = list(self.machine.knob_names) + self.gain_names
-        self.loop = SGDLoop(
-            self.machine.knob_names,
-            self.machine.true_strengths,
-            optimiser_config,
-            simulation_config.num_batches,
-        )
+        self.lm_config: LevenbergMarquardtConfig | None = None
+        self.loop: SGDLoop | None = None
+        #: Prior width per fitted parameter (0 = none), from ``knob_sigmas`` as POCO resolves it.
+        self.knob_sigma = knob_sigma_array(self.knob_names, self.parameters.knob_sigmas or {})
+        if isinstance(solver, LevenbergMarquardtConfig):
+            self.lm_config = solver
+        else:
+            self.loop = SGDLoop(
+                self.machine.knob_names,
+                self.machine.true_strengths,
+                solver,
+                self.tracking_data.num_batches,
+            )
+        #: How the last run ended.
+        self.diagnostics: FitDiagnostics | None = None
+        self._lm_best: dict[str, float] = {}
+        #: Start (x, px, y, py) per particle from the last LM run with ``fit_start_coords``.
+        self.fitted_starts = np.zeros((0, 4))
+        #: LM chi-square Gauss-Newton Hessian at the best point (knobs, then starts), priors included.
+        self.lm_hessian = np.zeros((0, 0))
+        #: Prior inverse covariance (1/σ²) of the last LM run, added to the uncertainty ``A``.
+        self._prior = np.zeros((0, 0))
         #: The workers of the current or last run.
         self.session: TrackingSession | None = None
 
@@ -188,35 +248,33 @@ class TrackingFitter:
             "tracking_opt",
             resume=checkpoint_config is not None and checkpoint_config.restore_from_checkpoint,
         )
-        simulation_config = self.machine.simulation_config
         include_uncertainty = self.machine.output_config.include_uncertainty
         start_knobs = self._with_gains(self.machine.worker_start_knobs)
 
         def body() -> tuple[dict[str, float], tuple[np.ndarray, np.ndarray] | None]:
             session = self.start_session(start_knobs)
-            total_turns = self.data_manager.get_total_turns()
-            if simulation_config.enable_preloop_outlier_screening:
-                session.screen_outliers(
-                    start_knobs,
-                    bpm_sigma_threshold=simulation_config.bpm_loss_outlier_sigma,
-                    worker_sigma_threshold=simulation_config.worker_loss_outlier_sigma,
-                )
+            if self.options.initial_starts is not None:
+                session.send_init_condition_updates(self.options.initial_starts)
             # The workers hold their own copies of the data now.
             self.data_manager = None
             gc.collect()
 
-            final_knobs = self.loop.run(
-                self._with_gains(self.machine.initial_knobs),
-                session.training.channels,
-                total_turns=total_turns,
-                run_log=run_log,
-                checkpoint_config=self.options.checkpoint_config,
-                validation_loss_fn=session.validation_loss,
-                loss_callback=self.options.loss_callback,
-                epoch_end_hook=self._epoch_end_hook(session),
-                gain_names=self.gain_names,
-                gain_ridge=self._gain_ridge(session),
-            )
+            if self.lm_config is not None:
+                final_knobs = self._solve_lm(session, run_log, self.lm_config)
+            else:
+                assert self.loop is not None
+                final_knobs = self.loop.run(
+                    self._with_gains(self.machine.initial_knobs),
+                    session.training.channels,
+                    n_points=session.n_training_points,
+                    run_log=run_log,
+                    checkpoint_config=self.options.checkpoint_config,
+                    validation_loss_fn=session.validation_loss,
+                    loss_callback=self.options.loss_callback,
+                    epoch_end_hook=self._epoch_end_hook(session),
+                    gain_names=self.gain_names,
+                    gain_ridge=self._gain_ridge(),
+                )
 
             # Workers still hold the last batch's knobs; the uncertainty must be
             # propagated at the knobs we return.
@@ -229,7 +287,10 @@ class TrackingFitter:
 
         final_knobs, normal_and_noise = run_with_workers(
             body,
-            fallback=lambda: (self.loop.best.value, None),
+            fallback=lambda: (
+                self._lm_best if self.loop is None else self.loop.best.value,
+                None,
+            ),
             stop_workers=self._terminate_session,
             run_log=run_log,
         )
@@ -238,26 +299,58 @@ class TrackingFitter:
         return FitResult(
             knobs=without_bpm_gains(final_knobs),
             uncertainties=without_bpm_gains(uncertainties),
-            diagnostics=self.loop.diagnostics,
+            diagnostics=self.diagnostics if self.loop is None else self.loop.diagnostics,
             extra=only_bpm_gains(final_knobs),
             extra_uncertainties=only_bpm_gains(uncertainties),
         )
 
-    def _with_gains(self, knobs: dict[str, float]) -> dict[str, float]:
-        """``knobs`` plus every fitted gain at its starting value, zero."""
-        return {**knobs, **dict.fromkeys(self.gain_names, 0.0)}
+    def _solve_lm(
+        self, session: TrackingSession, run_log, lm_config: LevenbergMarquardtConfig
+    ) -> dict[str, float]:
+        """Levenberg-Marquardt over every batch; returns the best knobs.
 
-    def _gain_ridge(self, session: TrackingSession) -> float:
-        """The gain prior ``1/σ²`` in the units of the workers' gain sums.
-
-        Those sums are ``Σ w ...`` over each worker's points divided by its point count,
-        with ``w`` the normalised weights, so a physical chi-square is
-        ``session.chi2_to_loss`` times them (exact when every worker observes the same
-        number of points; the mean is used otherwise).
+        With ``fit_start_coords`` every particle's start (x, px, y, py) joins the
+        parameters after the knobs (see :class:`TrackingLMProblem`); the fitted starts are
+        kept in :attr:`fitted_starts`.
         """
-        if not self.gain_names:
+        problem = TrackingLMProblem(
+            session,
+            list(self.knob_names),
+            len(self.gain_names),
+            self.tracking_data.num_batches,
+            self.parameters,
+            self.knob_sigma,
+            self._gain_ridge(),
+            self.options.initial_conditions_callback,
+            self.machine.initial_model_values,
+        )
+        self._prior = problem.prior_matrix
+
+        initial = problem.initial_params(self._with_gains(self.machine.initial_knobs))
+        self._lm_best = problem.knobs(initial)
+        optimiser, self.diagnostics = run_levenberg_marquardt(
+            initial, problem, lm_config, run_log=run_log, param_names=problem.param_names()
+        )
+        best = optimiser.best.value
+        self._lm_best = problem.knobs(best)
+        self.fitted_starts = problem.starts(best)
+        best_hessian = optimiser.best_hessian
+        self.lm_hessian = np.zeros((0, 0)) if best_hessian is None else best_hessian
+        if problem.fit_starts:
+            session.send_init_condition_updates(self.fitted_starts)
+        return self._lm_best
+
+    def _with_gains(self, knobs: dict[str, float]) -> dict[str, float]:
+        """``knobs`` plus every fitted gain at its starting value: ``initial_knob_strengths``, else zero."""
+        initial = self.options.initial_knob_strengths or {}
+        return {**knobs, **{name: float(initial.get(name, 0.0)) for name in self.gain_names}}
+
+    def _gain_ridge(self) -> float:
+        """The gain prior ``1/σ²``, in the chi-square units of the workers' gain sums."""
+        sigma = self.parameters.bpm_gain_sigma
+        if not self.gain_names or sigma is None:
             return 0.0
-        return session.chi2_to_loss / self.machine.simulation_config.bpm_gain_sigma**2
+        return 1.0 / sigma**2
 
     def start_session(
         self,
@@ -280,21 +373,25 @@ class TrackingFitter:
         if start_knobs is None:
             start_knobs = self._with_gains(self.machine.worker_start_knobs)
         self.session = TrackingSession(
-            self.worker_setup,
-            self.machine.simulation_config,
+            self.machine.accelerator,
+            self.runtime,
+            self.tracking_data,
+            self.parameters,
             turn_batches=data.turn_batches,
             validation_turn_batches=data.validation_turn_batches if enable_validation else [],
             file_turn_map=data.file_map,
-            start_bpms=self.ranges.start_bpms,
-            end_bpms=self.ranges.end_bpms,
+            worker_plans=self.worker_plans,
             machine_deltaps=self.machine_deltaps,
             gain_bpms=self.gain_bpms,
         )
         self.session.start(data.tracks, start_knobs)
         return self.session
 
-    def build_initial_normal_matrix(self) -> tuple[np.ndarray, list[str]]:
-        """Accumulate the Gauss-Newton normal matrix ``A = JᵀWJ`` at the initial knobs.
+    def build_initial_normal_matrix(
+        self, start_knobs: dict[str, float] | None = None
+    ) -> tuple[np.ndarray, list[str]]:
+        """Accumulate the Gauss-Newton normal matrix ``A = JᵀWJ`` at the initial knobs
+        (or at ``start_knobs``).
 
         This starts the tracking workers exactly as :meth:`run` does, then requests
         the worker-side Hessians *without taking a single optimisation step*, so the
@@ -306,7 +403,7 @@ class TrackingFitter:
             order of the matrix.
         """
         try:
-            session = self.start_session()
+            session = self.start_session(start_knobs)
             normal, _ = session.stop_and_collect_uncertainty(
                 len(self.knob_names), propagate_uncertainty=True
             )
@@ -350,36 +447,65 @@ class TrackingFitter:
         """1-sigma uncertainty of each optimisation knob; zero when not computed.
 
         ``(A, B)`` are the normal matrix and the measurement noise propagated through
-        every observation and start coordinate, ``Cov = A⁻¹ B A⁻¹``.
+        every observation and start coordinate, ``Cov = A⁻¹ B A⁻¹``. With starts that follow
+        the gains, ``A`` holds the starts fixed and misses the directions they cancel, so the
+        LM's chained Hessian (priors included) replaces it.
         """
-        if self.machine.output_config.include_uncertainty and normal_and_noise is not None:
-            uncertainties = sandwich_uncertainties(*normal_and_noise)
-        else:
+        follow = self.parameters.starts_follow_gains and self.lm_hessian.size
+        if not self.machine.output_config.include_uncertainty or normal_and_noise is None:
             uncertainties = np.zeros(len(final_knobs), dtype=np.float64)
+        elif follow:
+            uncertainties = sandwich_uncertainties(0.5 * self.lm_hessian, normal_and_noise[1])
+        elif self._prior.any():  # a prior is one more measurement of the knobs
+            normal, noise = normal_and_noise
+            uncertainties = sandwich_uncertainties(normal + self._prior, noise + self._prior)
+        else:
+            uncertainties = sandwich_uncertainties(*normal_and_noise)
         return dict(zip(self.knob_names, uncertainties.tolist(), strict=True))
 
     def _load_data(self) -> DataManager:
-        """Load the measurement files, batch their turns and fix ``num_batches`` to fit them."""
+        """Load the measurement files, plan the workers, batch the turns and fix ``num_batches``."""
         machine = self.machine
         data = DataManager(
             self.tracking_plan.observed_bpms(machine.bpms_in_range, machine.all_bpms),
             machine.all_bpms,
-            machine.simulation_config,
+            self.tracking_data,
+            self.runtime.num_workers,
             self.measurement_config.files,
             tracking_plan=self.tracking_plan,
             first_bpms=self.first_bpms,
             extra_markers=list(self.tracking_plan.extra_markers),
         )
         data.load_track_data()
-        data.prepare_turn_batches(len(self.ranges.start_bpms), len(self.ranges.end_bpms))
+        output_config = machine.output_config
+        self.worker_plans = {
+            idx: plan_workers(
+                WorkerConfig(
+                    accelerator=machine.accelerator,
+                    magnet_range=machine.sequence_config.magnet_range,
+                    machine_state=self.details[idx].machine_state,
+                    b2_errors=self.details[idx].b2_errors,
+                    bad_bpms=machine.sequence_config.bad_bpms,
+                    debug=self.options.debug,
+                    mad_logfile=output_config.mad_logfile,
+                    python_logfile=output_config.python_logfile,
+                ),
+                self.ranges,
+                idx,
+                tracks.kick_plane,
+                set(tracks.marker_col),
+            )
+            for idx, tracks in data.tracks.items()
+        }
+        data.prepare_turn_batches(max(len(plans) for plans in self.worker_plans.values()))
 
         # No batch may need more turns than the smallest worker holds.
         min_turns_per_batch = min(len(batch) for batch in data.turn_batches)
-        machine.simulation_config = dataclasses.replace(
-            machine.simulation_config,
-            num_batches=min(machine.simulation_config.num_batches, min_turns_per_batch),
+        self.tracking_data = dataclasses.replace(
+            self.tracking_data,
+            num_batches=min(self.tracking_data.num_batches, min_turns_per_batch),
         )
-        data.simulation_config = machine.simulation_config
+        data.tracking_data = self.tracking_data
         return data
 
 
@@ -387,7 +513,7 @@ def initial_conditions_hook(
     callback: InitialConditionsCallback,
     fixed_model_values: dict[str, float],
     push: Callable[[np.ndarray], None],
-) -> Callable[[dict[str, float], dict[str, float]], str]:
+) -> Callable[[dict[str, float], dict[str, float]], str | None]:
     """An epoch-end hook that pushes ``callback``'s new start coordinates with ``push``.
 
     The optimiser only carries this stage's knobs, but the workers track through the
@@ -416,6 +542,8 @@ def initial_conditions_hook(
         )
         if new_coords is None:
             return None
+        if isinstance(new_coords, StartGainMap):
+            raise TypeError("A StartGainMap callback needs the LM fit with starts_follow_gains")
         push(new_coords)
 
         first = pushed.setdefault("first", new_coords)
@@ -430,21 +558,13 @@ def initial_conditions_hook(
     return hook
 
 
-def _first_set(options_per_file: list[dict], keys: tuple[str, ...]) -> dict:
-    """For each of ``keys``, the first file's non-``None`` value, so the fitter's model matches the workers'."""
-    merged: dict = {}
-    for key in keys:
-        for options in options_per_file:
-            if options.get(key) is not None:
-                merged[key] = options[key]
-                break
-    return merged
-
-
 class ArcByArcFitter(TrackingFitter):
     """Fit magnet strengths from arc-by-arc BPM ranges.
 
-    Tracks the caller's ``bpm_start_points`` x ``bpm_end_points`` ranges. Set
+    Tracks the caller's ``bpm_start_points`` x ``bpm_end_points`` ranges. With
+    ``use_fixed_bpm`` (default) every start pairs with one fixed end and every end with
+    one fixed start, from ``magnet_range``; without it every start pairs with every end
+    in both directions (many more, more correlated ranges). Set
     ``acd_excited`` when the data was AC-dipole excited: the exciter markers are then
     installed and any range that would straddle the AC dipole is rerouted the long
     way round the ring. Leave it ``False`` for free-oscillation data.
@@ -453,29 +573,33 @@ class ArcByArcFitter(TrackingFitter):
     def __init__(
         self,
         accelerator: Accelerator,
-        optimiser_config: OptimiserConfig,
-        simulation_config: SimulationConfig,
+        solver: OptimiserConfig | LevenbergMarquardtConfig,
+        runtime: WorkerRuntime,
+        tracking_data: TrackingDataConfig,
         sequence_config: SequenceConfig,
         measurement_config: MeasurementConfig,
         bpm_start_points: list[str],
         bpm_end_points: list[str],
         *,
         acd_excited: bool = False,
+        use_fixed_bpm: bool = True,
         options: FitterOptions | None = None,
     ):
-        setup = arc_by_arc_setup(
-            accelerator=accelerator,
-            simulation_config=simulation_config,
-            bpm_start_points=bpm_start_points,
-            bpm_end_points=bpm_end_points,
-            acd_excited=acd_excited,
-        )
+        if not bpm_start_points:
+            raise ValueError("Arc-by-arc mode requires bpm_start_points.")
+        if not bpm_end_points:
+            raise ValueError("Arc-by-arc mode requires bpm_end_points.")
         super().__init__(
-            setup,
+            ACDArcByArcTrackingPlan(accelerator.ac_dipole_name) if acd_excited else TrackingPlan(),
             accelerator=accelerator,
-            optimiser_config=optimiser_config,
+            solver=solver,
+            runtime=runtime,
+            tracking_data=tracking_data,
             sequence_config=sequence_config,
             measurement_config=measurement_config,
+            bpm_start_points=bpm_start_points,
+            bpm_end_points=bpm_end_points,
+            use_fixed_bpm=use_fixed_bpm,
             options=options,
         )
 
@@ -483,25 +607,29 @@ class ArcByArcFitter(TrackingFitter):
 class KickerFitter(TrackingFitter):
     """Fit magnet strengths from kicker-excited turn-by-turn data.
 
-    Runs a single worker forward-only from the kicker marker, which supplies the
-    tracking initial conditions.
+    Tracks forward-only from the kicker marker, which supplies the tracking initial
+    conditions, for ``turns_per_track`` turns; ``num_workers`` should be the number of
+    files (one per momentum).
     """
 
     def __init__(
         self,
         accelerator: Accelerator,
-        optimiser_config: OptimiserConfig,
-        simulation_config: SimulationConfig,
+        solver: OptimiserConfig | LevenbergMarquardtConfig,
+        runtime: WorkerRuntime,
+        tracking_data: TrackingDataConfig,
         sequence_config: SequenceConfig,
         measurement_config: MeasurementConfig,
-        kicker_config: KickerConfig,
+        kicker_name: str,
+        turns_per_track: int,
         options: FitterOptions | None = None,
     ):
-        setup = kicker_setup(kicker_config, simulation_config)
         super().__init__(
-            setup,
+            KickerTrackingPlan(kicker_name, turns_per_track),
             accelerator=accelerator,
-            optimiser_config=optimiser_config,
+            solver=solver,
+            runtime=runtime,
+            tracking_data=tracking_data,
             sequence_config=sequence_config,
             measurement_config=measurement_config,
             options=options,
@@ -520,17 +648,50 @@ class ACDMarkerFitter(TrackingFitter):
     def __init__(
         self,
         accelerator: Accelerator,
-        optimiser_config: OptimiserConfig,
-        simulation_config: SimulationConfig,
+        solver: OptimiserConfig | LevenbergMarquardtConfig,
+        runtime: WorkerRuntime,
+        tracking_data: TrackingDataConfig,
         sequence_config: SequenceConfig,
         measurement_config: MeasurementConfig,
         options: FitterOptions | None = None,
     ):
-        setup = acd_marker_setup(accelerator, simulation_config)
         super().__init__(
-            setup,
+            ACDTrackingPlan(accelerator.ac_dipole_name),
             accelerator=accelerator,
-            optimiser_config=optimiser_config,
+            solver=solver,
+            runtime=runtime,
+            tracking_data=tracking_data,
+            sequence_config=sequence_config,
+            measurement_config=measurement_config,
+            options=options,
+        )
+
+
+class ACDSinusoidFitter(TrackingFitter):
+    """Fit AC-dipole data tracked forward over many turns through the model AC kickers.
+
+    The accelerator must install the kickers (PSB ``acd_drive_tunes``); fitting the ``acd``
+    family adds their (a, b) volts as knobs. Each file is cut into back-to-back tracks of
+    ``turns_per_track`` turns (see :class:`ACDSinusoidTrackingPlan`).
+    """
+
+    def __init__(
+        self,
+        accelerator: Accelerator,
+        solver: OptimiserConfig | LevenbergMarquardtConfig,
+        runtime: WorkerRuntime,
+        tracking_data: TrackingDataConfig,
+        sequence_config: SequenceConfig,
+        measurement_config: MeasurementConfig,
+        turns_per_track: int,
+        options: FitterOptions | None = None,
+    ):
+        super().__init__(
+            ACDSinusoidTrackingPlan(accelerator.ac_dipole_name, turns_per_track),
+            accelerator=accelerator,
+            solver=solver,
+            runtime=runtime,
+            tracking_data=tracking_data,
             sequence_config=sequence_config,
             measurement_config=measurement_config,
             options=options,

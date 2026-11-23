@@ -1,4 +1,4 @@
-"""Public closed-orbit fitter for LOCO-style machine-state comparisons."""
+"""Closed-orbit fitter: LOCO-style machine-state comparisons and measured closed twiss."""
 
 from __future__ import annotations
 
@@ -8,20 +8,25 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from accelmo.config import WorkerRuntime
 from accelmo.fitting.protocol import Evaluate, GradReply, distribute, machine_worker_limit
-from accelmo.machine.mad.machine_state import resolve_machine_state
+from accelmo.machine.machine_state import resolve_machine_state
 from accelmo.poco.fitter import (
+    DEFAULT_OBSERVABLES,
     MEASUREMENT_COLUMNS,
     LevenbergMarquardtConfig,
     LMFitter,
-    build_worker_payload,
+    build_observable,
     load_measurement,
-    stamp_global_normalisation,
+    measured_bpms,
 )
 from accelmo.poco.workers.closed_orbit import (
+    CLOSED_ORBIT_OBSERVABLES,
+    SUPPORTED_OBSERVABLES,
     ClosedOrbitMeasurementData,
     ClosedOrbitSeriesData,
     ClosedOrbitWorker,
+    validate_series,
 )
 
 if TYPE_CHECKING:
@@ -34,11 +39,6 @@ if TYPE_CHECKING:
     from accelmo.machine.accelerators import Accelerator
 
 LOGGER = logging.getLogger(__name__)
-CLOSED_ORBIT_OBSERVABLES = ("x", "y")
-#: BPM-to-BPM phase advance from a plain, no-corrector twiss -- see
-#: ClosedOrbitSeries.observables and ClosedOrbitWorker's phase-only branch.
-PHASE_OBSERVABLES = ("mu1", "mu2")
-ALL_OBSERVABLES = CLOSED_ORBIT_OBSERVABLES + PHASE_OBSERVABLES
 
 
 @dataclass(frozen=True)
@@ -61,7 +61,9 @@ def difference_orbit(
     if not planes:
         return orbit
     if reference is None:
-        raise ValueError(f"Closed-orbit series {label or '<unnamed>'!r} fits {list(planes)} relative to a reference but has no reference orbit")
+        raise ValueError(
+            f"Closed-orbit series {label or '<unnamed>'!r} fits {list(planes)} relative to a reference but has no reference orbit"
+        )
     delta = orbit.copy()
     for plane in planes:
         value, error = MEASUREMENT_COLUMNS[plane]
@@ -95,10 +97,26 @@ class ClosedOrbitSeries:
     #: Planes fitted as absolute orbits; every other orbit plane is fitted as ``orbit - reference``.
     absolute_planes: tuple[str, ...] = ()
     label: str = ""
-    #: This series' own observables, overriding the fitter-wide default. A
-    #: phase-only series (``("mu1", "mu2")``, one measurement)
-    #: sets this; every existing orbit series leaves it empty.
+    #: This series' own observables, overriding the fitter-wide default. A closed-twiss
+    #: series (optics, one measurement, absolute orbit planes) sets this.
     observables: tuple[str, ...] = ()
+
+
+def closed_twiss_series(
+    measurements: Mapping[float, pd.DataFrame], observables: tuple[str, ...] = DEFAULT_OBSERVABLES
+) -> list[ClosedOrbitSeries]:
+    """One absolute closed-twiss series per measured momentum ``pt`` (key) and optics frame."""
+    observables = tuple(observables)
+    planes = tuple(name for name in observables if name in CLOSED_ORBIT_OBSERVABLES)
+    return [
+        ClosedOrbitSeries(
+            (ClosedOrbitMeasurement(frame, pt=float(pt)),),
+            absolute_planes=planes,
+            label=f"pt={float(pt):+.3e}",
+            observables=observables,
+        )
+        for pt, frame in measurements.items()
+    ]
 
 
 class ClosedOrbitFitter(LMFitter):
@@ -130,68 +148,68 @@ class ClosedOrbitFitter(LMFitter):
         machine_state: Path | Mapping[str, float] | None = None,
         true_strengths: Path | dict[str, float] | None = None,
         use_errors: bool = True,
-        prior_strengths: Mapping[str, float] | None = None,
+        knob_sigmas: Mapping[str, float] | None = None,
         output_config: OutputConfig | None = None,
-        max_workers: int | None = None,
+        runtime: WorkerRuntime | None = None,
         shared_reference: bool = True,
         b2_errors: Path | None = None,
+        debug: bool = False,
     ) -> None:
         if not series:
             raise ValueError("series must contain at least one closed-orbit series")
         observables = tuple(observables)
         if not observables:
             raise ValueError("At least one closed-orbit observable must be fitted")
-        unsupported = [name for name in observables if name not in CLOSED_ORBIT_OBSERVABLES]
+        unsupported = [name for name in observables if name not in MEASUREMENT_COLUMNS]
         if unsupported:
             raise ValueError(
-                f"ClosedOrbitFitter supports {CLOSED_ORBIT_OBSERVABLES}, got {unsupported}"
+                f"ClosedOrbitFitter supports {sorted(MEASUREMENT_COLUMNS)}, got {unsupported}"
             )
         for item in series:
             if not item.measurements:
                 raise ValueError(
                     f"Closed-orbit series {item.label or '<unnamed>'!r} has no measurements"
                 )
-            item_observables = item.observables or observables
-            item_unsupported = [name for name in item_observables if name not in ALL_OBSERVABLES]
-            if item_unsupported:
-                raise ValueError(
-                    f"Closed-orbit series {item.label or '<unnamed>'!r} requested "
-                    f"{item_unsupported}; supported are {ALL_OBSERVABLES}"
-                )
 
         self.observable_names = observables
         self.series = tuple(series)
         self.shared_reference = shared_reference
         self._reference_worker: int | None = None
-        self.n_workers = self._worker_count(len(self.series), max_workers)
+        self.n_workers = self._worker_count(
+            len(self.series), None if runtime is None else runtime.num_workers
+        )
+        self.default_machine_state = (
+            resolve_machine_state(machine_state) if machine_state is not None else {}
+        )
         super().__init__(
             accelerator,
             sequence_config,
-            num_workers=self.n_workers,
+            runtime=replace(runtime or WorkerRuntime(1), num_workers=self.n_workers),
             lm_config=lm_config,
             initial_knob_strengths=initial_knob_strengths,
             true_strengths=true_strengths,
             use_errors=use_errors,
-            prior_strengths=prior_strengths,
+            knob_sigmas=knob_sigmas,
             output_config=output_config,
+            b2_errors=b2_errors,
+            machine_state=self.default_machine_state,
+            debug=debug,
         )
-
-        self.default_machine_state = resolve_machine_state(machine_state) if machine_state is not None else {}
-        #: Known LHC dipole b2 error table, applied to every worker's sequence.
-        #: The interface insists on the tune knobs that compensate them, so it also gets the default machine state.
-        self.interface_options = (
-            {} if b2_errors is None else {"b2_errors": b2_errors, "machine_state": self.default_machine_state}
-        )
-        self.worker_payloads = self._create_series_payloads(sequence_config, accelerator)
+        self.worker_payloads = self._create_series_payloads()
 
     @staticmethod
     def _worker_count(n_series: int, max_workers: int | None) -> int:
+        """At most one worker per series, ``max_workers`` (``runtime.num_workers``) and the machine limit."""
         limit, limited_by = machine_worker_limit()
         if max_workers is not None and max_workers > limit:
-            LOGGER.warning("max_workers=%d exceeds the machine limit %d (%s)", max_workers, limit, limited_by)
+            LOGGER.warning(
+                "num_workers=%d exceeds the machine limit %d (%s)", max_workers, limit, limited_by
+            )
         cap = limit if max_workers is None else min(max_workers, limit)
         count = max(1, min(n_series, cap))
-        LOGGER.info("%d series on %d worker(s); machine limit %d (%s)", n_series, count, limit, limited_by)
+        LOGGER.info(
+            "%d series on %d worker(s); machine limit %d (%s)", n_series, count, limit, limited_by
+        )
         return count
 
     def _group_payloads(self, payloads):
@@ -208,16 +226,25 @@ class ClosedOrbitFitter(LMFitter):
             return grouped  # nothing is solved twice
         coords = {tuple(o.name for o in data.measurements[0].observables) for data in needing}
         if len(coords) != 1:
-            LOGGER.warning("Series fit different observables (%s); each solves its own reference", sorted(coords))
+            LOGGER.warning(
+                "Series fit different observables (%s); each solves its own reference",
+                sorted(coords),
+            )
             return grouped
         config, first = next((c, d) for c, d in payloads if d.needs_reference)
         measurements = {m.reference_pt: m for data in needing for m in data.measurements}.values()
-        reference = replace(first, measurements=list(measurements), shared_reference=False, reference_only=True)
+        reference = replace(
+            first, measurements=list(measurements), shared_reference=False, reference_only=True
+        )
         for _, data in payloads:
             data.shared_reference = True
         grouped = [*grouped, (config, [reference])]
         self._reference_worker = len(grouped) - 1
-        LOGGER.info("Reference orbit solved once by worker %d for %d series", self._reference_worker, len(needing))
+        LOGGER.info(
+            "Reference orbit solved once by worker %d for %d series",
+            self._reference_worker,
+            len(needing),
+        )
         return grouped
 
     def _evaluate_workers(self, channels, knobs):
@@ -247,10 +274,17 @@ class ClosedOrbitFitter(LMFitter):
         )
         return [(payloads[group[0]][0], [payloads[i][1] for i in group]) for group in groups]
 
-    def _create_series_payloads(self, sequence_config, accelerator):
+    def _create_series_payloads(self):
         payloads = []
         for item in self.series:
+            label = item.label or "<unnamed>"
             item_observables = item.observables or self.observable_names
+            unsupported = [name for name in item_observables if name not in SUPPORTED_OBSERVABLES]
+            if unsupported:
+                raise ValueError(
+                    f"Closed-orbit series {label!r} requested {unsupported}; "
+                    f"supported are {SUPPORTED_OBSERVABLES}"
+                )
             relative = tuple(
                 name
                 for name in item_observables
@@ -258,60 +292,41 @@ class ClosedOrbitFitter(LMFitter):
             )
             frames = [
                 load_measurement(
-                    difference_orbit(measurement.orbit, measurement.reference, relative, item.label),
+                    difference_orbit(
+                        measurement.orbit, measurement.reference, relative, item.label
+                    ),
                     item_observables,
                 )
                 for measurement in item.measurements
             ]
-            common_bpms = [
-                bpm
-                for bpm in self.machine.all_bpms
-                if all(bpm in frame.index for frame in frames)
+            common = [
+                bpm for bpm in self.machine.all_bpms if all(bpm in frame.index for frame in frames)
             ]
-            if len(common_bpms) < 2:
-                raise ValueError(
-                    f"Fewer than two common model BPMs in closed-orbit series "
-                    f"{item.label or '<unnamed>'!r}"
-                )
-
-            measurement_data = []
-            config = None
-            for measurement, frame in zip(item.measurements, frames, strict=True):
-                worker_config, base_data = build_worker_payload(
-                    float(measurement.pt),
-                    frame.loc[common_bpms],
-                    item_observables,
-                    self.machine.all_bpms,
-                    sequence_config.magnet_range,
-                    sequence_config.bad_bpms,
-                    accelerator,
-                    self.interface_options,
-                    self.use_errors,
-                    self.machine.output_config.mad_logfile,
-                    self.machine.output_config.python_logfile,
-                )
-                config = config or worker_config
-                measurement_data.append(
+            bpms = measured_bpms(common, frames[0], f"closed-orbit series {label!r}")
+            data = ClosedOrbitSeriesData(
+                bpm_names=bpms,
+                measurements=[
                     ClosedOrbitMeasurementData(
-                        observables=base_data.observables,
+                        observables=[
+                            build_observable(
+                                name, frame, bpms, self.use_errors, float(measurement.pt)
+                            )
+                            for name in item_observables
+                        ],
                         pt=float(measurement.pt),
                         reference_pt=float(measurement.reference_pt),
                     )
-                )
-
-            payloads.append(
-                (
-                    config,
-                    ClosedOrbitSeriesData(
-                        bpm_names=common_bpms,
-                        measurements=measurement_data,
-                        machine_state={**self.default_machine_state, **resolve_machine_state(item.machine_state)},
-                        reference_state=dict(self.default_machine_state),
-                        absolute_planes=tuple(item.absolute_planes),
-                    ),
-                )
+                    for measurement, frame in zip(item.measurements, frames, strict=True)
+                ],
+                machine_state={
+                    **self.default_machine_state,
+                    **resolve_machine_state(item.machine_state),
+                },
+                reference_state=dict(self.default_machine_state),
+                absolute_planes=tuple(dict.fromkeys(item.absolute_planes)),
             )
-        stamp_global_normalisation(payloads)
+            validate_series(data)
+            payloads.append((self._worker_config(bpms), data))
         LOGGER.info(
             "Closed-orbit fit: %d worker series, %d independent measurements",
             len(payloads),

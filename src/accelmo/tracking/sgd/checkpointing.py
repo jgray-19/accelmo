@@ -26,6 +26,8 @@ LOGGER = logging.getLogger(__name__)
 
 
 class CheckpointState(TypedDict):
+    """Contents of a checkpoint file."""
+
     saved_epoch: int
     next_epoch: int
     current_knobs: dict[str, float]
@@ -78,7 +80,6 @@ class OptimisationCheckpointer:
             "best_knobs": {k: float(v) for k, v in self._loop.best.value.items()},
             "best_loss": float(self._loop.best.loss),
             "prev_loss": None if prev_loss is None else float(prev_loss),
-            "smoothed_grad_norm": float(self._loop.smoothed_grad_norm),
             "smoothed_loss_change": float(self._loop.smoothed_loss_change),
             "optimiser_class": self._loop.optimiser.__class__.__name__,
             "optimiser_state": self._loop.optimiser.state_dict(),
@@ -116,7 +117,6 @@ class OptimisationCheckpointer:
         best_knobs = merged_current_knobs.copy()
         best_knobs.update(checkpoint_best)
         self._loop.best.record(float(payload.get("best_loss", float("inf"))), best_knobs)
-        self._loop.smoothed_grad_norm = float(payload.get("smoothed_grad_norm", 0.0))
         self._loop.smoothed_loss_change = float(payload.get("smoothed_loss_change", 0.0))
 
         optimiser_state = payload.get("optimiser_state", {})

@@ -80,9 +80,7 @@ def plot_std_log_comparison(
 ):
     """Plot standard deviations on a logarithmic scale."""
     fig_log, (ax1_l, ax2_l) = plt.subplots(2, 1, sharex=True, figsize=(10, 7))
-    fig_log.suptitle(
-        f"Logarithmic Plot of Standard Deviations ({bpm_range})", fontsize=14, y=0.98
-    )
+    fig_log.suptitle(f"Logarithmic Plot of Standard Deviations ({bpm_range})", fontsize=14, y=0.98)
 
     # X-component (only these lines are given labels so we can create a single
     # shared legend for the whole figure)
@@ -108,9 +106,7 @@ def plot_std_log_comparison(
         label="Combined error",
     )
     ax1_l.set_yscale("log")
-    h_noise_x = ax1_l.axhline(
-        1e-4, color="green", linestyle="--", label="Measurement noise"
-    )
+    h_noise_x = ax1_l.axhline(1e-4, color="green", linestyle="--", label="Measurement noise")
     ax1_l.set_ylabel("Std X [m]")
     ax1_l.grid(visible=True, alpha=0.3)
     # Add panel label '1' in the top-left of the X subplot
@@ -167,9 +163,7 @@ def plot_std_log_comparison(
 
     # Leave space at the top for suptitle and legend, then save.
     plt.tight_layout(rect=[0, 0, 1, 0.90])
-    fig_log.savefig(
-        f"plots/std_log_comparison_{nturns}t.png", dpi=300, bbox_inches="tight"
-    )
+    fig_log.savefig(f"plots/std_log_comparison_{nturns}t.png", dpi=300, bbox_inches="tight")
     return fig_log
 
 

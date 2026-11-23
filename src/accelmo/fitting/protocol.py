@@ -11,11 +11,10 @@ from __future__ import annotations
 
 import os
 import resource
-from dataclasses import dataclass, field
-from enum import Enum, auto
+from dataclasses import dataclass
 from multiprocessing.connection import wait
 from multiprocessing.reduction import ForkingPickler
-from typing import TYPE_CHECKING, Any, NoReturn
+from typing import TYPE_CHECKING, Any, NoReturn, cast
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -44,36 +43,47 @@ class Evaluate:
     ``batch`` selects a tracking worker's particle batch. ``loss_only`` asks a
     closed-orbit worker for the loss alone, from plain closed-orbit solves without
     knob derivatives (about 6x cheaper); the LM fit uses it for trial points.
+    ``curvature`` asks a tracking worker for the Gauss-Newton matrix ``JᵀWJ`` too (the
+    tracking LM fit); loss and gradient are the chi-square sums either way.
     """
 
     knobs: dict[str, float]
     batch: int = 0
     loss_only: bool = False
-
-
-class CommandKind(Enum):
-    """Control commands a tracking worker answers between evaluations."""
-
-    #: Total and per-point loss at ``payload["knobs"]``; answered with a :class:`LossReply`.
-    DIAGNOSE = auto()
-    #: Held-out loss at ``payload["knobs"]``; answered with a :class:`LossReply`.
-    VALIDATE = auto()
-    #: Install ``payload["keep_bpm_mask"]`` and ``payload["disable_worker"]``.
-    APPLY_MASK = auto()
-    #: Load ``payload["knobs"]`` into the model without evaluating.
-    SET_KNOBS = auto()
-    #: Replace the start coordinates ``payload["x" | "px" | "y" | "py"]``.
-    UPDATE_INIT_COORDS = auto()
-    #: Whether to propagate uncertainty on :class:`Stop` (``payload["enabled"]``).
-    SET_UNCERTAINTY_MODE = auto()
+    curvature: bool = False
 
 
 @dataclass(frozen=True)
-class Command:
-    """A control command and its arguments."""
+class TotalChi2:
+    """Chi-square of every batch at ``knobs``; answered with a :class:`LossReply`."""
 
-    kind: CommandKind
-    payload: dict[str, Any] = field(default_factory=dict)
+    knobs: dict[str, float]
+
+
+@dataclass(frozen=True)
+class SetKnobs:
+    """Load ``knobs`` into the model without evaluating."""
+
+    knobs: dict[str, float]
+
+
+@dataclass(frozen=True)
+class UpdateInitCoords:
+    """Replace the start coordinates; ``coords`` has shape ``(particles, 4)``: x, px, y, py."""
+
+    coords: np.ndarray
+
+
+@dataclass(frozen=True)
+class SetUncertaintyMode:
+    """Whether to propagate uncertainty on :class:`Stop`."""
+
+    enabled: bool
+
+
+#: Control commands a tracking worker answers between evaluations with an :class:`Ack`
+#: or, for :class:`TotalChi2`, a :class:`LossReply`.
+Command = TotalChi2 | SetKnobs | UpdateInitCoords | SetUncertaintyMode
 
 
 @dataclass(frozen=True)
@@ -94,27 +104,24 @@ class GradReply:
     """One evaluation's result.
 
     ``loss`` is NaN when the worker lost its particles or its closed orbit, and the
-    caller rejects the step. ``hessian`` is the normalised Gauss-Newton Hessian the
-    LM step uses and ``normal`` the physical ``JᵀWJ``; tracking workers send
-    neither. ``extra`` carries worker-specific results: a calibrated worker's block
+    caller rejects the step. ``normal`` is ``JᵀWJ`` (the chi² Gauss-Newton Hessian is
+    twice it), sent only when curvature is asked for. ``extra`` carries worker-specific results: a calibrated worker's block
     header, or the orbit a reference worker published.
     """
 
     worker_id: int
     loss: float
     grad: np.ndarray
-    hessian: np.ndarray | None = None
     normal: np.ndarray | None = None
     extra: Any = None
 
 
 @dataclass
 class LossReply:
-    """A loss without derivatives; ``loss`` is ``None`` for a worker disabled by screening."""
+    """A loss without derivatives."""
 
     worker_id: int
-    loss: float | None
-    per_point: np.ndarray | None = None
+    loss: float
 
 
 @dataclass(frozen=True)
@@ -152,7 +159,7 @@ class ErrorReply:
 class WorkerChannels:
     """Reusable worker communication state for fast send/receive rounds."""
 
-    __slots__ = ("parent_conns", "workers", "_count")
+    __slots__ = ("_count", "parent_conns", "workers")
 
     def __init__(self, parent_conns: list[Connection], workers: list[Process]) -> None:
         if len(parent_conns) != len(workers):
@@ -200,13 +207,15 @@ class WorkerChannels:
             wait([conn])
             return [self._recv(conn, self.workers[indices[0]])]
 
-        position = {self.parent_conns[i]: k for k, i in enumerate(indices)}  # connection -> slot in results
+        position = {
+            self.parent_conns[i]: k for k, i in enumerate(indices)
+        }  # connection -> slot in results
         results: list[object] = [None] * len(indices)
         seen = bytearray(len(indices))
         remaining = len(indices)
 
         while remaining:
-            for conn in wait(list(position)):
+            for conn in cast("list[Connection]", wait(list(position))):
                 k = position[conn]
                 if seen[k]:
                     continue
@@ -221,7 +230,7 @@ class WorkerChannels:
         self.send_all(command)
         for reply in self.recv_all():
             if not isinstance(reply, Ack):
-                raise RuntimeError(f"Unexpected reply to {command.kind.name}: {reply!r}")
+                raise RuntimeError(f"Unexpected reply to {type(command).__name__}: {reply!r}")
 
 
 #: pymadng waits on each MAD process with ``select()``, which rejects fd numbers >= 1024.

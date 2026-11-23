@@ -68,9 +68,7 @@ def test_lhc_sbends_are_grouped_with_length_weighted_average() -> None:
         "MB.B12L1.B1.dk0l": 3.0,
     }
 
-    assert normalise_lhcbend_magnets(strengths, lengths) == {
-        "MB.12L1.B1.dk0l": pytest.approx(2.5)
-    }
+    assert normalise_lhcbend_magnets(strengths, lengths) == {"MB.12L1.B1.dk0l": pytest.approx(2.5)}
 
 
 def test_lhc_rbends_are_separated_by_strength_sign() -> None:
@@ -94,3 +92,37 @@ def test_lhc_unmatched_magnet_strengths_are_preserved() -> None:
     }
 
     assert normalise_lhcbend_magnets(strengths, {}) == strengths
+
+
+def test_psb_differential_cell_tilt_expands_with_opposite_qde_sign() -> None:
+    expanded = expand_psb_grouped_quadrupole_knobs(
+        {"BR.QCELL2.tilt": 1e-3, "BR.QFOCELL2.dk1l": 2e-4}, differential_tilt=True
+    )
+
+    assert expanded == {
+        "BR.QFO21.tilt": 1e-3,
+        "BR.QFO22.tilt": 1e-3,
+        "BR.QDE2.tilt": -1e-3,
+        "BR.QFO21.dk1l": 2e-4,
+        "BR.QFO22.dk1l": 2e-4,
+    }
+
+
+def test_psb_differential_cell_tilt_collapses_back() -> None:
+    physical = {"BR.QFO21.tilt": 1e-3, "BR.QFO22.tilt": 1e-3, "BR.QDE2.tilt": -1e-3}
+
+    assert collapse_psb_grouped_quadrupole_knobs(physical, differential_tilt=True) == {
+        "BR.QCELL2.tilt": 1e-3
+    }
+
+
+@pytest.mark.parametrize(
+    "values, message",
+    [
+        ({"BR.QFO21.tilt": 1e-3, "BR.QFO22.tilt": 1e-3}, "needs"),
+        ({"BR.QFO21.tilt": 1e-3, "BR.QFO22.tilt": 1e-3, "BR.QDE2.tilt": 1e-3}, "differential"),
+    ],
+)
+def test_psb_invalid_differential_cell_tilt_is_rejected(values, message) -> None:
+    with pytest.raises(ValueError, match=message):
+        collapse_psb_grouped_quadrupole_knobs(values, differential_tilt=True)

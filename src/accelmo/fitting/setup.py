@@ -1,23 +1,23 @@
-"""The model a fit runs on: MAD-NG interface, BPM ranges and starting knobs."""
+"""The model a fit runs on: backend model, BPM ranges and starting knobs."""
 
 from __future__ import annotations
 
-import datetime
+import datetime as dt
 import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from pymadng_utils.io.utils import read_knobs
 
+from accelmo.backend import get_backend
+from accelmo.fitting.bpm_gains import is_bpm_gain
 from accelmo.fitting.config import OutputConfig
-from accelmo.machine.mad import GradientDescentMadInterface
-from accelmo.machine.mad.optimising_mad_interface import is_magnet_strength_name
+from accelmo.machine.knob_names import is_magnet_strength_name
 from accelmo.runlog import RunLog
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
-    from accelmo.config import SimulationConfig
     from accelmo.fitting.config import SequenceConfig
     from accelmo.machine.accelerators import Accelerator
 
@@ -47,7 +47,7 @@ def normalise_true_strengths(
 class MachineSetup:
     """Everything a fitter knows about the machine before any worker starts.
 
-    Builds the fitter-side MAD-NG model, reads its BPMs (``all_bpms`` and the
+    Builds the fitter-side backend model, reads its BPMs (``all_bpms`` and the
     observed ``bpms_in_range``), and resolves the starting knobs. Every value is in
     optimisation space: a ``deltap`` in the user's knobs becomes ``pt``.
 
@@ -68,7 +68,6 @@ class MachineSetup:
     def __init__(
         self,
         accelerator: Accelerator,
-        simulation_config: SimulationConfig,
         sequence_config: SequenceConfig,
         *,
         output_config: OutputConfig | None = None,
@@ -84,27 +83,22 @@ class MachineSetup:
         if not accelerator.has_any_optimisation():
             raise ValueError("No optimisation types enabled in the accelerator configuration.")
         self.accelerator = accelerator
-        self.simulation_config = simulation_config
         self.sequence_config = sequence_config
         self.output_config = output_config if output_config is not None else OutputConfig()
         self.debug = debug
 
-        self.output_config.log_state()
-        simulation_config.log_state()
-        sequence_config.log_state()
-
-        self.mad_iface = GradientDescentMadInterface(
-            accelerator=accelerator,
+        self.model = get_backend(accelerator.backend).open_model(
+            accelerator,
             magnet_range=sequence_config.magnet_range,
             machine_state=machine_state,
             b2_errors=b2_errors,
             bad_bpms=sequence_config.bad_bpms,
             debug=debug,
             mad_logfile=self.output_config.mad_logfile,
-            tracking_anchor_mode=anchor_mode,
-            tracking_anchor_markers=list(anchor_markers),
+            anchor_mode=anchor_mode,
+            anchor_markers=anchor_markers,
         )
-        self.knob_names: list[str] = self.mad_iface.knob_names
+        self.knob_names: list[str] = self.model.knob_names
         self._resolve_bpms(cycle_marker)
 
         true = self._to_pt(normalise_true_strengths(true_strengths))
@@ -138,7 +132,7 @@ class MachineSetup:
                 return RunLog(
                     interrupted, name=name, metadata=self.output_config.run_metadata, resume=True
                 )
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        timestamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
         directory = self.output_config.run_log_root / f"{timestamp}_{name}"
         LOGGER.info("Run log: %s", directory)
         return RunLog(directory, name=name, metadata=self.output_config.run_metadata)
@@ -157,8 +151,8 @@ class MachineSetup:
         return None
 
     def close(self) -> None:
-        """Shut down the fitter-side MAD process."""
-        self.mad_iface.close()
+        """Shut down the fitter-side model."""
+        self.model.close()
 
     def _to_pt(self, knobs: dict[str, float] | None) -> dict[str, float] | None:
         """A copy of ``knobs`` with any ``deltap`` replaced by the equivalent ``pt``."""
@@ -166,19 +160,16 @@ class MachineSetup:
             return None
         knobs = knobs.copy()
         if "deltap" in knobs:
-            knobs["pt"] = self.mad_iface.dp2pt(knobs.pop("deltap"))
+            knobs["pt"] = self.accelerator.dp2pt(knobs.pop("deltap"))
         return knobs
 
     def _resolve_bpms(self, cycle_marker: str | None) -> None:
         """Cycle the model to ``cycle_marker`` if given, then read its BPMs."""
-        mad_iface = self.mad_iface
         if cycle_marker is not None:
-            mad_iface.cycle_to_start(cycle_marker)
-            mad_iface.bpms_in_range, mad_iface.nbpms, mad_iface.all_bpms = mad_iface.count_bpms(
-                mad_iface.bpm_range
-            )
-        self.all_bpms: list[str] = mad_iface.all_bpms
-        self.bpms_in_range: list[str] = mad_iface.bpms_in_range
+            self.model.cycle_to_start(cycle_marker)
+            self.model.recount_bpms()
+        self.all_bpms: list[str] = self.model.all_bpms
+        self.bpms_in_range: list[str] = self.model.bpms_in_range
         magnet_range = self.sequence_config.magnet_range
         range_label = (
             "full cycled sequence ($start/$end)" if magnet_range == "$start/$end" else magnet_range
@@ -200,7 +191,7 @@ class MachineSetup:
         if not self.knob_names:
             raise ValueError(
                 "No optimisation knobs were created for this fitter configuration. "
-                f"Optimisation is enabled, but the MAD model returned zero knobs for "
+                f"Optimisation is enabled, but the model returned zero knobs for "
                 f"magnet range '{self.sequence_config.magnet_range}'. Check that the "
                 "selected optimisation flags match elements present in the loaded "
                 "sequence and range."
@@ -209,7 +200,7 @@ class MachineSetup:
         if provided is not None:
             invalid: list[str] = []
             for name, value in provided.items():
-                if name in knob_name_set:
+                if name in knob_name_set or is_bpm_gain(name):
                     continue
                 if name == "pt" or is_magnet_strength_name(name):
                     self.initial_model_values[name] = value
@@ -226,8 +217,8 @@ class MachineSetup:
             self.initial_model_values.update(
                 {k: v for k, v in provided.items() if k in knob_name_set}
             )
-            self.mad_iface.apply_initial_model_values(self.initial_model_values)
-        values = self.mad_iface.receive_knob_values()
+            self.model.apply_initial_model_values(self.initial_model_values)
+        values = self.model.knob_values()
         if len(values) != len(self.knob_names):
             raise ValueError(
                 "Knob initialisation produced an inconsistent result: "

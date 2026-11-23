@@ -26,8 +26,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from aba_optimiser.accelerators import LHC, SPS  # noqa: E402
-from aba_optimiser.mad.aba_mad_interface import AbaMadInterface  # noqa: E402
+from accelmo.backend.madng.interface import MadInterface  # noqa: E402
+from accelmo.machine.accelerators import LHC, SPS  # noqa: E402
 from tests.training.controller_test_utils import _run_track_with_model  # noqa: E402
 from tests.training.helpers import generate_xsuite_env_with_errors  # noqa: E402
 
@@ -40,6 +40,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--end-bpm", required=True)
     parser.add_argument("--plane", choices=("xy", "x", "y"), default="xy")
     parser.add_argument("--beam", type=int, default=1)
+    parser.add_argument(
+        "--seq-dir",
+        type=int,
+        choices=[-1, 1],
+        default=None,
+        help="Beam 2: -1 MAD-X beam 2, 1 beam 4",
+    )
     parser.add_argument("--beam-energy", type=float, default=None)
     parser.add_argument("--dpp", type=float, default=0.0)
     parser.add_argument("--action", type=float, default=None)
@@ -76,6 +83,7 @@ def build_accelerator(
             sequence_file=args.sequence_file,
             kinetic_energy=kinetic_energy,
             errors=errors,
+            seq_dir=args.seq_dir,
         )
     return SPS(
         sequence_file=args.sequence_file,
@@ -86,6 +94,7 @@ def build_accelerator(
 
 def main() -> None:
     import logging
+
     # Set up logging to display info messages
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
     args = parse_args()
@@ -94,7 +103,7 @@ def main() -> None:
     action = args.action if args.action is not None else default_action(args.accelerator)
 
     base_accelerator = build_accelerator(args)
-    base_interface = AbaMadInterface(accelerator=base_accelerator)
+    base_interface = MadInterface(accelerator=base_accelerator)
 
     track_path = args.output_dir / "xsuite_track.parquet"
     corrector_file = (
@@ -135,7 +144,7 @@ def main() -> None:
     base_interface.observe_bpms()
     base_interface.set_magnet_strengths(magnet_strengths)
     base_interface.mad["tbl", "flw"] = base_interface.mad.track(
-        sequence = "loaded_sequence",
+        sequence="loaded_sequence",
         X0={
             "x": xsuite_results.loc[args.start_bpm, "x"],
             "y": xsuite_results.loc[args.start_bpm, "y"],

@@ -6,9 +6,7 @@ from accelmo.optimisers.adam import AdamOptimiser
 class TestAdamOptimiser:
     def test_initialization(self):
         shape = (10,)
-        optim = AdamOptimiser(
-            shape=shape, beta1=0.9, beta2=0.999, eps=1e-8, weight_decay=0.01
-        )
+        optim = AdamOptimiser(shape=shape, beta1=0.9, beta2=0.999, eps=1e-8, weight_decay=0.01)
         assert optim.beta1 == 0.9
         assert optim.beta2 == 0.999
         assert optim.eps == 1e-8

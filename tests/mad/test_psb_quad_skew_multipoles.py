@@ -18,11 +18,8 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pytest
 
+from accelmo.backend.madng.interface import MadInterface
 from accelmo.machine.accelerators import PSB
-from accelmo.machine.mad.optimising_mad_interface import (
-    GenericMadInterface,
-    GradientDescentMadInterface,
-)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -34,7 +31,7 @@ pytestmark = pytest.mark.serial
 TWISS_COLUMNS = ("name", "x", "y", "dx", "dy")
 
 
-def _twiss(iface: GenericMadInterface) -> pd.DataFrame:
+def _twiss(iface: MadInterface) -> pd.DataFrame:
     iface.mad.send("skewtws = twiss{sequence=loaded_sequence, observe=1, coupling=true}")
     return iface.mad.skewtws.to_df(columns=list(TWISS_COLUMNS)).set_index("name")
 
@@ -43,7 +40,7 @@ def _rms(values: np.ndarray) -> float:
     return float(np.sqrt(np.mean(np.asarray(values, dtype=float) ** 2)))
 
 
-def _matching_quadrupoles(iface: GenericMadInterface) -> dict[str, float]:
+def _matching_quadrupoles(iface: MadInterface) -> dict[str, float]:
     """Return ``k1`` for every quadrupole matching the PSB quadrupole pattern."""
     iface.mad.send(f"""
     local k1_by_name = {{}}
@@ -61,9 +58,7 @@ def _matching_quadrupoles(iface: GenericMadInterface) -> dict[str, float]:
     ("suffix", "abs_attr"),
     [(".dk0sl", "k0s"), (".dk1sl", "k1s")],
 )
-def test_skew_knob_updates_use_dksl(
-    seq_psb: Path, suffix: str, abs_attr: str
-) -> None:
+def test_skew_knob_updates_use_dksl(seq_psb: Path, suffix: str, abs_attr: str) -> None:
     """Skew-multipole dksl should follow the live knob value without mutating k1.
 
     Read through ``get_magnet_strengths``/``get_base_magnet_strengths`` (as the
@@ -75,7 +70,7 @@ def test_skew_knob_updates_use_dksl(
     correct.
     """
     accelerator = PSB(ring=3, sequence_file=seq_psb, errors={"quad": {abs_attr}})
-    interface = GradientDescentMadInterface(accelerator=accelerator, discard_mad_output=True)
+    interface = MadInterface(accelerator=accelerator, discard_mad_output=True, create_knobs=True)
     try:
         knob_name = next(knob for knob in interface.knob_names if knob.endswith(suffix))
         element_name = knob_name.removesuffix(suffix)
@@ -106,7 +101,7 @@ def test_skew_knob_updates_use_dksl(
 def test_k1s_knob_moves_the_machine(seq_psb: Path) -> None:
     """A free k1s (skew gradient) knob is a genuine skew source: it couples orbit/dispersion."""
     accelerator = PSB(ring=3, sequence_file=seq_psb, errors={"quad": {"k1s"}})
-    interface = GradientDescentMadInterface(accelerator=accelerator, discard_mad_output=True)
+    interface = MadInterface(accelerator=accelerator, discard_mad_output=True, create_knobs=True)
     try:
         knobs = [k for k in interface.knob_names if k.endswith(".dk1sl")]
         assert len(knobs) > 2, f"expected a k1s knob per powered quadrupole, got {knobs}"
@@ -132,8 +127,10 @@ def test_quad_k0s_k1s_knobs_are_off_by_default(seq_psb: Path) -> None:
     """
 
     def knob_names(**kwargs) -> list[str]:
-        iface = GradientDescentMadInterface(
-            accelerator=PSB(ring=3, sequence_file=seq_psb, **kwargs), discard_mad_output=True
+        iface = MadInterface(
+            accelerator=PSB(ring=3, sequence_file=seq_psb, **kwargs),
+            discard_mad_output=True,
+            create_knobs=True,
         )
         try:
             return list(iface.knob_names)
@@ -157,7 +154,7 @@ def test_quad_k0s_k1s_knobs_are_off_by_default(seq_psb: Path) -> None:
 def test_unpowered_quadrupoles_get_no_skew_knob(seq_psb: Path) -> None:
     """A quadrupole with no gradient gets no k0s/k1s knob (gated on nonzero k1)."""
     accelerator = PSB(ring=3, sequence_file=seq_psb, errors={"quad": {"k0s", "k1s"}})
-    interface = GradientDescentMadInterface(accelerator=accelerator, discard_mad_output=True)
+    interface = MadInterface(accelerator=accelerator, discard_mad_output=True, create_knobs=True)
     try:
         k1_by_name = _matching_quadrupoles(interface)
         assert k1_by_name, "no quadrupoles matched the PSB pattern; test is vacuous"
@@ -165,13 +162,10 @@ def test_unpowered_quadrupoles_get_no_skew_knob(seq_psb: Path) -> None:
 
         for suffix in (".dk0sl", ".dk1sl"):
             knobbed = {
-                knob.removesuffix(suffix)
-                for knob in interface.knob_names
-                if knob.endswith(suffix)
+                knob.removesuffix(suffix) for knob in interface.knob_names if knob.endswith(suffix)
             }
             assert knobbed == powered, (
-                f"{suffix} knobs disagree with the powered quadrupoles: "
-                f"{sorted(knobbed ^ powered)}"
+                f"{suffix} knobs disagree with the powered quadrupoles: {sorted(knobbed ^ powered)}"
             )
     finally:
         with contextlib.suppress(Exception):

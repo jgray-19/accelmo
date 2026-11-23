@@ -38,24 +38,26 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pytest
 
-from accelmo.config import SimulationConfig
+from accelmo.backend.madng import MadInterface
+from accelmo.backend.madng.engines import read_orbit_only
+from accelmo.backend.madng.scripts import CLOSED_TWISS_INIT, PYTHON_IN_MAD
+from accelmo.config import WorkerRuntime
 from accelmo.fitting.worker import WorkerConfig
 from accelmo.machine.accelerators import PSB
-from accelmo.machine.mad import GradientDescentMadInterface
-from accelmo.machine.mad.scripts import CLOSED_TWISS_INIT, PYTHON_IN_MAD
 from accelmo.poco.workers.closed_orbit import (
     ClosedOrbitMeasurementData,
     ClosedOrbitSeriesData,
     ClosedOrbitWorker,
 )
-from accelmo.poco.workers.closed_twiss import (
-    ClosedTwissData,
-    ClosedTwissWorker,
-    Observable,
-    read_orbit_only,
-)
+from accelmo.poco.workers.closed_twiss import Observable
 
-from .test_closed_twiss_fitter import DELTAS, _fake_measurement, _fit, _knob_names
+from .test_closed_twiss_fitter import (
+    DELTAS,
+    _fake_measurement,
+    _fitted,
+    _knob_names,
+    assert_map_of_noise_free_data,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -67,7 +69,9 @@ pytestmark = pytest.mark.serial
 COORDS = ["x", "px", "y", "py"]
 
 
-def _send_init(iface: GradientDescentMadInterface, knobs: list[str], optics_columns: list[str], delta: float) -> None:
+def _send_init(
+    iface: MadInterface, knobs: list[str], optics_columns: list[str], delta: float
+) -> None:
     """Install the closed-twiss init script exactly as a worker does."""
     mad = iface.mad
     mad["nbpms"] = iface.nbpms
@@ -109,8 +113,8 @@ def _solve(mad: MAD, solver: str, n_knobs: int):
 def test_orbit_only_path_matches_twiss(seq_psb: Path, family: str, delta: float) -> None:
     """Orbit values and knob Jacobians from cofind+track equal those from twiss."""
     kwargs = {"misalignments": {"quad": {family}}}
-    iface = GradientDescentMadInterface(
-        PSB(ring=3, sequence_file=seq_psb, **kwargs), py_name=PYTHON_IN_MAD
+    iface = MadInterface(
+        PSB(ring=3, sequence_file=seq_psb, **kwargs), py_name=PYTHON_IN_MAD, create_knobs=True
     )
     knobs = [k for k in iface.knob_names if k != "pt"][:6]
     # Ask twiss for one optical function so the map is order 2 and both solvers can run
@@ -145,8 +149,8 @@ def test_orbit_only_map_is_first_order(seq_psb: Path) -> None:
     """Orbit-only needs mo=1; observing an optical function still needs mo=2."""
     kwargs = {"misalignments": {"quad": {"dx"}}}
     for optics_columns, expected in (([], 1), (["beta11_"], 2)):
-        iface = GradientDescentMadInterface(
-            PSB(ring=3, sequence_file=seq_psb, **kwargs), py_name=PYTHON_IN_MAD
+        iface = MadInterface(
+            PSB(ring=3, sequence_file=seq_psb, **kwargs), py_name=PYTHON_IN_MAD, create_knobs=True
         )
         knobs = [k for k in iface.knob_names if k != "pt"][:3]
         _send_init(iface, knobs, optics_columns, 0.0)
@@ -167,8 +171,6 @@ def test_every_solver_pins_the_integrator_to_method_6() -> None:
 def _worker_config(seq_psb: Path) -> WorkerConfig:
     return WorkerConfig(
         accelerator=PSB(ring=3, sequence_file=seq_psb, errors={"quad": {"k1"}}),
-        tracking_start_bpm="$start",
-        tracking_end_bpm="$end",
         magnet_range="$start/$end",
     )
 
@@ -198,34 +200,22 @@ def _observables(names: tuple[str, ...], n_bpms: int = 4) -> list[Observable]:
 def test_worker_picks_the_solver_from_its_observables(
     seq_psb: Path, names: tuple[str, ...], expected: str
 ) -> None:
-    """Only a fit with no optical function to normalise for skips twiss."""
+    """Only a fit with no optical function to normalise for skips twiss (``optics_names`` empty)."""
     bpms = ["BPM1", "BPM2", "BPM3", "BPM4"]
-    data = ClosedTwissData(bpm_names=bpms, observables=_observables(names), pt=0.0)
+    series = ClosedOrbitSeriesData(
+        bpm_names=bpms,
+        measurements=[ClosedOrbitMeasurementData(observables=_observables(names))],
+        absolute_planes=tuple(name for name in names if name in ("x", "y")),
+    )
     _parent, child = mp.Pipe()
-    worker = ClosedTwissWorker(
+    worker = ClosedOrbitWorker(
         child,
         0,
-        data,
+        [series],
         _worker_config(seq_psb),
-        SimulationConfig(num_workers=1, num_batches=1),
+        WorkerRuntime(num_workers=1),
     )
-    assert worker.closed_solver == expected
-
-
-def test_phase_only_orbit_series_keeps_twiss(seq_psb: Path) -> None:
-    """A ClosedOrbitWorker series is orbit-only or phase-only; the phase one needs twiss."""
-    bpms = ["BPM1", "BPM2", "BPM3", "BPM4"]
-    _parent, child = mp.Pipe()
-    for names, expected in ((("x", "y"), "compute_closed_orbit()"), (("mu1", "mu2"), "compute_closed_twiss()")):
-        series = ClosedOrbitSeriesData(
-            bpm_names=bpms,
-            measurements=[ClosedOrbitMeasurementData(observables=_observables(names))],
-            absolute_planes=("x", "y") if names[0] == "x" else (),
-        )
-        worker = ClosedOrbitWorker(
-            child, 0, [series], _worker_config(seq_psb), SimulationConfig(num_workers=1, num_batches=1)
-        )
-        assert worker.closed_solver == expected, names
+    assert (not worker.optics_names) == (expected == "compute_closed_orbit()")
 
 
 @pytest.mark.slow
@@ -241,8 +231,8 @@ def test_lost_closed_orbit_is_reported_and_recovered_from(seq_psb: Path) -> None
     seeds its plain ``cofind`` from it alone), so it hits them identically.
     """
     kwargs = {"misalignments": {"quad": {"dx"}}}
-    iface = GradientDescentMadInterface(
-        PSB(ring=3, sequence_file=seq_psb, **kwargs), py_name=PYTHON_IN_MAD
+    iface = MadInterface(
+        PSB(ring=3, sequence_file=seq_psb, **kwargs), py_name=PYTHON_IN_MAD, create_knobs=True
     )
     mad = iface.mad
     _send_init(iface, [next(k for k in iface.knob_names if k != "pt")], ["beta11_"], 0.0)
@@ -260,11 +250,11 @@ def test_lost_closed_orbit_is_reported_and_recovered_from(seq_psb: Path) -> None
 
 @pytest.mark.slow
 def test_orbit_only_fit_reproduces_the_measured_orbit(seq_psb: Path) -> None:
-    """A real ``ClosedTwissFitter`` fit on x and y alone, run through cofind+track.
+    """A real closed-twiss fit on x alone, run through cofind+track.
 
-    48 horizontal misalignments against 3 x 16 orbit points is under-determined, so the
-    assertion is on the *reproduced orbit*, not on the knob vector -- the same stance the
-    vertical-dispersion test takes.
+    48 horizontal misalignments against 3 x 16 orbit points is under-determined, so the prior
+    (the width the truth is drawn from) sets the unseen directions: the fit must be the
+    Gaussian posterior mean and reproduce the orbit within the MAP chi² bound.
     """
     kwargs = {"misalignments": {"quad": {"dx"}}}
     knobs = _knob_names(seq_psb, kwargs)
@@ -275,11 +265,11 @@ def test_orbit_only_fit_reproduces_the_measured_orbit(seq_psb: Path) -> None:
     measured_rms = float(np.sqrt(np.mean(measurements[0.0]["X"] ** 2)))
     assert measured_rms > 1e-4, f"injected misalignments only gave {measured_rms:.1e} m rms orbit"
 
-    fitted = _fit(seq_psb, measurements, ("x",), kwargs, prior_strength=1e-6)
-    for delta in DELTAS:
-        refit = _fake_measurement(seq_psb, fitted, delta, kwargs)
-        residual = float(np.max(np.abs(refit["X"] - measurements[delta]["X"])))
-        assert residual < 1e-2 * measured_rms, (
-            f"fitted x residual {residual:.3e} m at delta={delta:+.0e} against a "
-            f"measured rms of {measured_rms:.3e} m"
+    fitted, fitter = _fitted(seq_psb, measurements, ("x",), kwargs, {"dx": 5e-5 / np.sqrt(3)})
+    x_chi2 = sum(
+        float(
+            np.sum(((_fake_measurement(seq_psb, fitted, d, kwargs)["X"] - m["X"]) / m["ERRX"]) ** 2)
         )
+        for d, m in measurements.items()
+    )
+    assert_map_of_noise_free_data(fitter, fitted, truth, x_chi2)

@@ -8,20 +8,16 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from accelmo.config import SimulationConfig
+from accelmo.backend.madng import MadInterface
+from accelmo.config import WorkerRuntime
 from accelmo.fitting.protocol import Evaluate, GradReply
 from accelmo.fitting.worker import WorkerConfig
 from accelmo.machine.accelerators import PSB
-from accelmo.machine.mad import GradientDescentMadInterface
 from accelmo.poco import (
     ClosedOrbitMeasurement,
     ClosedOrbitSeries,
 )
-from accelmo.poco.fitter import (
-    apply_prior,
-    prior_alphas,
-    validate_prior_strengths,
-)
+from accelmo.poco.fitter import _KnobProblem
 from accelmo.poco.workers.closed_orbit import (
     ClosedOrbitMeasurementData,
     ClosedOrbitSeriesData,
@@ -53,70 +49,32 @@ def test_each_measurement_keeps_its_own_target_and_momenta() -> None:
     assert [item.reference_pt for item in series.measurements] == [0.0, 1e-3]
 
 
-def test_nested_series_exposes_every_observable_for_global_normalisation() -> None:
-    first = Observable("x", np.zeros(2), np.ones(2))
-    second = Observable("x", np.ones(2), np.full(2, 4.0))
-    data = ClosedOrbitSeriesData(
-        bpm_names=["BPM1", "BPM2"],
-        measurements=[
-            ClosedOrbitMeasurementData([first]),
-            ClosedOrbitMeasurementData([second], pt=1e-3),
-        ],
+def test_knob_prior_adds_to_the_workers_chi2() -> None:
+    """The workers send chi²; the LM point is the MAP chi² ``chi² + k^T P k`` and its derivatives."""
+    rng = np.random.default_rng(0)
+    jac, target = rng.normal(size=(12, 3)), rng.normal(size=12)
+    weights = rng.uniform(1.0, 4.0, 12)
+    sigma = np.array([0.5, 0.0, 2.0])
+    prior = np.diag(np.divide(1.0, sigma**2, out=np.zeros(3), where=sigma > 0))
+    k = rng.normal(size=3)
+
+    residual = jac @ k - target
+    normal = jac.T @ (weights[:, None] * jac)
+    reply = GradReply(
+        0,
+        float(residual @ (weights * residual)),
+        2.0 * jac.T @ (weights * residual),
+        normal,
     )
-    assert data.observables == [first, second]
+    names = ["q1.dk1l", "q2.dk1l", "q3.dk1l"]
+    point = _KnobProblem(names, lambda _knobs: [reply], prior, []).evaluate(k, iteration=1)
 
-
-def test_prior_families_are_validated_and_negative_values_rejected() -> None:
-    assert validate_prior_strengths({"dk1l": 1e-4, "dy": 2e-4}) == {
-        "dk1l": 1e-4,
-        "dy": 2e-4,
-    }
-    with pytest.raises(ValueError, match=">= 0"):
-        validate_prior_strengths({"dy": -1.0})
-    with pytest.raises(ValueError, match="terminal attribute"):
-        validate_prior_strengths({".dy": 1.0})
-
-
-def test_suffix_priors_scale_each_unit_family_from_its_own_curvature() -> None:
-    names = ["q1.dk1l", "q2.dk1l", "q1.dy", "q2.dy"]
-    hessian = np.diag([10.0, 30.0, 1e8, 3e8])
-    alphas = prior_alphas(
-        {"dk1l": 1e-4, "dy": 2e-4},
-        hessian,
-        names,
+    chi2 = float(residual @ (weights * residual)) + float(k @ prior @ k)
+    assert point.loss == pytest.approx(chi2, rel=1e-14)
+    assert point.grad == pytest.approx(
+        2.0 * jac.T @ (weights * residual) + 2.0 * prior @ k, rel=1e-13
     )
-    assert alphas == pytest.approx([2e-3, 2e-3, 4e4, 4e4])
-
-
-def test_prior_families_must_exactly_cover_optimised_knobs() -> None:
-    with pytest.raises(ValueError, match=r"missing=\['dy'\]"):
-        prior_alphas(
-            {"dk1l": 1e-4},
-            np.eye(2),
-            ["q1.dk1l", "q1.dy"],
-        )
-    with pytest.raises(ValueError, match=r"unused=\['tilt'\]"):
-        prior_alphas(
-            {"dk1l": 1e-4, "tilt": 1e-3},
-            np.eye(1),
-            ["q1.dk1l"],
-        )
-
-
-def test_vector_prior_is_applied_consistently() -> None:
-    params = np.array([2.0, 3.0])
-    mean = np.array([1.0, 1.0])
-    loss, gradient, hessian = apply_prior(
-        5.0,
-        np.zeros(2),
-        np.eye(2),
-        params,
-        mean,
-        np.array([2.0, 4.0]),
-    )
-    assert loss == pytest.approx(14.0)
-    assert gradient == pytest.approx([2.0, 8.0])
-    assert hessian == pytest.approx(np.diag([3.0, 5.0]))
+    assert point.hessian == pytest.approx(2.0 * (normal + prior), rel=1e-13)
 
 
 def test_measurements_in_one_series_add_up_like_separate_series(seq_psb: Path) -> None:
@@ -128,16 +86,15 @@ def test_measurements_in_one_series_add_up_like_separate_series(seq_psb: Path) -
     the wrong momentum, breaks the equality.
     """
     accelerator = PSB(ring=3, sequence_file=seq_psb, misalignments={"quad": {"dx"}})
-    iface = GradientDescentMadInterface(accelerator)
+    iface = MadInterface(accelerator, create_knobs=True)
     bpms = list(iface.all_bpms)
-    knobs = {name: 1e-5 * (i + 1) for i, name in enumerate(n for n in iface.knob_names if n != "pt")}
+    knobs = {
+        name: 1e-5 * (i + 1) for i, name in enumerate(n for n in iface.knob_names if n != "pt")
+    }
     iface.close()
     config = WorkerConfig(
         accelerator=accelerator,
-        tracking_start_bpm="$start",
-        tracking_end_bpm="$end",
         magnet_range="$start/$end",
-        cycle_sequence=False,
     )
 
     def measurement(pt: float, target: float) -> ClosedOrbitMeasurementData:
@@ -146,12 +103,12 @@ def test_measurements_in_one_series_add_up_like_separate_series(seq_psb: Path) -
 
     def evaluate(*measurements: ClosedOrbitMeasurementData) -> GradReply:
         series = ClosedOrbitSeriesData(bpm_names=bpms, measurements=list(measurements))
-        worker = ClosedOrbitWorker(None, 0, [series], config, SimulationConfig(num_workers=1, num_batches=1))
-        mad = worker.on_start(knobs)
+        worker = ClosedOrbitWorker(None, 0, [series], config, WorkerRuntime(num_workers=1))
+        worker.on_start(knobs)
         try:
-            return worker.evaluate(mad, Evaluate(knobs))
+            return worker.evaluate(Evaluate(knobs))
         finally:
-            mad.send("shush()")
+            worker.engine.close()
 
     low, high = measurement(1e-3, 1e-4), measurement(2e-3, -2e-4)
     together = evaluate(low, high)

@@ -15,21 +15,26 @@ class LevenbergMarquardtConfig:
     """Configuration for a Levenberg-Marquardt Gauss-Newton solve."""
 
     max_iterations: int = 50
-    gradient_converged_value: float = 1e-10
     loss_relative_tolerance: float = 1e-12
     initial_lambda: float = 0.0
     lambda_floor: float = 1e-10
     lambda_decrease: float = 0.5
     lambda_increase: float = 10.0
     lambda_max: float = 1e10
+    #: Floor of the loss scale in the relative test; 0 makes it purely relative (tiny losses).
+    loss_relative_floor: float = 1.0
+    #: Consecutive accepted steps that must each change the loss by less than the tolerance.
+    loss_stall_patience: int = 1
 
     def __post_init__(self) -> None:
         if self.max_iterations < 1:
             raise ValueError("LevenbergMarquardtConfig.max_iterations must be >= 1")
-        if self.gradient_converged_value < 0.0:
-            raise ValueError("LevenbergMarquardtConfig.gradient_converged_value must be >= 0")
         if self.loss_relative_tolerance < 0.0:
             raise ValueError("LevenbergMarquardtConfig.loss_relative_tolerance must be >= 0")
+        if self.loss_relative_floor < 0.0:
+            raise ValueError("LevenbergMarquardtConfig.loss_relative_floor must be >= 0")
+        if self.loss_stall_patience < 1:
+            raise ValueError("LevenbergMarquardtConfig.loss_stall_patience must be >= 1")
         if self.initial_lambda < 0.0 or self.lambda_floor < 0.0:
             raise ValueError("LevenbergMarquardtConfig damping values must be >= 0")
         if self.lambda_decrease <= 0.0 or self.lambda_increase <= 1.0:
@@ -74,6 +79,7 @@ class LevenbergMarquardtOptimiser:
         # there with the increased damping instead of re-evaluating it unchanged.
         self.best_grad: np.ndarray | None = None
         self.prev_loss: float | None = None
+        self.stall_count = 0
         self.t = 0
 
     def update(
@@ -102,12 +108,12 @@ class LevenbergMarquardtOptimiser:
             self._increase_damping()
             return self._retry_from_best(loss, grad_norm, "rejected")
 
-        loss_converged = (
-            self.prev_loss is not None
-            and abs(self.prev_loss - loss)
-            <= self.config.loss_relative_tolerance * max(1.0, abs(self.prev_loss))
+        stalled = self.prev_loss is not None and abs(self.prev_loss - loss) <= (
+            self.config.loss_relative_tolerance
+            * max(self.config.loss_relative_floor, abs(self.prev_loss))
         )
-        grad_converged = grad_norm < self.config.gradient_converged_value
+        self.stall_count = self.stall_count + 1 if stalled else 0
+        loss_converged = self.stall_count >= self.config.loss_stall_patience
 
         self.best.record(loss, params.copy())
         self.best_hessian = hessian.copy()
@@ -115,8 +121,7 @@ class LevenbergMarquardtOptimiser:
         self._decrease_damping()
         self.prev_loss = float(loss)
 
-        if grad_converged or loss_converged:
-            reason = "gradient_converged" if grad_converged else "loss_converged"
+        if loss_converged:
             return LevenbergMarquardtUpdate(
                 next_params=params.copy(),
                 accepted=True,
@@ -124,7 +129,7 @@ class LevenbergMarquardtOptimiser:
                 loss=float(loss),
                 grad_norm=grad_norm,
                 damping=self.damping,
-                reason=reason,
+                reason="loss_converged",
             )
 
         return LevenbergMarquardtUpdate(
@@ -185,6 +190,14 @@ class LevenbergMarquardtOptimiser:
             reason=reason,
         )
 
+    def reset_objective(self, params: np.ndarray) -> None:
+        """Forget the best point: the objective changed, so old losses no longer compare."""
+        self.best = BestTracker(value=np.array(params, dtype=float).copy())
+        self.best_hessian = None
+        self.best_grad = None
+        self.prev_loss = None
+        self.stall_count = 0
+
     def solve_step(self, hessian: np.ndarray, grad: np.ndarray) -> np.ndarray:
         """Solve ``(H + lambda diag(H)) step = -grad`` for the LM step."""
         damped = np.asarray(hessian, dtype=float)
@@ -204,11 +217,10 @@ class LevenbergMarquardtOptimiser:
             "damping": float(self.damping),
             "best_loss": float(self.best.loss),
             "best_params": self.best.value.tolist(),
-            "best_hessian": None
-            if self.best_hessian is None
-            else self.best_hessian.tolist(),
+            "best_hessian": None if self.best_hessian is None else self.best_hessian.tolist(),
             "best_grad": None if self.best_grad is None else self.best_grad.tolist(),
             "prev_loss": self.prev_loss,
+            "stall_count": int(self.stall_count),
             "t": int(self.t),
         }
 
@@ -217,14 +229,15 @@ class LevenbergMarquardtOptimiser:
         if state.get("type") != "levenberg_marquardt":
             raise ValueError("State type does not match levenberg_marquardt")
         self.damping = float(state["damping"])
-        self.best = BestTracker(float(state["best_loss"]), np.array(state["best_params"], dtype=float))
-        best_hessian = state.get("best_hessian")
-        self.best_hessian = (
-            None if best_hessian is None else np.array(best_hessian, dtype=float)
+        self.best = BestTracker(
+            value=np.array(state["best_params"], dtype=float), loss=float(state["best_loss"])
         )
+        best_hessian = state.get("best_hessian")
+        self.best_hessian = None if best_hessian is None else np.array(best_hessian, dtype=float)
         best_grad = state.get("best_grad")
         self.best_grad = None if best_grad is None else np.array(best_grad, dtype=float)
         self.prev_loss = state.get("prev_loss")
+        self.stall_count = int(state["stall_count"])
         self.t = int(state["t"])
 
     def _increase_damping(self) -> None:

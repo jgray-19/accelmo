@@ -1,7 +1,7 @@
 """Tests for MAD interfaces.
 
-This module contains pytest tests for GenericMadInterface and
-GradientDescentMadInterface.
+This module contains pytest tests for MadInterface and
+MadInterface.
 """
 
 from __future__ import annotations
@@ -12,12 +12,9 @@ import numpy as np
 import pytest
 from pymadng_utils.io.utils import read_knobs
 
+from accelmo.backend.madng.interface import MadInterface
 from accelmo.machine.accelerators import LHC, PSB
-from accelmo.machine.mad import merge_machine_states
-from accelmo.machine.mad.optimising_mad_interface import (
-    GenericMadInterface,
-    GradientDescentMadInterface,
-)
+from accelmo.machine.machine_state import merge_machine_states
 from tests.mad.helpers import (
     check_beam_setup,
     check_corrector_strengths,
@@ -55,9 +52,7 @@ _LHC_SPEC_KEYS = {
         _spec_key(("hkicker", "kick", LHC.PATTERN_CORRECTOR, None)),
         _spec_key(("vkicker", "kick", LHC.PATTERN_CORRECTOR, None)),
     ],
-    ("other_quad", "dx"): [
-        _spec_key(("quadrupole", "dx", LHC.PATTERN_QUAD_DISPLACEMENT_X, "k1"))
-    ],
+    ("other_quad", "dx"): [_spec_key(("quadrupole", "dx", LHC.PATTERN_QUAD_DISPLACEMENT_X, "k1"))],
     ("quad", "dy"): [_spec_key(("quadrupole", "dy", LHC.PATTERN_MAIN_QUAD, "k1"))],
     ("other_quad", "dy"): [
         _spec_key(("quadrupole", "dy", LHC.PATTERN_QUAD_DISPLACEMENT_Y_OTHER, "k1"))
@@ -129,11 +124,11 @@ def test_lhc_all_optimisation_combinations_select_expected_knob_list(
         optimise_energy=optimise_energy,
     )
 
-    # Exercise the knob-selection path from GradientDescentMadInterface without
+    # Exercise the knob-selection path from MadInterface without
     # creating a full MAD session (faster exhaustive combinatorial test).
-    interface = GradientDescentMadInterface.__new__(GradientDescentMadInterface)
+    interface = MadInterface.__new__(MadInterface)
     interface.accelerator = accelerator
-    selected_specs = interface.get_knob_specs()
+    selected_specs = interface.accelerator.get_knob_specs()
 
     actual_knob_list = [_spec_key(spec[:4]) for spec in selected_specs]
     if optimise_energy:
@@ -150,7 +145,7 @@ def setup_and_check_interface(
     accelerator: LHC,
     magnet_range: str = "$start/$end",
     bpm_range: str = "$start/$end",
-) -> tuple[GenericMadInterface, pd.DataFrame]:
+) -> tuple[MadInterface, pd.DataFrame]:
     """Set up interface with given parameters and perform common validation checks.
 
     Args:
@@ -162,7 +157,7 @@ def setup_and_check_interface(
     Returns:
         Tuple of (interface, twiss_dataframe) after setup and validation
     """
-    interface = GenericMadInterface(
+    interface = MadInterface(
         accelerator=accelerator,
         magnet_range=magnet_range,
         bpm_range=bpm_range,
@@ -183,17 +178,15 @@ def setup_and_check_interface(
 
 
 @pytest.fixture(scope="function")
-def optimising_interface(seq_b1: Path) -> Generator[GradientDescentMadInterface, None, None]:
-    """Create a fresh GradientDescentMadInterface for each test."""
+def optimising_interface(seq_b1: Path) -> Generator[MadInterface, None, None]:
+    """Create a fresh MadInterface for each test."""
     accelerator = LHC(
         beam=1,
         kinetic_energy=KE,
         sequence_file=str(seq_b1),
         optimise_energy=True,
     )
-    iface = GradientDescentMadInterface(
-        accelerator=accelerator,
-    )
+    iface = MadInterface(accelerator=accelerator, create_knobs=True)
     yield iface
     cleanup_interface(iface)
 
@@ -207,21 +200,21 @@ class TestOptimisationMadInterfaceInit:
         ],
     )
     def test_default(self, seq_b1: Path, ke: float | None, seq_name: str | None) -> None:
-        """Test initialisation of GenericMadInterface with default parameters."""
+        """Test initialisation of MadInterface with default parameters."""
         print(f"Testing with kinetic energy: {ke} GeV and sequence name: {seq_name}")
         accelerator = LHC(
             beam=1,
             kinetic_energy=ke or KE,
             sequence_file=str(seq_b1),
         )
-        interface = GenericMadInterface(
+        interface = MadInterface(
             accelerator=accelerator,
         )
         check_interface_basic_init(interface, "py")
 
         # Default discard_mad_output=False, so no stdout_file attributes
-        assert not hasattr(interface.mad._MAD__process, 'stdout_file')
-        assert not hasattr(interface.mad._MAD__process, 'stdout_file_path')
+        assert not hasattr(interface.mad._MAD__process, "stdout_file")
+        assert not hasattr(interface.mad._MAD__process, "stdout_file_path")
         assert interface.mad._MAD__process.debug is False  # default debug=False
 
         assert interface.magnet_range == "$start/$end"
@@ -251,7 +244,7 @@ class TestOptimisationMadInterfaceInit:
             kinetic_energy=KE,
             sequence_file=str(seq_b1),
         )
-        interface = GenericMadInterface(
+        interface = MadInterface(
             accelerator=accelerator,
             discard_mad_output=True,
         )
@@ -331,7 +324,12 @@ class TestOptimisationMadInterfaceInit:
 
     @pytest.mark.parametrize(
         "optimise_energy, errors",
-        [(True, {}), (False, {"quad": {"k1"}}), (False, {"bend": {"k0"}}), (True, {"quad": {"k1"}})],
+        [
+            (True, {}),
+            (False, {"quad": {"k1"}}),
+            (False, {"bend": {"k0"}}),
+            (True, {"quad": {"k1"}}),
+        ],
         ids=["opt-energy_only", "opt-quad_only", "opt-bend_only", "opt-energy_quad"],
     )
     def test_with_knob_config(
@@ -348,9 +346,8 @@ class TestOptimisationMadInterfaceInit:
             optimise_energy=optimise_energy,
             errors=errors,
         )
-        interface = GradientDescentMadInterface(
-            accelerator=accelerator,
-            discard_mad_output=True,
+        interface = MadInterface(
+            accelerator=accelerator, discard_mad_output=True, create_knobs=True
         )
         check_interface_basic_init(interface, "py")
         if optimise_energy:
@@ -379,7 +376,7 @@ class TestOptimisationMadInterfaceInit:
     @pytest.mark.parametrize("apply_correctors", [True, False])
     @pytest.mark.parametrize(
         "interface_cls, optimise_energy",
-        [(GenericMadInterface, False), (GradientDescentMadInterface, True)],
+        [(MadInterface, False), (MadInterface, True)],
         ids=["generic", "gradient_descent"],
     )
     def test_with_corrector_settings(
@@ -409,9 +406,7 @@ class TestOptimisationMadInterfaceInit:
 
         cleanup_interface(interface)
 
-    def test_knob_files(
-        self, seq_b1: Path, corrector_knobs: Path, tune_knobs: Path
-    ) -> None:
+    def test_knob_files(self, seq_b1: Path, corrector_knobs: Path, tune_knobs: Path) -> None:
         """Test initialization with knob for tunes and corrector files."""
         corrector_knob_file = corrector_knobs
         tune_knob_file = tune_knobs
@@ -421,33 +416,33 @@ class TestOptimisationMadInterfaceInit:
             kinetic_energy=KE,
             sequence_file=str(seq_b1),
         )
-        no_knob_interface = GenericMadInterface(
+        no_knob_interface = MadInterface(
             accelerator=accelerator,
             machine_state=None,
         )
         original_mqt_strength = no_knob_interface.mad["loaded_sequence['MQT.14R3.B1'].k1"]
 
-        knob_interface = GenericMadInterface(
+        knob_interface = MadInterface(
             accelerator=accelerator,
             machine_state=merge_machine_states(corrector_knob_file, tune_knob_file),
         )
         corrector_knobs = read_knobs(corrector_knob_file)
         tune_knobs = read_knobs(tune_knob_file)
         all_knobs = {**corrector_knobs, **tune_knobs}
-        for name in all_knobs:
-            assert knob_interface.mad[f"MADX['{name}']"] == all_knobs[name]
+        for name, value in all_knobs.items():
+            assert knob_interface.mad[f"MADX['{name}']"] == value
             assert knob_interface.mad[f"MADX['{name}']"] != no_knob_interface.mad[f"MADX['{name}']"]
         # Check that the mqt strength has changed, not just that the knobs exists in the MAD interface
         new_mqt_strength = knob_interface.mad["loaded_sequence['MQT.14R3.B1'].k1"]
         assert new_mqt_strength != original_mqt_strength
-        print(f"Original MQT.14R3.B1 strength: {original_mqt_strength}, New strength: {new_mqt_strength}")
+        print(
+            f"Original MQT.14R3.B1 strength: {original_mqt_strength}, New strength: {new_mqt_strength}"
+        )
 
         cleanup_interface(knob_interface)
         cleanup_interface(no_knob_interface)
 
-    def test_knob_mappings(
-        self, seq_b1: Path, corrector_knobs: Path, tune_knobs: Path
-    ) -> None:
+    def test_knob_mappings(self, seq_b1: Path, corrector_knobs: Path, tune_knobs: Path) -> None:
         """A dict of knob name/value pairs should apply identically to the equivalent knob file."""
         accelerator = LHC(
             beam=1,
@@ -457,11 +452,11 @@ class TestOptimisationMadInterfaceInit:
         corrector_mapping = read_knobs(corrector_knobs)
         tune_mapping = read_knobs(tune_knobs)
 
-        file_interface = GenericMadInterface(
+        file_interface = MadInterface(
             accelerator=accelerator,
             machine_state=merge_machine_states(corrector_knobs, tune_knobs),
         )
-        mapping_interface = GenericMadInterface(
+        mapping_interface = MadInterface(
             accelerator=accelerator,
             machine_state=merge_machine_states(corrector_mapping, tune_mapping),
         )
@@ -493,7 +488,7 @@ class TestOptimisationMadInterfaceInit:
             kinetic_energy=KE,
             sequence_file=str(seq_b1),
         )
-        interface = GenericMadInterface(
+        interface = MadInterface(
             accelerator=accelerator,
             machine_state=None,
             bad_bpms=bad_bpms,
@@ -504,12 +499,16 @@ class TestOptimisationMadInterfaceInit:
         expected_nbpms = 563 - num_bad_bpms
 
         # Check that nbpms is reduced by the number of bad BPMs
-        assert interface.nbpms == expected_nbpms, f"Expected {expected_nbpms} BPMs, got {interface.nbpms}"
+        assert interface.nbpms == expected_nbpms, (
+            f"Expected {expected_nbpms} BPMs, got {interface.nbpms}"
+        )
 
         # Check that bad_bpms are not in bpms_in_range
         if bad_bpms:
             for bpm in bad_bpms:
-                assert bpm not in interface.bpms_in_range, f"Bad BPM {bpm} should not be in bpms_in_range"
+                assert bpm not in interface.bpms_in_range, (
+                    f"Bad BPM {bpm} should not be in bpms_in_range"
+                )
 
         # Run twiss and check that bad_bpms are not in the dataframe
         twiss_df = interface.run_twiss()
@@ -532,7 +531,7 @@ class TestOptimisationMadInterfaceInit:
     ],
     ids=["full_range", "custom_range", "wider_custom_range"],
 )
-def test_count_bpms(optimising_interface: GradientDescentMadInterface, bpm_range: str) -> None:
+def test_count_bpms(optimising_interface: MadInterface, bpm_range: str) -> None:
     """Test counting BPMs in the sequence with different ranges."""
     full_bpms = optimising_interface.all_bpms
 
@@ -542,17 +541,16 @@ def test_count_bpms(optimising_interface: GradientDescentMadInterface, bpm_range
         start, end = bpm_range.split("/")
         expected_bpms_in_range = full_bpms[full_bpms.index(start) : full_bpms.index(end) + 1]
 
-    bpms_in_range, nbpms, all_bpms = optimising_interface.count_bpms(bpm_range)
-    assert nbpms == len(expected_bpms_in_range)
+    all_bpms, bpms_in_range = optimising_interface.get_bpm_list(bpm_range)
     assert bpms_in_range == expected_bpms_in_range
     assert all_bpms == full_bpms  # Should always return full BPM list
 
 
 def test_recv_update_knob_values(
-    optimising_interface: GradientDescentMadInterface,
+    optimising_interface: MadInterface,
 ) -> None:
     """Test receiving current knob values."""
-    values = optimising_interface.receive_knob_values()
+    values = optimising_interface.knob_values()
     # We are optimising energy by default, so "pt" knob should be present with a value
     assert len(values) == 1
 
@@ -562,14 +560,14 @@ def test_recv_update_knob_values(
     optimising_interface.mad.send(
         "loaded_sequence.a = 1.0; loaded_sequence.b = 2.1; loaded_sequence.c = -3.2"
     )
-    values = optimising_interface.receive_knob_values()
+    values = optimising_interface.knob_values()
     # The "pt" knob should have a default value of 1e-6 (as set in get_base_knob_values), and the new knobs should have the values we set
     assert all(values == [1e-6, 1.0, 2.1, -3.2]), f"Unexpected knob values: {values}"
 
     # Update knobs (including a non-existent one "pt" that should be ignored)
     update_table = {"a": 4.5, "b": -6.7, "c": 8.9, "pt": 1.0}
     optimising_interface.update_knob_values(update_table)
-    values = optimising_interface.receive_knob_values()
+    values = optimising_interface.knob_values()
     # Only the 3 existing knobs should be updated
     assert all(values == [1.0, 4.5, -6.7, 8.9]), f"Unexpected knob values after update: {values}"
 
@@ -582,10 +580,7 @@ def test_quadrupole_knob_updates_use_dknl(seq_b1: Path) -> None:
         sequence_file=str(seq_b1),
         errors={"quad": {"k1"}},
     )
-    interface = GradientDescentMadInterface(
-        accelerator=accelerator,
-        discard_mad_output=True,
-    )
+    interface = MadInterface(accelerator=accelerator, discard_mad_output=True, create_knobs=True)
 
     knob_name = next(knob for knob in interface.knob_names if knob.endswith(".dk1l"))
     element_name = knob_name.removesuffix(".dk1l")
@@ -631,19 +626,19 @@ def test_initial_model_value_is_preserved_when_quadrupole_knob_is_created(seq_b1
         sequence_file=str(seq_b1),
         errors={"quad": {"k1"}},
     )
-    probe_interface = GradientDescentMadInterface(
-        accelerator=accelerator,
-        discard_mad_output=True,
+    probe_interface = MadInterface(
+        accelerator=accelerator, discard_mad_output=True, create_knobs=True
     )
     knob_name = next(knob for knob in probe_interface.knob_names if knob.endswith(".dk1l"))
     cleanup_interface(probe_interface)
 
     element_name = knob_name.removesuffix(".dk1l")
     target_delta = 2.5e-4
-    interface = GradientDescentMadInterface(
+    interface = MadInterface(
         accelerator=accelerator,
         initial_model_values={knob_name: target_delta},
         discard_mad_output=True,
+        create_knobs=True,
     )
 
     assert knob_name in interface.knob_name_set
@@ -653,24 +648,24 @@ def test_initial_model_value_is_preserved_when_quadrupole_knob_is_created(seq_b1
     cleanup_interface(interface)
 
 
-def test_observed_tracking_anchor_markers_overrides_default_anchor_observation(
-    seq_psb: Path,
-) -> None:
-    """``observed_tracking_anchor_markers`` replaces, rather than adds to, the default set."""
+def test_anchor_markers_are_observed_unless_switched_off(seq_psb: Path) -> None:
+    """Workers switch off the anchor-marker observation the parent model keeps."""
     accelerator = PSB(ring=3, sequence_file=seq_psb, errors={"quad": {"k1"}})
     acd_after = accelerator.acd_marker_name("after")
     acd_before = accelerator.acd_marker_name("before")
 
-    default_interface = GradientDescentMadInterface(
+    default_interface = MadInterface(
         accelerator=accelerator,
         tracking_anchor_mode="acd",
         discard_mad_output=True,
+        create_knobs=True,
     )
-    overridden_interface = GradientDescentMadInterface(
+    overridden_interface = MadInterface(
         accelerator=accelerator,
         tracking_anchor_mode="acd",
-        observed_tracking_anchor_markers=[],
+        observe_anchor_markers=False,
         discard_mad_output=True,
+        create_knobs=True,
     )
     try:
         assert acd_after in default_interface.all_bpms

@@ -9,6 +9,7 @@ from accelmo.poco.workers.closed_orbit import (
     ClosedOrbitMeasurementData,
     ClosedOrbitSeriesData,
     ClosedOrbitWorker,
+    validate_series,
 )
 from accelmo.poco.workers.closed_twiss import Observable
 
@@ -25,6 +26,7 @@ def _prepared(**overrides) -> ClosedOrbitWorker:
         measurements=[ClosedOrbitMeasurementData(observables=[_observable("x"), _observable("y")])],
         **{"machine_state": {"kbr3dhz8l1": 5e-5}, **overrides},
     )
+    validate_series(data)
     worker.prepare_data([data])
     return worker
 
@@ -57,9 +59,40 @@ def test_without_absolute_planes_both_planes_are_differenced() -> None:
 def test_an_untrimmed_series_is_signal_only_when_a_plane_is_absolute() -> None:
     with pytest.raises(ValueError, match="absolute plane"):
         _prepared(machine_state={})
-    assert _prepared(machine_state={}, absolute_planes=("y",)).series[0].data.absolute_planes == ("y",)
+    assert _prepared(machine_state={}, absolute_planes=("y",)).series[0].data.absolute_planes == (
+        "y",
+    )
 
 
 def test_an_unknown_plane_is_rejected() -> None:
     with pytest.raises(ValueError, match="Unknown absolute plane"):
         _prepared(absolute_planes=("z",))
+
+
+def _twiss_series(names: tuple[str, ...], absolute: tuple[str, ...], n_measurements: int = 1):
+    return ClosedOrbitSeriesData(
+        bpm_names=["BR3.BPM1L3", "BR3.BPM2L3"],
+        measurements=[
+            ClosedOrbitMeasurementData(observables=[_observable(n) for n in names], pt=1e-3 * i)
+            for i in range(n_measurements)
+        ],
+        absolute_planes=absolute,
+    )
+
+
+def test_closed_twiss_series_fits_orbit_and_optics_as_measured() -> None:
+    """Optics with absolute orbit planes in one measurement is one twiss: no reference subtraction."""
+    data = _twiss_series(("x", "y", "betx", "mu1"), ("x", "y"))
+    validate_series(data)
+    assert not data.needs_reference
+
+
+@pytest.mark.parametrize(
+    ("absolute", "n_measurements", "match"),
+    [(("x",), 1, r"only as absolute"), (("x", "y"), 2, "exactly one measurement")],
+)
+def test_closed_twiss_series_refuses_references_and_several_measurements(
+    absolute: tuple[str, ...], n_measurements: int, match: str
+) -> None:
+    with pytest.raises(ValueError, match=match):
+        validate_series(_twiss_series(("x", "y", "dy"), absolute, n_measurements))

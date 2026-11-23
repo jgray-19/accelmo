@@ -14,9 +14,10 @@ import xtrack as xt
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+
 def convert_seq_to_json(seq_file: Path) -> None:
     """Convert a single .seq file to .json format."""
-    json_file = seq_file.with_suffix('.json')
+    json_file = seq_file.with_suffix(".json")
 
     if json_file.exists():
         logger.info(f"JSON file already exists: {json_file}")
@@ -37,6 +38,7 @@ def convert_seq_to_json(seq_file: Path) -> None:
         logger.error(f"Failed to convert {seq_file}: {e}")
         raise
 
+
 def main() -> None:
     """Convert all .seq files in the current directory to JSON."""
     current_dir = Path(__file__).parent
@@ -52,6 +54,7 @@ def main() -> None:
         convert_seq_to_json(seq_file)
 
     logger.info("Conversion complete")
+
 
 if __name__ == "__main__":
     main()

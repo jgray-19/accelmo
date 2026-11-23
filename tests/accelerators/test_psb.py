@@ -51,9 +51,7 @@ class TestPSBAccelerator:
             sequence_file=test_sequence_file,
             group_quadrupoles_by_cell=True,
         )
-        assert psb.format_result_knobs(
-            {"BR.QFOCELL1.dk1l": 2e-4, "BR.QDE1.dk1l": -1e-4}
-        ) == {
+        assert psb.format_result_knobs({"BR.QFOCELL1.dk1l": 2e-4, "BR.QDE1.dk1l": -1e-4}) == {
             "BR.QFO11.dk1l": 2e-4,
             "BR.QFO12.dk1l": 2e-4,
             "BR.QDE1.dk1l": -1e-4,
@@ -169,7 +167,9 @@ class TestPSBAccelerator:
         )
         assert psb.has_any_optimisation() is True
 
-    def test_format_result_knob_names_maps_indexed_sextupoles(self, test_sequence_file: Path) -> None:
+    def test_format_result_knob_names_maps_indexed_sextupoles(
+        self, test_sequence_file: Path
+    ) -> None:
         """Test PSB rewrites indexed sextupole knob names to public dk forms."""
         psb = PSB(ring=3, sequence_file=test_sequence_file)
         assert psb.format_result_knob_names(["br3.xnoh0.4l1.knl[3]"]) == ["br3.xnoh0.4l1.dk2l"]

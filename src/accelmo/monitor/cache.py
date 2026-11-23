@@ -124,6 +124,7 @@ class OpticsCache:
         return False
 
     def references(self, metadata: Mapping[str, Any]) -> dict[str, pd.DataFrame] | None:
+        """Reference optics of the run, or None until computed."""
         if not self.has_references(metadata):
             return None
         return self._load(self._path(self.model_key(metadata), "references.pkl"))
@@ -137,7 +138,9 @@ class OpticsCache:
         self._submit(_Task(priority, next(self._order), model_key, metadata, knobs.to_dict(), key))
         return False
 
-    def optics(self, metadata: Mapping[str, Any], knobs: pd.Series, priority: int) -> pd.DataFrame | None:
+    def optics(
+        self, metadata: Mapping[str, Any], knobs: pd.Series, priority: int
+    ) -> pd.DataFrame | None:
         """The optics for ``knobs``, or ``None`` after queueing them at ``priority``."""
         if not self.request(metadata, knobs, priority):
             return None
@@ -153,11 +156,13 @@ class OpticsCache:
         return json.loads(path.read_text()) if path.exists() else None
 
     def error(self, metadata: Mapping[str, Any], knobs: pd.Series | None = None) -> str | None:
+        """Error message of a failed model or knobs computation, if any."""
         key = self.model_key(metadata) if knobs is None else self.knobs_key(knobs)
         return self.errors.get(key)
 
     @property
     def pending(self) -> int:
+        """Number of queued and running computations."""
         return len(self._queued) + self.busy
 
     def _load(self, path: Path) -> Any:
@@ -188,6 +193,7 @@ class OpticsCache:
 
     def _source(self, task: _Task) -> OpticsSource:
         """This thread's source for the task's model, built on first use."""
+        assert self.spec.make_source is not None
         sources = self._local.__dict__.setdefault("sources", {})
         if task.model_key not in sources:
             LOGGER.info("Building optics source for model %s", task.model_key)

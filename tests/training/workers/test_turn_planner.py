@@ -2,16 +2,14 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-
+from accelmo.config import TrackingDataConfig
 from accelmo.tracking.dispatch.turn_planner import WorkerTurnPlanner
 
 
-class _TwoSpecPlan:
-    """A tracking plan fanning each turn batch over 2 range specs (as ACD markers)."""
+class _Plan:
+    """A tracking plan with one batch per group of workers."""
 
-    def range_specs_per_batch(self, **_kwargs):
-        return 2, "forward + backward"
+    one_start_per_worker = False
 
 
 def _plan(num_workers: int, num_files: int, turns_per_file: int = 50):
@@ -20,30 +18,30 @@ def _plan(num_workers: int, num_files: int, turns_per_file: int = 50):
         for t in range(turns_per_file):
             file_map[f * turns_per_file + t] = f
     planner = WorkerTurnPlanner(
-        _TwoSpecPlan(),
-        SimpleNamespace(num_workers=num_workers, num_batches=1, use_fixed_bpm=True),
+        _Plan(),
+        TrackingDataConfig(num_batches=1),
+        num_workers,
         shuffle_turns=lambda _turns: None,
     )
-    plan = planner.build_turn_batches(
+    batches = planner.build_turn_batches(
         available_turns=list(file_map),
         file_map=file_map,
         num_files=num_files,
-        num_starts=1,
-        num_ends=1,
+        workers_per_batch=2,  # ACD markers: forward + backward
     )
-    trained = {file_map[batch[0]] for batch in plan.turn_batches}
-    return plan, trained
+    trained = {file_map[batch[0]] for batch in batches}
+    return batches, trained
 
 
 def test_worker_cap_below_file_count_still_trains_every_file():
     # psb_md's default: 8 workers, 2 range specs -> 4 batches for 15 files.
-    plan, trained = _plan(num_workers=8, num_files=15)
+    batches, trained = _plan(num_workers=8, num_files=15)
     assert trained == set(range(15))
-    assert len(plan.turn_batches) == 15
-    assert sum(len(b) for b in plan.turn_batches) == 15 * 50
+    assert len(batches) == 15
+    assert sum(len(b) for b in batches) == 15 * 50
 
 
 def test_worker_cap_above_file_count_is_unchanged():
-    plan, trained = _plan(num_workers=60, num_files=10)
+    batches, trained = _plan(num_workers=60, num_files=10)
     assert trained == set(range(10))
-    assert len(plan.turn_batches) == 30
+    assert len(batches) == 30

@@ -6,12 +6,12 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from accelmo.measurements.acd_pipeline import (
+from accelmo.tracking.data_manager import FileTracks
+from tests.measurements.acd_pipeline import (
     ACDOpticsAnalysisConfig,
     long_frame_to_tbt_data,
     run_driven_and_compensated_optics,
 )
-from accelmo.tracking.data_manager import FileTracks
 
 
 def test_long_frame_to_tbt_data_preserves_name_and_turn_order() -> None:
@@ -95,4 +95,3 @@ def test_updated_momenta_match_markers_case_insensitively_and_keep_positions() -
     # An ACD refresh moves momenta only; the marker positions are unchanged.
     assert updated.values["x"][0, 0] == 1.0
     assert updated.values["y"][0, 0] == 3.0
-

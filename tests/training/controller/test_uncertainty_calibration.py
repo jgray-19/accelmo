@@ -22,11 +22,11 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from accelmo.config import OptimiserConfig, SimulationConfig
+from accelmo.config import OptimiserConfig, TrackingDataConfig, WorkerRuntime
 from accelmo.fitting.config import OutputConfig, SequenceConfig
 from accelmo.fitting.uncertainty import sandwich_uncertainties
-from accelmo.machine.mad import merge_machine_states
-from accelmo.tracking.config.helpers import create_arc_measurement_config
+from accelmo.machine.machine_state import merge_machine_states
+from accelmo.tracking.config.helpers import single_measurement_config
 from accelmo.tracking.config.models import MeasurementConfig
 from accelmo.tracking.fitter import ArcByArcFitter, FitterOptions
 from tests.training.controller_test_utils import (
@@ -40,7 +40,7 @@ from tests.training.controller_test_utils import (
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from accelmo.machine.mad.aba_mad_interface import AbaMadInterface
+    from accelmo.backend.madng.interface import MadInterface
 
 pytestmark = [pytest.mark.slow, pytest.mark.serial]
 
@@ -53,7 +53,11 @@ START_BPMS = [*BPM_START_POINTS, *BPM_END_POINTS]
 
 
 def _make_fitter(
-    interface: AbaMadInterface, track: Path, corrector: Path | None, tune_knobs: Path | None, log: Path
+    interface: MadInterface,
+    track: Path,
+    corrector: Path | None,
+    tune_knobs: Path | None,
+    log: Path,
 ) -> ArcByArcFitter:
     return ArcByArcFitter(
         interface.accelerator.copy_with(optimise_energy=True),
@@ -63,13 +67,11 @@ def _make_fitter(
             warmup_lr_start=1e-8,
             max_lr=2e-6,
             min_lr=2e-7,
-            gradient_converged_value=5e-10,
         ),
-        SimulationConfig(
-            num_workers=3, num_batches=2, optimise_momenta=False, validation_fraction=0.0
-        ),
+        WorkerRuntime(num_workers=3),
+        TrackingDataConfig(num_batches=2, optimise_momenta=False, validation_fraction=0.0),
         SequenceConfig(magnet_range="BPM.9R2.B1/BPM.9L3.B1"),
-        create_arc_measurement_config(track, machine_state=merge_machine_states(corrector, tune_knobs)),
+        single_measurement_config(track, machine_state=merge_machine_states(corrector, tune_knobs)),
         BPM_START_POINTS,
         BPM_END_POINTS,
         options=FitterOptions(
@@ -96,7 +98,7 @@ def _start_rows(track: pd.DataFrame) -> np.ndarray:
 
 
 def _sigma_and_scatter(
-    tmp_path: Path, interface: AbaMadInterface, *, noisy_starts: bool
+    tmp_path: Path, interface: MadInterface, *, noisy_starts: bool
 ) -> tuple[float, float]:
     """Return the reported sigma(pt) and the pt scatter over ``N_SEEDS`` noise draws."""
     clean_track = tmp_path / "track_clean.parquet"
@@ -130,7 +132,9 @@ def _sigma_and_scatter(
         noisy_track = tmp_path / f"track_seed{seed}.parquet"
         noisy.to_parquet(noisy_track, index=False)
 
-        ctrl.measurement_config = MeasurementConfig({noisy_track: ctrl.measurement_config.details[0]})
+        ctrl.measurement_config = MeasurementConfig(
+            {noisy_track: ctrl.measurement_config.details[0]}
+        )
         ctrl.data_manager = None
         low, mid, high = evaluate_controller_worker_losses(
             ctrl,
@@ -149,14 +153,14 @@ def _assert_calibrated(sigma: float, scatter: float, label: str) -> None:
 
 
 def test_sigma_matches_scatter_with_exact_start_coordinates(
-    tmp_path: Path, loaded_interface: AbaMadInterface
+    tmp_path: Path, loaded_interface: MadInterface
 ) -> None:
     sigma, scatter = _sigma_and_scatter(tmp_path, loaded_interface, noisy_starts=False)
     _assert_calibrated(sigma, scatter, "exact starts")
 
 
 def test_sigma_matches_scatter_with_noisy_start_coordinates(
-    tmp_path: Path, loaded_interface: AbaMadInterface
+    tmp_path: Path, loaded_interface: MadInterface
 ) -> None:
     sigma, scatter = _sigma_and_scatter(tmp_path, loaded_interface, noisy_starts=True)
     _assert_calibrated(sigma, scatter, "noisy starts")

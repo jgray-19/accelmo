@@ -4,14 +4,16 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pandas as pd
 
 from accelmo.runlog.writer import HISTORY_FILE, KNOBS_FILE, RESULT_FILE, STAGE_FILE
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 
 def find_stages(root: Path | Sequence[Path]) -> list[StageLog]:
@@ -42,18 +44,22 @@ class StageLog:
 
     @property
     def name(self) -> str:
+        """Stage name."""
         return self.info["name"]
 
     @property
     def started(self) -> float:
+        """Start time, seconds since the epoch."""
         return float(self.info["started"])
 
     @property
     def knob_names(self) -> list[str]:
+        """Fitted knob names."""
         return list(self.info["knob_names"])
 
     @property
     def metadata(self) -> dict[str, Any]:
+        """Stage metadata given by the fitter."""
         return dict(self.info.get("metadata", {}))
 
     @property
@@ -66,14 +72,19 @@ class StageLog:
     def label(self) -> str:
         """``name`` plus the run's own ``label`` (metadata) and the directory, to tell repeated stages apart."""
         run = self.metadata.get("label")
-        return f"{self.name} [{run}] ({self.directory.name})" if run else f"{self.name} ({self.directory.name})"
+        return (
+            f"{self.name} [{run}] ({self.directory.name})"
+            if run
+            else f"{self.name} ({self.directory.name})"
+        )
 
     def version(self) -> tuple[int, int]:
         """Sizes of the growing files: changes whenever a step is logged."""
-        return tuple(  # type: ignore[return-value]
+        history, knobs = (
             (self.directory / name).stat().st_size if (self.directory / name).exists() else 0
             for name in (HISTORY_FILE, KNOBS_FILE)
         )
+        return history, knobs
 
     def history(self) -> pd.DataFrame:
         """The logged scalars, one row per step, indexed by step."""

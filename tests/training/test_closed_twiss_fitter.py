@@ -2,7 +2,7 @@
 
 Each test perturbs real magnets, generates a *fake measurement* by twissing the
 perturbed machine, and then recovers the perturbation through the real
-``ClosedTwissFitter``. Because the synthetic measurement is produced by an
+``ClosedOrbitFitter`` with one closed-twiss series per momentum. Because the synthetic measurement is produced by an
 independent twiss of the same lattice, a successful recovery exercises the whole
 chain end to end: the parametric ``mo=2`` map, the ``trkopt`` derivative columns,
 the phase-advance differencing, the inverse-variance weighting across observables
@@ -55,26 +55,34 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from accelmo.backend.madng import MadInterface
+from accelmo.backend.madng.engines import read_orbit_only
+from accelmo.backend.madng.scripts import CLOSED_TWISS_INIT, PYTHON_IN_MAD
 from accelmo.fitting.config import SequenceConfig
 from accelmo.fitting.pool import WorkerPool
 from accelmo.fitting.protocol import Start
 from accelmo.fitting.reduction import reduce_replies
 from accelmo.machine.accelerators import PSB
-from accelmo.machine.mad import GradientDescentMadInterface
-from accelmo.machine.mad.scripts import CLOSED_TWISS_INIT, PYTHON_IN_MAD
 from accelmo.poco import (
     DEFAULT_OBSERVABLES,
-    ClosedTwissFitter,
+    ClosedOrbitFitter,
     LevenbergMarquardtConfig,
+    closed_twiss_series,
 )
-from accelmo.poco.workers.closed_twiss import ClosedTwissWorker, read_orbit_only
+from accelmo.poco.workers.closed_orbit import ClosedOrbitWorker
 
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from accelmo.poco.fitter import LMFitter
+
 pytestmark = pytest.mark.serial
 
 DELTAS = (-3e-3, 0.0, 3e-3)
+#: Relative deviation of a noise-free MAP fit from the linear-model posterior mean.
+MAP_LINEARITY_RTOL = 1e-2
+#: Rms quadrupole tilt (rad) of the tilt-recovery test, within the linear regime.
+TILT_SIGMA = 2.5e-4
 
 #: Model columns to copy into a fake measurement, as measurement column -> twiss column.
 MEASURED_FROM_TWISS = {
@@ -107,7 +115,7 @@ def _fake_measurement(
     the per-interval advances it actually fits.
     """
     accel = PSB(ring=3, sequence_file=seq_psb, **accelerator_kwargs)
-    iface = GradientDescentMadInterface(accel)
+    iface = MadInterface(accel, create_knobs=True)
     iface.update_knob_values(knob_values)
     iface.mad.send(
         f"motws = twiss{{sequence=loaded_sequence, observe=1, "
@@ -141,42 +149,73 @@ def _fake_measurement(
 
 def _knob_names(seq_psb: Path, accelerator_kwargs: dict) -> list[str]:
     """Optimisable knob names for a given PSB configuration (excluding momentum)."""
-    probe = GradientDescentMadInterface(PSB(ring=3, sequence_file=seq_psb, **accelerator_kwargs))
+    probe = MadInterface(
+        PSB(ring=3, sequence_file=seq_psb, **accelerator_kwargs), create_knobs=True
+    )
     names = [k for k in probe.knob_names if k != "pt"]
     del probe
     return names
 
 
-def _fit(
+def _fitted(
     seq_psb: Path,
     measurements: dict[float, pd.DataFrame],
     observables: tuple[str, ...],
     accelerator_kwargs: dict,
-    prior_strength: float = 0.0,
-) -> dict[str, float]:
-    """Run the real ``ClosedTwissFitter`` and return the recovered knobs."""
-    families = {
-        family
-        for selection, magnets, attr, family in (
-            ("errors", "quad", "k1", "dk1l"),
-            ("errors", "bend", "k0", "dk0l"),
-            ("misalignments", "quad", "dx", "dx"),
-            ("misalignments", "quad", "dy", "dy"),
-            ("misalignments", "quad", "tilt", "tilt"),
-        )
-        if attr in accelerator_kwargs.get(selection, {}).get(magnets, ())
-    }
-    fitter = ClosedTwissFitter(
+    knob_sigmas: dict[str, float] | None = None,
+) -> tuple[dict[str, float], ClosedOrbitFitter]:
+    """Run the real closed-twiss fit; return the recovered knobs and the fitter."""
+    fitter = ClosedOrbitFitter(
         accelerator=PSB(ring=3, sequence_file=seq_psb, **accelerator_kwargs),
         sequence_config=SequenceConfig(magnet_range="$start/$end"),
-        lm_config=LevenbergMarquardtConfig(max_iterations=40, gradient_converged_value=1e-12),
-        measurements=measurements,
-        observables=observables,
-        prior_strengths=(
-            dict.fromkeys(families, prior_strength) if prior_strength > 0.0 else None
-        ),
+        series=closed_twiss_series(measurements, observables),
+        lm_config=LevenbergMarquardtConfig(max_iterations=40),
+        knob_sigmas=knob_sigmas,
     )
-    return fitter.run().knobs
+    try:
+        return fitter.run().knobs, fitter
+    finally:
+        fitter.close()
+
+
+def _fit(*args, **kwargs) -> dict[str, float]:
+    """Run the real closed-twiss fit and return the recovered knobs."""
+    return _fitted(*args, **kwargs)[0]
+
+
+def prior_chi2(fitter: LMFitter, knobs: dict[str, float]) -> float:
+    """``θᵀPθ`` of the fitter's Gaussian knob prior."""
+    sigma = fitter.knob_sigma
+    values = np.array([knobs[name] for name in fitter.machine.knob_names])
+    return float(np.sum((values[sigma > 0] / sigma[sigma > 0]) ** 2))
+
+
+def assert_map_of_noise_free_data(
+    fitter: LMFitter, fitted: dict[str, float], truth: dict[str, float], data_chi2: float
+) -> None:
+    """Checks a fit to noise-free data under the Gaussian prior P of ``fitter``.
+
+    The data chi² is 0 at truth, so the minimum obeys χ²_data(θ̂) + θ̂ᵀPθ̂ ≤ θ_trueᵀPθ_true;
+    ``data_chi2`` (any subset of the fitted residuals) must respect that bound. For a linear
+    model the MAP error is θ̂ - θ_true = -(A + P)⁻¹ P θ_true, with A + P the fitter's
+    posterior normal matrix; the closed orbit and twiss are linear in the errors to
+    ``MAP_LINEARITY_RTOL``.
+    """
+    names = fitter.machine.knob_names
+    sigma = fitter.knob_sigma
+    true = np.array([truth[name] for name in names])
+    error = np.array([fitted[name] for name in names]) - true
+    prior = np.zeros(len(names))
+    prior[sigma > 0] = 1.0 / sigma[sigma > 0] ** 2
+    predicted = -np.linalg.solve(fitter.posterior_normal, prior * true)
+    deviation = float(np.linalg.norm(error - predicted) / np.linalg.norm(predicted))
+    bound = prior_chi2(fitter, truth) - prior_chi2(fitter, fitted)
+    print(
+        f"MAP error deviation {deviation:.3e}; data chi² {data_chi2:.4e} <= {bound:.4e} "
+        f"(truth prior chi² {prior_chi2(fitter, truth):.4e})"
+    )
+    assert deviation < MAP_LINEARITY_RTOL, f"MAP error deviates {deviation:.3e} from -(A+P)⁻¹Pθ"
+    assert data_chi2 <= bound, f"data chi² {data_chi2:.4e} exceeds the MAP bound {bound:.4e}"
 
 
 @pytest.mark.slow
@@ -285,7 +324,7 @@ def test_vertical_dispersion_requires_a_vertical_source(seq_psb: Path) -> None:
     # Quadrupole gradients cannot produce vertical dispersion at all: whatever the
     # fit does with them, the model's Dy stays at exactly zero.
     k1_kwargs = {"errors": {"quad": {"k1"}}}
-    k1_fit = _fit(seq_psb, measurements, ("dy",), k1_kwargs, prior_strength=1e-6)
+    k1_fit = _fit(seq_psb, measurements, ("dy",), k1_kwargs, {"dk1l": 1e-3})
     k1_refit = _fake_measurement(seq_psb, k1_fit, 0.0, k1_kwargs)
     assert np.allclose(k1_refit["DY"], 0.0, atol=1e-12), (
         "quadrupole gradients must not generate vertical dispersion; the fit "
@@ -307,8 +346,8 @@ def test_observables_are_consistent_with_an_independent_twiss(seq_psb: Path) -> 
 
     # The init script talks to the MAD-side object under the name the workers
     # give it, so the interface has to be built the same way here.
-    iface = GradientDescentMadInterface(
-        PSB(ring=3, sequence_file=seq_psb, **kwargs), py_name=PYTHON_IN_MAD
+    iface = MadInterface(
+        PSB(ring=3, sequence_file=seq_psb, **kwargs), py_name=PYTHON_IN_MAD, create_knobs=True
     )
     mad = iface.mad
     mad["knob_names"] = knobs
@@ -356,16 +395,15 @@ def _normal_matrix(
     accelerator_kwargs: dict,
 ) -> tuple[np.ndarray, list[str]]:
     """Physical normal matrix ``JᵀWJ`` at the nominal knobs, as the fitter builds it."""
-    fitter = ClosedTwissFitter(
+    fitter = ClosedOrbitFitter(
         accelerator=PSB(ring=3, sequence_file=seq_psb, **accelerator_kwargs),
         sequence_config=SequenceConfig(magnet_range="$start/$end"),
-        measurements=measurements,
-        observables=observables,
+        series=closed_twiss_series(measurements, observables),
     )
     pool = WorkerPool()
     try:
         for worker_id, (config, data) in enumerate(fitter.worker_payloads):
-            pool.spawn(ClosedTwissWorker, worker_id, data, config, fitter.machine.simulation_config)
+            pool.spawn(ClosedOrbitWorker, worker_id, data, config, fitter.runtime)
         names = list(fitter.machine.knob_names)
         knobs = dict.fromkeys(names, 0.0)
         pool.channels.send_all(Start(knobs))
@@ -450,7 +488,9 @@ def test_all_observables_fitted_simultaneously(seq_psb: Path) -> None:
     }
     measurements = {d: _fake_measurement(seq_psb, truth, d, kwargs) for d in DELTAS}
 
-    fitted = _fit(seq_psb, measurements, DEFAULT_OBSERVABLES, kwargs, prior_strength=1e-6)
+    # Prior widths: the std of the uniform truth draws.
+    sigmas = {"dy": 5e-5 / np.sqrt(3), "dk1l": 2e-3 / np.sqrt(3)}
+    fitted = _fit(seq_psb, measurements, DEFAULT_OBSERVABLES, kwargs, sigmas)
     refit = {d: _fake_measurement(seq_psb, fitted, d, kwargs) for d in DELTAS}
 
     # Below these the quantity is numerically zero and there is nothing to fit -
@@ -499,8 +539,8 @@ def _analytic_orbit_jacobian(
     No optics columns are requested, so this is the orbit-only path: ``cofind`` and one
     parametric ``track`` on a first-order map, not ``twiss``.
     """
-    iface = GradientDescentMadInterface(
-        PSB(ring=3, sequence_file=seq_psb, **kwargs), py_name=PYTHON_IN_MAD
+    iface = MadInterface(
+        PSB(ring=3, sequence_file=seq_psb, **kwargs), py_name=PYTHON_IN_MAD, create_knobs=True
     )
     mad = iface.mad
     knobs = [k for k in iface.knob_names if k != "pt"][:n_knobs]
@@ -586,37 +626,22 @@ def test_orbit_jacobian_matches_finite_differences(
             )
 
 
-def test_energy_knob_is_rejected(seq_psb: Path) -> None:
-    """``pt`` is a per-measurement input, so it must not also be a fitted knob.
-
-    The worker strips ``pt`` from the knob list it hands MAD-NG but the fitter
-    aggregates over the unstripped list, so allowing this would silently
-    mis-shape every Jacobian reshape by one column.
-    """
-    accel = PSB(ring=3, sequence_file=seq_psb, errors={"quad": {"k1"}}, optimise_energy=True)
-    with pytest.raises(ValueError, match="optimise_energy"):
-        ClosedTwissFitter(
-            accelerator=accel, sequence_config=None, measurements={0.0: pd.DataFrame()}
-        )
-
-
 @pytest.mark.slow
 def test_quadrupole_tilts_recovered_from_vertical_dispersion(seq_psb: Path) -> None:
     """An injected tilt pattern is recovered from the vertical orbit and dispersion.
 
-    The acceptance test for the family: the knobs are usable, not merely
-    present. 48 knobs against 16 BPMs is under-determined, so the assertions are
-    on the *shape* of the pattern and on reproducing the measurement - the
-    fitted amplitude comes out at ~0.8 of truth, which is regularisation
-    shrinkage. Every observable is needed: ``y`` and ``dy`` alone recover the
-    pattern at only 0.66 correlation.
+    48 knobs against 16 BPMs is under-determined, so the tilt prior (the width the truth is
+    drawn from) sets the unseen directions: the fit must be the Gaussian posterior mean and
+    reproduce Dy within the MAP chi² bound (:func:`assert_map_of_noise_free_data`). The optics
+    respond to tilts at second order, so the tilts are small enough for the linear posterior:
+    its deviation is 2.0e-2, 9.1e-3, 9.2e-4 at 1, 0.5, 0.25 mrad rms.
     """
     kwargs = {"misalignments": {"quad": {"tilt"}}}
     knobs = _knob_names(seq_psb, kwargs)
     assert len(knobs) > 2
 
     rng = np.random.default_rng(2)
-    truth = {k: float(v) for k, v in zip(knobs, rng.normal(0.0, 1e-3, len(knobs)))}
+    truth = {k: float(v) for k, v in zip(knobs, rng.normal(0.0, TILT_SIGMA, len(knobs)))}
 
     measurements = {d: _fake_measurement(seq_psb, truth, d, kwargs) for d in DELTAS}
 
@@ -624,27 +649,25 @@ def test_quadrupole_tilts_recovered_from_vertical_dispersion(seq_psb: Path) -> N
     nominal = _fake_measurement(seq_psb, dict.fromkeys(knobs, 0.0), 0.0, kwargs)
     assert np.allclose(nominal["DY"], 0.0, atol=1e-12), "ideal PSB should have Dy == 0"
     measured_dy_rms = float(np.sqrt(np.mean(measurements[0.0]["DY"] ** 2)))
-    assert measured_dy_rms > 0.05, (
+    assert measured_dy_rms > 50 * TILT_SIGMA, (
         f"injected tilts only produced {measured_dy_rms:.3e} m of Dy; test is vacuous"
     )
 
-    fitted = _fit(seq_psb, measurements, DEFAULT_OBSERVABLES, kwargs, prior_strength=1e-6)
-    fitted_vec = np.array([fitted[k] for k in knobs])
-    truth_vec = np.array([truth[k] for k in knobs])
-
-    correlation = float(
-        np.corrcoef(fitted_vec - fitted_vec.mean(), truth_vec - truth_vec.mean())[0, 1]
-    )
-    assert correlation > 0.9, (
-        f"recovered tilt pattern correlates only {correlation:.3f} with the injected one"
+    fitted, fitter = _fitted(
+        seq_psb, measurements, DEFAULT_OBSERVABLES, kwargs, {"tilt": TILT_SIGMA}
     )
 
-    # And the refitted machine reproduces the measured Dy.
-    refit = _fake_measurement(seq_psb, fitted, 0.0, kwargs)
-    residual_dy = float(np.max(np.abs(refit["DY"] - measurements[0.0]["DY"])))
-    assert residual_dy < 1e-2 * measured_dy_rms, (
-        f"fitted Dy residual {residual_dy:.3e} m against a measured rms of {measured_dy_rms:.3e} m"
+    # The Dy part of the residual is bounded by the whole data chi².
+    dy_chi2 = sum(
+        float(
+            np.sum(
+                ((_fake_measurement(seq_psb, fitted, d, kwargs)["DY"] - m["DY"]) / m["ERRDY"]) ** 2
+            )
+        )
+        for d, m in measurements.items()
     )
+    assert_map_of_noise_free_data(fitter, fitted, truth, dy_chi2)
+
 
 def test_closed_twiss_worker_uses_method_6():
     """The worker bypasses ``run_twiss`` and must pin the integrator itself."""

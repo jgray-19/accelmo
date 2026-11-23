@@ -10,11 +10,11 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from accelmo.fitting.worker import KickPlane, WorkerConfig
+from accelmo.backend.protocol import TrackGeometry
 from accelmo.machine.accelerators import PSB
 from accelmo.tracking.data_manager import FileTracks
 from accelmo.tracking.dispatch.payloads import WorkerPayloadBuilder, observation_turn_offsets
-from accelmo.tracking.dispatch.setup import WorkerObservationPlan, WorkerRangeSpec
+from accelmo.tracking.dispatch.setup import KickPlane, TrackingWorkerConfig
 from accelmo.tracking.worker import TrackingData
 
 MARKERS = ["BR3.BPM1L3", "BR3.BPM2L3", "BR3.BPM3L3"]
@@ -43,13 +43,18 @@ def _tracks(n_turns: int = 3, kick_plane: str = "x") -> FileTracks:
     return FileTracks(turns=turns, markers=list(MARKERS), values=values, kick_plane=kick_plane)
 
 
-def _plan(bpm_names: list[str], sdir: int = 1, kick_plane: KickPlane = KickPlane.X):
-    return WorkerObservationPlan(
-        range_spec=WorkerRangeSpec(start_bpm=bpm_names[0], end_bpm=bpm_names[-1], sdir=sdir),
+def _config(
+    bpm_names: list[str], sdir: int = 1, kick_plane: KickPlane = KickPlane.X, n_turns: int = 1
+):
+    return TrackingWorkerConfig(
+        accelerator=None,
+        magnet_range="$start/$end",
+        geometry=TrackGeometry(
+            start_bpm=bpm_names[0], end_bpm=bpm_names[-1], sdir=sdir, n_turns=n_turns
+        ),
         file_idx=0,
-        kick_plane=kick_plane,
         bpm_names=bpm_names,
-        bad_bpms=None,
+        kick_plane=kick_plane,
     )
 
 
@@ -69,10 +74,9 @@ def test_payload_reads_its_range_from_the_measurement_grid(tmp_path) -> None:
     data = builder.make_tracking_data(
         turn_batch=[1, 2],
         file_turn_map={1: 0, 2: 0},
-        plan=_plan(MARKERS),
+        config=_config(MARKERS),
         machine_deltaps=[0.0],
         tracks={0: _tracks()},
-        n_run_turns=1,
     )
 
     assert np.allclose(data.position_comparisons[0, :, 0], [1.1, 1.2, 1.3])
@@ -90,10 +94,9 @@ def test_payload_leaves_the_unexcited_plane_infinitely_weighted(tmp_path) -> Non
     data = builder.make_tracking_data(
         turn_batch=[1],
         file_turn_map={1: 0},
-        plan=_plan(MARKERS),
+        config=_config(MARKERS),
         machine_deltaps=[0.0],
         tracks={0: _tracks()},
-        n_run_turns=1,
     )
 
     assert np.allclose(data.position_comparisons[..., 1], 0.0)
@@ -108,15 +111,12 @@ def test_multi_turn_payload_continues_into_the_next_recorded_turn(tmp_path) -> N
     data = builder.make_tracking_data(
         turn_batch=[1],
         file_turn_map={1: 0},
-        plan=_plan(MARKERS),
+        config=_config(MARKERS, n_turns=2),
         machine_deltaps=[0.0],
         tracks={0: _tracks()},
-        n_run_turns=2,
     )
 
-    assert np.allclose(
-        data.position_comparisons[0, :, 0], [1.1, 1.2, 1.3, 2.1, 2.2, 2.3]
-    )
+    assert np.allclose(data.position_comparisons[0, :, 0], [1.1, 1.2, 1.3, 2.1, 2.2, 2.3])
 
 
 def test_backward_range_crossing_the_wrap_reads_the_previous_turn(tmp_path) -> None:
@@ -128,10 +128,9 @@ def test_backward_range_crossing_the_wrap_reads_the_previous_turn(tmp_path) -> N
     data = builder.make_tracking_data(
         turn_batch=[2],
         file_turn_map={2: 0},
-        plan=_plan(reversed_range, sdir=-1),
+        config=_config(reversed_range, sdir=-1),
         machine_deltaps=[0.0],
         tracks={0: _tracks()},
-        n_run_turns=1,
     )
 
     assert np.allclose(data.position_comparisons[0, :, 0], [2.2, 2.1, 1.3])
@@ -148,10 +147,9 @@ def test_payload_rejects_a_marker_with_no_measured_initial_state(tmp_path) -> No
         builder.make_tracking_data(
             turn_batch=[1],
             file_turn_map={1: 0},
-            plan=_plan(MARKERS),
+            config=_config(MARKERS),
             machine_deltaps=[0.0],
             tracks={0: tracks},
-            n_run_turns=1,
         )
 
 
@@ -161,10 +159,9 @@ def test_payload_arrays_are_frozen_before_they_reach_a_worker(tmp_path) -> None:
     data = builder.make_tracking_data(
         turn_batch=[1],
         file_turn_map={1: 0},
-        plan=_plan(MARKERS),
+        config=_config(MARKERS),
         machine_deltaps=[0.0],
         tracks={0: _tracks()},
-        n_run_turns=1,
     )
 
     assert not data.position_comparisons.flags.writeable
@@ -183,54 +180,36 @@ def _weight_payload(accelerator, position_var, momentum_var, kick_plane=KickPlan
         init_pts=np.array([0.01]),
         reading_ids=np.zeros((1, 1), dtype=np.int64),
         init_reading_ids=np.zeros(1, dtype=np.int64),
-        init_variances=np.ones((1, 2)),
+        init_variances=np.ones((1, 4)),
+        start_turn_offsets=np.zeros(1, dtype=np.int64),
         precomputed_weights=None,
     )
-    config = WorkerConfig(
+    config = TrackingWorkerConfig(
         accelerator=accelerator,
-        tracking_start_bpm=MARKERS[0],
-        tracking_end_bpm=MARKERS[-1],
         magnet_range="$start/$end",
         kick_plane=kick_plane,
+        geometry=TrackGeometry(start_bpm=MARKERS[0], end_bpm=MARKERS[-1]),
+        file_idx=0,
+        bpm_names=MARKERS,
     )
-    return (data, config, 0)
+    return (data, config)
 
 
-def test_attach_global_weights_normalises_every_observable_to_the_largest(tmp_path) -> None:
+def test_weights_are_inverse_variances_and_every_active_point_is_counted(tmp_path) -> None:
     accelerator = _accelerator(tmp_path)
-    payload = _weight_payload(accelerator, [2.0, 3.0], [4.0, 5.0])
+    payload = _weight_payload(accelerator, [2.0, 4.0], [5.0, 8.0])
 
-    weights = WorkerPayloadBuilder.attach_global_weights([payload])[0][0].precomputed_weights
+    assert WorkerPayloadBuilder.attach_weights([payload]) == 4
+    weights = payload[0].precomputed_weights
+    assert np.allclose(weights.x, [[0.5]])
+    assert np.allclose(weights.y, [[0.25]])
+    assert np.allclose(weights.px, [[0.2]])
+    assert np.allclose(weights.py, [[0.125]])
 
-    assert weights is not None
-    assert np.allclose(weights.x, [[1.0]])
-    assert np.allclose(weights.y, [[2.0 / 3.0]])
-    assert np.allclose(weights.px, [[0.5]])
-    assert np.allclose(weights.py, [[0.4]])
 
-
-def test_position_only_runs_do_not_let_momenta_set_the_normalisation(tmp_path) -> None:
+def test_position_only_runs_count_only_the_positions(tmp_path) -> None:
     accelerator = _accelerator(tmp_path)
     payload = _weight_payload(accelerator, [1e-8, 1e-8], [1e-12, 1e-12])
 
-    weights = WorkerPayloadBuilder.attach_global_weights(
-        [payload], optimise_momenta=False
-    )[0][0].precomputed_weights
-
-    assert weights is not None
-    # Positions set the scale; the far larger momentum weights are left unscaled.
-    assert np.allclose(weights.x, [[1.0]])
-    assert np.allclose(weights.y, [[1.0]])
-    assert np.allclose(weights.px, [[1e4]])
-    assert np.allclose(weights.py, [[1e4]])
-
-
-def test_diagnostic_loss_per_bpm_sums_over_tracked_turns() -> None:
-    per_bpm = WorkerPayloadBuilder.diagnostic_loss_per_bpm(
-        loss_per_point=np.array([1.0, 2.0, 3.0, 4.0]),
-        bpm_names=MARKERS[:2],
-        n_run_turns=2,
-        worker_id=0,
-    )
-
-    assert per_bpm.tolist() == [4.0, 6.0]
+    assert WorkerPayloadBuilder.attach_weights([payload], optimise_momenta=False) == 2
+    assert np.allclose(payload[0].precomputed_weights.px, [[1e12]])

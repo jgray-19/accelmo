@@ -1,7 +1,7 @@
 """
-Tests for AbaMadInterface.
+Tests for MadInterface.
 
-This module contains pytest tests for the AbaMadInterface class.
+This module contains pytest tests for the MadInterface class.
 """
 
 from __future__ import annotations
@@ -10,8 +10,8 @@ import numpy as np
 import pytest
 import tfs
 
+from accelmo.backend.madng.interface import MadInterface
 from accelmo.machine.accelerators import LHC
-from accelmo.machine.mad.aba_mad_interface import AbaMadInterface
 from tests.mad.helpers import (
     check_interface_basic_init,
     cleanup_interface,
@@ -30,12 +30,12 @@ ORBIT_CORRECTION_CORRECTORS = ["MCBCH.5R2.B1", "MCBCH.6R2.B1"]
     ids=["default_py_name", "custom_py_name"],
 )
 def test_init(py_name, expected_py_name, var_name, var_value, seq_b1) -> None:
-    """Test initialization of AbaMadInterface."""
+    """Test initialization of MadInterface."""
     accel = LHC(beam=1, sequence_file=seq_b1)
     interface = (
-        AbaMadInterface(accelerator=accel)
+        MadInterface(accelerator=accel)
         if py_name is None
-        else AbaMadInterface(accelerator=accel, py_name=py_name)
+        else MadInterface(accelerator=accel, py_name=py_name)
     )
     check_interface_basic_init(interface, expected_py_name)
     interface.mad.send(f"{var_name} = {var_value}")
@@ -43,7 +43,7 @@ def test_init(py_name, expected_py_name, var_name, var_value, seq_b1) -> None:
     cleanup_interface(interface)
 
 
-def test_cycle_sequence(loaded_interface: AbaMadInterface) -> None:
+def test_cycle_sequence(loaded_interface: MadInterface) -> None:
     """Test cycling sequence to a marker."""
     loaded_interface.mad.send("""py:send(loaded_sequence:raw_get("__cycle"))""")
     assert loaded_interface.mad.recv() is None
@@ -58,9 +58,10 @@ def test_cycle_sequence(loaded_interface: AbaMadInterface) -> None:
     cycle_marker = loaded_interface.mad.recv()
     assert cycle_marker is None
 
-def test_getset_variables(loaded_interface: AbaMadInterface) -> None:
+
+def test_getset_variables(loaded_interface: MadInterface) -> None:
     """Test setting MAD variables."""
-    loaded_interface.set_variables(**{"KQTL_1L1_B1": 1.2, "KQTL_1L2_B1": 2.3})
+    loaded_interface.set_variables(KQTL_1L1_B1=1.2, KQTL_1L2_B1=2.3)
     assert loaded_interface.mad.KQTL_1L1_B1 == 1.2
     assert loaded_interface.mad.KQTL_1L2_B1 == 2.3
 
@@ -69,14 +70,14 @@ def test_getset_variables(loaded_interface: AbaMadInterface) -> None:
     assert v2 == 2.3
 
 
-def test_set_madx_variables(loaded_interface: AbaMadInterface) -> None:
+def test_set_madx_variables(loaded_interface: MadInterface) -> None:
     """Test setting MAD-X variables."""
-    loaded_interface.set_madx_variables(**{"kqtl_1l1_b1": 1.5, "KQTL_1L2_B1": 2.5})
+    loaded_interface.set_madx_variables(kqtl_1l1_b1=1.5, KQTL_1L2_B1=2.5)
     assert loaded_interface.mad.MADX.KQTL_1L1_B1 == 1.5
     assert loaded_interface.mad.MADX.kqtl_1l2_b1 == 2.5
 
 
-def test_twiss(loaded_interface: AbaMadInterface):
+def test_twiss(loaded_interface: MadInterface):
     """Test twiss function."""
     interface = loaded_interface
     twiss_df = interface.run_twiss()
@@ -100,10 +101,8 @@ def test_twiss(loaded_interface: AbaMadInterface):
         f"Expected index name to be 'name', got {twiss_df.index.name}"
     )
 
-    # There should only be one entry, since by default observe = 1 and nothing has been set to be observed
-    assert len(twiss_df) == 1, f"Expected 1 twiss entry, got {len(twiss_df)}"
-    # Check the marker is named $end
-    assert twiss_df.index[0] == "$end", f"Expected marker name '$end', got {twiss_df.index[0]}"
+    # observe = 1 by default: exactly the observed (thinned) BPMs.
+    assert list(twiss_df.index) == interface.all_bpms
 
     # Check the tunes
     assert abs(twiss_df.headers["q1"] - 62.28) < 3e-7, f"Unexpected Qx: {twiss_df.q1}"
@@ -138,7 +137,7 @@ def test_twiss(loaded_interface: AbaMadInterface):
     ],
 )
 def test_match_tunes(
-    loaded_interface: AbaMadInterface,
+    loaded_interface: MadInterface,
     target_qx: float,
     target_qy: float,
 ):
@@ -174,13 +173,13 @@ def test_match_tunes(
 
 
 class TestDp2pt:
-    def test_zero_dp(self, loaded_interface: AbaMadInterface):
+    def test_zero_dp(self, loaded_interface: MadInterface):
         """Test dp2pt with dp=0 returns 0"""
         interface = loaded_interface
         pt = interface.dp2pt(0.0)
         assert np.isclose(pt, 0.0, rtol=1e-12, atol=1e-15)
 
-    def test_positive_dp(self, loaded_interface: AbaMadInterface):
+    def test_positive_dp(self, loaded_interface: MadInterface):
         """Test dp2pt with positive dp"""
         interface = loaded_interface
         dp = 0.01
@@ -189,7 +188,7 @@ class TestDp2pt:
         expected_pt = interface.accelerator.dp2pt(dp)
         assert np.isclose(pt, expected_pt, rtol=1e-12, atol=1e-13)
 
-    def test_negative_dp(self, loaded_interface: AbaMadInterface):
+    def test_negative_dp(self, loaded_interface: MadInterface):
         """Test dp2pt with negative dp"""
         interface = loaded_interface
         dp = -0.005
@@ -198,7 +197,7 @@ class TestDp2pt:
         expected_pt = interface.accelerator.dp2pt(dp)
         assert np.isclose(pt, expected_pt, rtol=1e-12, atol=1e-13)
 
-    def test_high_energy_approximation(self, loaded_interface: AbaMadInterface):
+    def test_high_energy_approximation(self, loaded_interface: MadInterface):
         """Test at high energy where pt ≈ dp"""
         interface = loaded_interface
         dp = 0.01
@@ -208,13 +207,13 @@ class TestDp2pt:
 
 
 class TestPt2dp:
-    def test_zero_pt(self, loaded_interface: AbaMadInterface):
+    def test_zero_pt(self, loaded_interface: MadInterface):
         """Test pt2dp with pt=0 returns 0"""
         interface = loaded_interface
         dp = interface.pt2dp(0.0)
         assert np.isclose(dp, 0.0, rtol=1e-12, atol=1e-15)
 
-    def test_positive_pt(self, loaded_interface: AbaMadInterface):
+    def test_positive_pt(self, loaded_interface: MadInterface):
         """Test pt2dp with positive pt"""
         interface = loaded_interface
         pt = 0.01
@@ -223,7 +222,7 @@ class TestPt2dp:
         pt_back = interface.dp2pt(dp)
         assert np.isclose(pt_back, pt, rtol=1e-12, atol=1e-15)
 
-    def test_negative_pt(self, loaded_interface: AbaMadInterface):
+    def test_negative_pt(self, loaded_interface: MadInterface):
         """Test pt2dp with negative pt"""
         interface = loaded_interface
         pt = -0.005
@@ -233,7 +232,7 @@ class TestPt2dp:
         assert np.isclose(pt_back, pt, rtol=1e-12, atol=1e-15)
 
 
-def test_pt2dp_dp2pt_consistency(loaded_interface: AbaMadInterface):
+def test_pt2dp_dp2pt_consistency(loaded_interface: MadInterface):
     """Test that pt2dp and dp2pt are inverses of each other."""
     interface = loaded_interface
     test_dps = [0.0, 0.001, -0.001, 0.01, -0.005]
@@ -255,17 +254,15 @@ def test_pt2dp_dp2pt_consistency(loaded_interface: AbaMadInterface):
 
 
 class TestPerformOrbitCorrection:
-    def test_invalid_plane_raises(self, loaded_interface: AbaMadInterface) -> None:
+    def test_invalid_plane_raises(self, loaded_interface: MadInterface) -> None:
         with pytest.raises(ValueError, match="Invalid orbit correction plane"):
             loaded_interface.perform_orbit_correction(machine_deltap=0.0, plane="z")
 
-    def test_correct_tunes_requires_targets(self, loaded_interface: AbaMadInterface) -> None:
-        with pytest.raises(ValueError, match="target tunes"):
+    def test_correct_tunes_requires_targets(self, loaded_interface: MadInterface) -> None:
+        with pytest.raises(ValueError, match="target_qx and target_qy are required"):
             loaded_interface.perform_orbit_correction(machine_deltap=0.0, correct_tunes=True)
 
-    def test_filters_bpms_and_correctors(
-        self, loaded_interface: AbaMadInterface, tmp_path
-    ) -> None:
+    def test_filters_bpms_and_correctors(self, loaded_interface: MadInterface, tmp_path) -> None:
         interface = loaded_interface
         corrector_file = tmp_path / "correctors.tfs"
 
@@ -301,7 +298,7 @@ class TestPerformOrbitCorrection:
 
 
 @pytest.mark.parametrize("end_num", [10, 11, 12])
-def test_get_bpm_list(loaded_interface: AbaMadInterface, end_num: int) -> None:
+def test_get_bpm_list(loaded_interface: MadInterface, end_num: int) -> None:
     """Test getting list of BPM names within a range."""
     interface = loaded_interface
 

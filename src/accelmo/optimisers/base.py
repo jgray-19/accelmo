@@ -1,4 +1,4 @@
-"""Abstract optimiser interface, registry and best-point tracking."""
+"""Abstract optimiser interface and best-point tracking."""
 
 from __future__ import annotations
 
@@ -20,8 +20,8 @@ T = TypeVar("T")
 class BestTracker(Generic[T]):
     """The lowest loss seen so far and the point it was seen at."""
 
+    value: T
     loss: float = float("inf")
-    value: T | None = None
 
     def record(self, loss: float, value: T) -> None:
         """Make ``value`` (at ``loss``) the best point."""
@@ -32,8 +32,8 @@ class BestTracker(Generic[T]):
 class BaseOptimiser(ABC):
     """Common interface for all optimisers used by the training loop.
 
-    Subclasses register under ``OPTIMISER_NAME``, are built from an
-    :class:`~accelmo.config.OptimiserConfig` by :meth:`from_config`, and list
+    Subclasses are named by ``OPTIMISER_NAME``, take their constructor arguments from an
+    :class:`~accelmo.config.OptimiserConfig` via :meth:`config_kwargs`, and list
     in ``KNOB_VECTORS`` / ``KNOB_VECTOR_LISTS`` the state entries that hold one value
     per knob, which :meth:`load_state_dict` remaps when the knob layout changed.
     """
@@ -43,24 +43,6 @@ class BaseOptimiser(ABC):
     KNOB_VECTORS: ClassVar[tuple[str, ...]] = ()
     #: State entries that are a list of such vectors.
     KNOB_VECTOR_LISTS: ClassVar[tuple[str, ...]] = ()
-    _REGISTRY: ClassVar[dict[str, type[BaseOptimiser]]] = {}
-
-    def __init_subclass__(cls, **kwargs):
-        super().__init_subclass__(**kwargs)
-        name = getattr(cls, "OPTIMISER_NAME", "")
-        if name:
-            BaseOptimiser._REGISTRY[name] = cls
-
-    @classmethod
-    def from_config(cls, config: OptimiserConfig, n_params: int) -> BaseOptimiser:
-        """Create the optimiser ``config.optimiser_type`` names, for ``n_params`` parameters."""
-        try:
-            optimiser_cls = cls._REGISTRY[config.optimiser_type]
-        except KeyError as exc:
-            raise ValueError(
-                f"Unknown optimiser type: {config.optimiser_type}. Available: {sorted(cls._REGISTRY)}"
-            ) from exc
-        return optimiser_cls(**optimiser_cls.config_kwargs(config, n_params))
 
     @classmethod
     @abstractmethod

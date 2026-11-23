@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import numpy as np
-
-from accelmo.tracking.dispatch.payloads import WorkerPayloadBuilder
 from accelmo.tracking.dispatch.turn_planner import allocate_batches_per_file
 
 
@@ -32,20 +29,3 @@ def test_allocate_batches_never_exceeds_one_turn_per_batch() -> None:
 
     assert batches_per_file[0] <= 2
     assert sum(batches_per_file.values()) == 8
-
-
-def test_diagnostic_loss_per_bpm_reduces_multiturn() -> None:
-    """Per-point losses should collapse to per-BPM sums over turns."""
-    bpm_names = ["bpm1", "bpm2", "bpm3"]
-    n_run_turns = 2
-    # turn 0: [1,2,3], turn 1: [10,20,30]
-    loss_per_point = np.array([1.0, 2.0, 3.0, 10.0, 20.0, 30.0], dtype=np.float64)
-
-    reduced = WorkerPayloadBuilder.diagnostic_loss_per_bpm(
-        loss_per_point=loss_per_point,
-        bpm_names=bpm_names,
-        n_run_turns=n_run_turns,
-        worker_id=0,
-    )
-
-    assert np.allclose(reduced, np.array([11.0, 22.0, 33.0], dtype=np.float64))

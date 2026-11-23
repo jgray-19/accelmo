@@ -1,19 +1,19 @@
 """Worker payload construction.
 
 Turns :class:`~accelmo.tracking.data_manager.FileTracks` grids and
-observation plans into the immutable arrays a tracking worker receives.
+worker configs into the immutable arrays a tracking worker receives.
 """
 
 from __future__ import annotations
 
-import logging
 from collections import defaultdict
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, TypeAlias
 
 import numpy as np
 
 from accelmo.fitting.bpm_gains import point_gain_index
-from accelmo.fitting.weights import global_weight_scale, variance_to_weight
+from accelmo.fitting.weights import variance_to_weight
 from accelmo.tracking.worker import (
     PrecomputedTrackingWeights,
     TrackingData,
@@ -21,15 +21,12 @@ from accelmo.tracking.worker import (
 )
 
 if TYPE_CHECKING:
-
-    from accelmo.fitting.worker import WorkerConfig
     from accelmo.machine.accelerators import Accelerator
     from accelmo.tracking.data_manager import FileTracks
-    from accelmo.tracking.dispatch.setup import WorkerObservationPlan
+    from accelmo.tracking.dispatch.setup import TrackingWorkerConfig
 
-LOGGER = logging.getLogger(__name__)
 
-WorkerPayload: TypeAlias = tuple["TrackingData", "WorkerConfig", int]
+WorkerPayload: TypeAlias = tuple["TrackingData", "TrackingWorkerConfig"]
 
 
 def observation_turn_offsets(cols: np.ndarray, sdir: int) -> np.ndarray:
@@ -43,6 +40,58 @@ def observation_turn_offsets(cols: np.ndarray, sdir: int) -> np.ndarray:
     steps = np.diff(cols)
     wrapped = steps < 0 if sdir == 1 else steps > 0
     return np.cumsum(np.concatenate([[0], wrapped.astype(np.int64)])) * sdir
+
+
+#: (position, momentum) value columns of the x and y planes.
+_PLANE_KEYS = (("x", "px"), ("y", "py"))
+
+
+@dataclass
+class _PayloadArrays:
+    """The arrays of one payload, filled file by file; inactive planes keep infinite variance."""
+
+    pos: np.ndarray
+    mom: np.ndarray
+    pos_var: np.ndarray
+    mom_var: np.ndarray
+    init_coords: np.ndarray
+    init_variances: np.ndarray
+    reading_ids: np.ndarray
+    init_reading_ids: np.ndarray
+
+    @classmethod
+    def empty(cls, n_turns: int, n_points: int) -> _PayloadArrays:
+        return cls(
+            pos=np.zeros((n_turns, n_points, 2)),
+            mom=np.zeros((n_turns, n_points, 2)),
+            pos_var=np.full((n_turns, n_points, 2), np.inf),
+            mom_var=np.full((n_turns, n_points, 2), np.inf),
+            init_coords=np.zeros((n_turns, 6)),
+            init_variances=np.full((n_turns, 4), np.inf),
+            reading_ids=np.zeros((n_turns, n_points), dtype=np.int64),
+            init_reading_ids=np.zeros(n_turns, dtype=np.int64),
+        )
+
+    def fill_init(self, batch_rows, values, rows, col, active) -> None:
+        """Start coordinates and variances of the active planes at grid column ``col``."""
+        for plane, (pos_key, mom_key) in enumerate(_PLANE_KEYS):
+            if not active[plane]:
+                continue
+            for offset, key in enumerate((pos_key, mom_key)):
+                self.init_coords[batch_rows, 2 * plane + offset] = values[key][rows, col]
+                self.init_variances[batch_rows, 2 * plane + offset] = values[f"var_{key}"][
+                    rows, col
+                ]
+
+    def fill_points(self, batch_rows, values, rows, cols, active) -> None:
+        """Readings and variances of the active planes at every observed point."""
+        for plane, (pos_key, mom_key) in enumerate(_PLANE_KEYS):
+            if not active[plane]:
+                continue
+            self.pos[batch_rows, :, plane] = values[pos_key][rows, cols]
+            self.mom[batch_rows, :, plane] = values[mom_key][rows, cols]
+            self.pos_var[batch_rows, :, plane] = values[f"var_{pos_key}"][rows, cols]
+            self.mom_var[batch_rows, :, plane] = values[f"var_{mom_key}"][rows, cols]
 
 
 class WorkerPayloadBuilder:
@@ -60,40 +109,30 @@ class WorkerPayloadBuilder:
         self,
         turn_batch: list[int],
         file_turn_map: dict[int, int],
-        plan: WorkerObservationPlan,
+        config: TrackingWorkerConfig,
         machine_deltaps: list[float],
         tracks: dict[int, FileTracks],
-        n_run_turns: int,
     ) -> TrackingData:
-        """Build the serialisable tracking payload for one worker plan.
+        """Build the serialisable tracking payload for one worker.
 
         Both transverse planes are always allocated; the ones the file does not
         excite keep their infinite variance and so contribute nothing to the loss.
         """
-        bpm_names = plan.bpm_names
+        bpm_names = config.bpm_names
         if not bpm_names:
-            raise ValueError(
-                f"No observed BPMs for worker range "
-                f"{plan.range_spec.start_bpm}/{plan.range_spec.end_bpm}"
-            )
+            raise ValueError(f"No observed BPMs for worker range {config.geometry.bpm_range}")
 
-        sdir = plan.range_spec.sdir
-        init_marker = plan.init_bpm
+        sdir = config.geometry.sdir
+        track_turns = config.geometry.n_turns
+        init_marker = config.geometry.init_point
         n_turns = len(turn_batch)
-        n_points = len(bpm_names) * n_run_turns
+        n_points = len(bpm_names) * track_turns
 
-        pos = np.zeros((n_turns, n_points, 2))
-        mom = np.zeros((n_turns, n_points, 2))
-        pos_var = np.full((n_turns, n_points, 2), np.inf)
-        mom_var = np.full((n_turns, n_points, 2), np.inf)
-        init_coords = np.zeros((n_turns, 6))
+        arrays = _PayloadArrays.empty(n_turns, n_points)
         pts = np.empty(n_turns)
-        reading_ids = np.zeros((n_turns, n_points), dtype=np.int64)
-        init_reading_ids = np.zeros(n_turns, dtype=np.int64)
-        init_variances = np.full((n_turns, 2), np.inf)
+        start_turn_offsets = np.zeros(n_turns, dtype=np.int64)
 
-        has_x = plan.kick_plane in ("x", "xy")
-        has_y = plan.kick_plane in ("y", "xy")
+        active = (config.kick_plane in ("x", "xy"), config.kick_plane in ("y", "xy"))
 
         batch_rows_by_file: dict[int, list[int]] = defaultdict(list)
         turns_by_file: dict[int, list[int]] = defaultdict(list)
@@ -102,6 +141,7 @@ class WorkerPayloadBuilder:
             batch_rows_by_file[file_idx].append(i)
             turns_by_file[file_idx].append(turn)
             pts[i] = self.compute_pt(file_idx, machine_deltaps)
+            start_turn_offsets[i] = turn - tracks[file_idx].first_turn
 
         for file_idx, batch_rows in batch_rows_by_file.items():
             file_tracks = tracks[file_idx]
@@ -111,136 +151,60 @@ class WorkerPayloadBuilder:
                 )
             values = file_tracks.values
 
-            cols = file_tracks.cols(bpm_names * n_run_turns)
+            cols = file_tracks.cols(bpm_names * track_turns)
             start_rows = file_tracks.rows(turns_by_file[file_idx])
             rows = start_rows[:, None] + observation_turn_offsets(cols, sdir)[None, :]
 
-            init_rows = start_rows
             init_col = file_tracks.marker_col[init_marker]
             # One id per (file, turn, marker) grid cell, shared by every worker.
-            file_base = np.int64(file_idx) << 32
+            file_base = np.int64(int(file_idx) << 32)
             n_markers = len(file_tracks.markers)
-            reading_ids[batch_rows] = file_base + rows * n_markers + cols
-            init_reading_ids[batch_rows] = file_base + init_rows * n_markers + init_col
-            if has_x:
-                init_coords[batch_rows, 0] = values["x"][init_rows, init_col]
-                init_coords[batch_rows, 1] = values["px"][init_rows, init_col]
-                init_variances[batch_rows, 0] = values["var_x"][init_rows, init_col]
-            if has_y:
-                init_coords[batch_rows, 2] = values["y"][init_rows, init_col]
-                init_coords[batch_rows, 3] = values["py"][init_rows, init_col]
-                init_variances[batch_rows, 1] = values["var_y"][init_rows, init_col]
-            init_coords[batch_rows, 5] = pts[batch_rows]
+            arrays.reading_ids[batch_rows] = file_base + rows * n_markers + cols
+            arrays.init_reading_ids[batch_rows] = file_base + start_rows * n_markers + init_col
+            arrays.fill_init(batch_rows, values, start_rows, init_col, active)
+            arrays.init_coords[batch_rows, 5] = pts[batch_rows]
 
             # An all-zero initial state means the marker row was missing from the
             # measurement: tracking from it would silently fit noise.
-            dead = np.all(init_coords[batch_rows, :4] == 0.0, axis=1)
+            dead = np.all(arrays.init_coords[batch_rows, :4] == 0.0, axis=1)
             if dead.any():
                 turn = turns_by_file[file_idx][int(np.argmax(dead))]
                 raise ValueError(
                     f"Initial coordinates for turn {turn} at marker {init_marker} are all zero"
                 )
+            arrays.fill_points(batch_rows, values, rows, cols, active)
 
-            if has_x:
-                pos[batch_rows, :, 0] = values["x"][rows, cols]
-                mom[batch_rows, :, 0] = values["px"][rows, cols]
-                pos_var[batch_rows, :, 0] = values["var_x"][rows, cols]
-                mom_var[batch_rows, :, 0] = values["var_px"][rows, cols]
-            if has_y:
-                pos[batch_rows, :, 1] = values["y"][rows, cols]
-                mom[batch_rows, :, 1] = values["py"][rows, cols]
-                pos_var[batch_rows, :, 1] = values["var_y"][rows, cols]
-                mom_var[batch_rows, :, 1] = values["var_py"][rows, cols]
-
-        for array in (pos, mom, pos_var, mom_var):
+        for array in (arrays.pos, arrays.mom, arrays.pos_var, arrays.mom_var):
             array.setflags(write=False)
 
         return TrackingData(
-            position_comparisons=pos,
-            momentum_comparisons=mom,
-            position_variances=pos_var,
-            momentum_variances=mom_var,
-            init_coords=init_coords,
+            position_comparisons=arrays.pos,
+            momentum_comparisons=arrays.mom,
+            position_variances=arrays.pos_var,
+            momentum_variances=arrays.mom_var,
+            init_coords=arrays.init_coords,
             init_pts=pts,
-            reading_ids=reading_ids,
-            init_reading_ids=init_reading_ids,
-            init_variances=init_variances,
+            reading_ids=arrays.reading_ids,
+            init_reading_ids=arrays.init_reading_ids,
+            init_variances=arrays.init_variances,
+            start_turn_offsets=start_turn_offsets,
             precomputed_weights=None,
             gain_bpms=self.gain_bpms,
-            point_gain_index=point_gain_index(bpm_names * n_run_turns, self.gain_bpms),
+            point_gain_index=point_gain_index(bpm_names * track_turns, self.gain_bpms),
         )
 
     @staticmethod
-    def attach_global_weights(
-        payloads: list[WorkerPayload],
-        *,
-        optimise_momenta: bool = True,
-    ) -> list[WorkerPayload]:
-        """Precompute globally normalised weights for all tracking workers.
-
-        Weights are inverse variances divided by the single largest weight, so all
-        workers -- training and validation alike -- report losses on one comparable
-        scale.
-        """
-        if not payloads:
-            return payloads
-
-        observables = ("x", "y", "px", "py")
-        raw_by_payload = []
-        active_weights = []
-        for data, config, _file_idx in payloads:
+    def attach_weights(payloads: list[WorkerPayload], *, optimise_momenta: bool = True) -> int:
+        """Attach inverse-variance weights to every payload; returns the number of weighted points."""
+        n_points = 0
+        for data, config in payloads:
             active = active_observables(config.kick_plane, optimise_momenta)
-            raw = [
-                variance_to_weight(variance)
-                for variance in (
-                    data.position_variances[:, :, 0],
-                    data.position_variances[:, :, 1],
-                    data.momentum_variances[:, :, 0],
-                    data.momentum_variances[:, :, 1],
-                )
-            ]
-            active_weights += [raw[i] for i, name in enumerate(observables) if name in active]
-            raw_by_payload.append((data, raw))
-        global_max = global_weight_scale(active_weights)
-
-        for data, raw in raw_by_payload:
-            data.precomputed_weights = PrecomputedTrackingWeights(
-                x=raw[0] / global_max,
-                y=raw[1] / global_max,
-                px=raw[2] / global_max,
-                py=raw[3] / global_max,
-                scale=global_max,
+            weights = PrecomputedTrackingWeights(
+                x=variance_to_weight(data.position_variances[:, :, 0]),
+                y=variance_to_weight(data.position_variances[:, :, 1]),
+                px=variance_to_weight(data.momentum_variances[:, :, 0]),
+                py=variance_to_weight(data.momentum_variances[:, :, 1]),
             )
-
-        LOGGER.info(
-            "Global weight normalisation complete: max weight=%.3e across %d payloads",
-            global_max,
-            len(payloads),
-        )
-        return payloads
-
-    @staticmethod
-    def expand_bpm_mask(mask: np.ndarray, n_run_turns: int) -> np.ndarray:
-        """Expand a per-BPM mask across repeated turns."""
-        if n_run_turns <= 1:
-            return mask
-        return np.tile(mask, n_run_turns)
-
-    @staticmethod
-    def diagnostic_loss_per_bpm(
-        loss_per_point: np.ndarray,
-        bpm_names: list[str],
-        n_run_turns: int,
-        worker_id: int,
-    ) -> np.ndarray:
-        """Reduce point-wise diagnostic losses to one value per BPM."""
-        expected_points = len(bpm_names) * n_run_turns
-        if loss_per_point.size != expected_points:
-            raise RuntimeError(
-                f"Worker {worker_id}: diagnostics size mismatch "
-                f"(got {loss_per_point.size}, expected {expected_points} = "
-                f"{len(bpm_names)} BPMs x {n_run_turns} turns)"
-            )
-        if n_run_turns == 1:
-            return loss_per_point
-        return loss_per_point.reshape(n_run_turns, len(bpm_names)).sum(axis=0)
+            n_points += sum(int(np.count_nonzero(getattr(weights, name))) for name in active)
+            data.precomputed_weights = weights
+        return n_points

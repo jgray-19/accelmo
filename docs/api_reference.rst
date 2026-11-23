@@ -17,11 +17,15 @@ Primary Entry Points
    accelmo.machine.accelerators.sps.SPS
    accelmo.machine.accelerators.fcc.FCC
    accelmo.config.OptimiserConfig
-   accelmo.config.SimulationConfig
+   accelmo.config.WorkerRuntime
+   accelmo.config.TrackingDataConfig
+   accelmo.config.TrackingParameters
    accelmo.tracking.fitter.ArcByArcFitter
    accelmo.tracking.fitter.ACDMarkerFitter
    accelmo.tracking.fitter.KickerFitter
+   accelmo.tracking.fitter.ACDSinusoidFitter
    accelmo.tracking.fitter.FitterOptions
+   accelmo.tracking.fitter.tracking_lm_config
    accelmo.tracking.config.models.MeasurementConfig
    accelmo.fitting.config.SequenceConfig
    accelmo.fitting.config.OutputConfig
@@ -29,7 +33,7 @@ Primary Entry Points
    accelmo.poco.closed_orbit.ClosedOrbitFitter
    accelmo.poco.closed_orbit.ClosedOrbitSeries
    accelmo.poco.calibrated.CalibratedClosedOrbitFitter
-   accelmo.poco.fitter.ClosedTwissFitter
+   accelmo.poco.closed_orbit.closed_twiss_series
    accelmo.optimisers.levenberg_marquardt.LevenbergMarquardtConfig
 
 
@@ -48,20 +52,31 @@ Accelerators And Configuration
    accelmo.machine.accelerators.fcc
    accelmo.machine.accelerators.magnet_grouping
    accelmo.machine.accelerators.selection
+   accelmo.machine.patterns
+   accelmo.machine.machine_state
+   accelmo.machine.knob_names
    accelmo.config
 
 
-MAD Interface Layer
--------------------
+Backends
+--------
+
+The engine protocols are specified in :doc:`backends`.
 
 .. autosummary::
    :toctree: _autosummary
 
-   accelmo.machine.mad
-   accelmo.machine.mad.aba_mad_interface
-   accelmo.machine.mad.optimising_mad_interface
-   accelmo.machine.mad.machine_state
-   accelmo.machine.mad.scripts
+   accelmo.backend
+   accelmo.backend.protocol
+   accelmo.backend.madng
+   accelmo.backend.madng.interface
+   accelmo.backend.madng.engines
+   accelmo.backend.madng.accelerator_hooks
+   accelmo.backend.madng.machine_state
+   accelmo.backend.madng.scripts
+   accelmo.backend.xtrack
+   accelmo.backend.xtrack.engines
+   accelmo.backend.xtrack.model
 
 
 Closed-Orbit Fitting (POCO)
@@ -74,8 +89,6 @@ Closed-Orbit Fitting (POCO)
    accelmo.poco.closed_orbit
    accelmo.poco.calibrated
    accelmo.poco.fitter
-   accelmo.poco.lm_loop
-   accelmo.poco.prior
    accelmo.poco.calibration
    accelmo.poco.workers
    accelmo.poco.workers.closed_orbit
@@ -92,16 +105,17 @@ Tracking Fits
 
    accelmo.tracking
    accelmo.tracking.fitter
+   accelmo.tracking.lm_problem
    accelmo.tracking.session
    accelmo.tracking.ranges
    accelmo.tracking.data_manager
    accelmo.tracking.worker
    accelmo.tracking.dispatch
    accelmo.tracking.dispatch.payloads
-   accelmo.tracking.dispatch.screening
    accelmo.tracking.dispatch.setup
    accelmo.tracking.dispatch.turn_planner
    accelmo.tracking.uncertainty
+   accelmo.tracking.ic_iteration
    accelmo.tracking.sgd
    accelmo.tracking.sgd.loop
    accelmo.tracking.sgd.scheduler
@@ -122,6 +136,8 @@ Shared Fitting Base
    accelmo.fitting.setup
    accelmo.fitting.config
    accelmo.fitting.protocol
+   accelmo.fitting.lm_loop
+   accelmo.fitting.priors
    accelmo.fitting.worker
    accelmo.fitting.shared_reference
    accelmo.fitting.pool
@@ -144,21 +160,6 @@ Optimisers And Numerical Helpers
    accelmo.optimisers.adam
    accelmo.optimisers.lbfgs
    accelmo.optimisers.levenberg_marquardt
-
-
-Measurement Preparation
------------------------
-
-.. autosummary::
-   :toctree: _autosummary
-
-   accelmo.measurements
-   accelmo.measurements.acd_pipeline
-   accelmo.measurements.preprocessing
-   accelmo.measurements.reconstruction
-   accelmo.measurements.reference
-   accelmo.measurements.variances
-   accelmo.measurements.noise
 
 
 Analysis

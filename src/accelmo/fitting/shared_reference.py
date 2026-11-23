@@ -69,7 +69,7 @@ class ReferencePublisher:
             self._block = None
 
 
-def _attach(name: str) -> shared_memory.SharedMemory:
+def attach_shared_block(name: str) -> shared_memory.SharedMemory:
     """Map an existing block without making this process responsible for deleting it.
 
     Before Python 3.13 attaching registers the block with the resource tracker, which then warns about a
@@ -78,7 +78,7 @@ def _attach(name: str) -> shared_memory.SharedMemory:
     if sys.version_info >= (3, 13):
         return shared_memory.SharedMemory(name=name, track=False)
     block = shared_memory.SharedMemory(name=name)
-    resource_tracker.unregister(block._name, "shared_memory")  # noqa: SLF001
+    resource_tracker.unregister(block._name, "shared_memory")  # ty: ignore[missing-attribute]
     return block
 
 
@@ -89,12 +89,14 @@ class ReferenceReader:
         self._block: shared_memory.SharedMemory | None = None
 
     def view(self, reference: SharedReference) -> np.ndarray:
+        """Array view of the shared block named by ``reference``."""
         if self._block is None or self._block.name != reference.name:
             self.close()
-            self._block = _attach(reference.name)
+            self._block = attach_shared_block(reference.name)
         return np.ndarray(reference.shape, dtype=np.float64, buffer=self._block.buf)
 
     def close(self) -> None:
+        """Detach from the shared block."""
         if self._block is not None:
             self._block.close()
             self._block = None

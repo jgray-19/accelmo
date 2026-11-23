@@ -12,9 +12,9 @@ import numpy as np
 from accelmo.fitting.protocol import Evaluate
 from accelmo.fitting.reduction import reduce_replies
 from accelmo.fitting.results import FitDiagnostics
-from accelmo.optimisers import adam as _adam  # noqa: F401
-from accelmo.optimisers import lbfgs as _lbfgs  # noqa: F401
-from accelmo.optimisers.base import BaseOptimiser, BestTracker
+from accelmo.optimisers.adam import AdamOptimiser
+from accelmo.optimisers.base import BestTracker
+from accelmo.optimisers.lbfgs import LBFGSOptimiser
 from accelmo.tracking.sgd.checkpointing import OptimisationCheckpointer
 from accelmo.tracking.sgd.scheduler import LRScheduler
 
@@ -29,6 +29,7 @@ if TYPE_CHECKING:
 LOGGER = logging.getLogger(__name__)
 #: Starting value for a ``pt`` knob that starts at exactly zero.
 PT_SEED = 1e-6
+OPTIMISERS = {cls.OPTIMISER_NAME: cls for cls in (AdamOptimiser, LBFGSOptimiser)}
 
 
 @dataclass
@@ -37,7 +38,7 @@ class EpochState:
 
     epoch: int
     knobs: dict[str, float]
-    #: Training loss, averaged over the batches.
+    #: Training chi-square per weighted point.
     loss: float
     grad_norm: float
     lr: float
@@ -77,13 +78,13 @@ class SGDLoop:
         self.num_batches = num_batches
         self.gain_names: list[str] = []
         self.gain_ridge = 0.0
-        self.smoothed_grad_norm = 0.0
         self.smoothed_loss_change = 0.0
         #: Best knobs so far and their selection loss; empty until the first epoch.
         self.best: BestTracker[dict[str, float]] = BestTracker(value={})
         #: How the last :meth:`run` ended.
         self.diagnostics: FitDiagnostics | None = None
-        self.optimiser = BaseOptimiser.from_config(config, len(knob_names))
+        optimiser_cls = OPTIMISERS[config.optimiser_type]
+        self.optimiser = optimiser_cls(**optimiser_cls.config_kwargs(config, len(knob_names)))
         LOGGER.info("Using optimiser: %s", type(self.optimiser).__name__)
         self.scheduler = LRScheduler(
             warmup_epochs=config.warmup_epochs,
@@ -98,7 +99,7 @@ class SGDLoop:
         knobs: dict[str, float],
         channels: WorkerChannels,
         *,
-        total_turns: int,
+        n_points: int,
         run_log: RunLog | None = None,
         checkpoint_config: CheckpointConfig | None = None,
         validation_loss_fn: Callable[[dict[str, float]], float | None] | None = None,
@@ -109,7 +110,7 @@ class SGDLoop:
     ) -> dict[str, float]:
         """Optimise from ``knobs`` and return the best knobs found.
 
-        ``total_turns`` normalises the summed gradients. ``validation_loss_fn``
+        The loss is the training chi-square per weighted point (``n_points``). ``validation_loss_fn``
         scores the knobs after each epoch on held-out data; ``epoch_end_hook``
         runs after best-selection and returns a note for the log line.
         ``gain_names`` are BPM gains carried in the knobs but not stepped by the
@@ -140,7 +141,6 @@ class SGDLoop:
                 # A new stage: its data, and so its loss, differ from the last stage's.
                 prev_loss = None
                 self.best = BestTracker(value={})
-                self.smoothed_grad_norm = 0.0
                 self.smoothed_loss_change = 0.0
             LOGGER.info(
                 "Restored optimisation checkpoint from %s at epoch %d",
@@ -156,7 +156,7 @@ class SGDLoop:
         epochs_run = start_epoch
         for epoch in range(start_epoch, self.config.max_epochs):
             epochs_run = epoch + 1
-            state = self._run_epoch(epoch, knobs, channels, total_turns)
+            state = self._run_epoch(epoch, knobs, channels, n_points)
             knobs = state.knobs
             state.true_diff = self._true_diff(knobs)
             if validation_loss_fn is not None:
@@ -179,11 +179,10 @@ class SGDLoop:
                 )
             if stop is not None:
                 LOGGER.info(
-                    "\nStopping early at epoch %d (%s): smoothed loss change %.3e, smoothed grad norm %.3e.",
+                    "\nStopping early at epoch %d (%s): smoothed loss change %.3e.",
                     epoch,
                     stop,
                     self.smoothed_loss_change,
-                    self.smoothed_grad_norm,
                 )
                 stop_reason = stop
                 break
@@ -207,7 +206,7 @@ class SGDLoop:
         epoch: int,
         knobs: dict[str, float],
         channels: WorkerChannels,
-        total_turns: int,
+        n_points: int,
     ) -> EpochState:
         """Evaluate every batch, stepping the optimiser after each one.
 
@@ -223,12 +222,13 @@ class SGDLoop:
         for batch in range(self.num_batches):
             channels.send_all(Evaluate(knobs, batch))
             reduced = reduce_replies(channels.recv_all(), len(self.knob_names))
-            loss += reduced.loss / max(1, reduced.n_valid)
+            loss += reduced.loss
             grad += reduced.grad
             particle_lost = particle_lost or reduced.particle_lost
             if not particle_lost:
-                knobs = self._step(knobs, reduced.grad / total_turns, lr)
+                knobs = self._step(knobs, reduced.grad * self.num_batches / n_points, lr)
                 if self.gain_names:
+                    assert reduced.extra_sum is not None
                     knobs = {**knobs, **self._best_gains(reduced.extra_sum)}
 
         if particle_lost:
@@ -239,11 +239,9 @@ class SGDLoop:
             )
             knobs = start_knobs
 
-        # Keep training loss on a single-worker scale by averaging over batches.
-        loss /= max(1, self.num_batches)
-        grad /= total_turns
+        loss /= n_points
+        grad /= n_points
         grad_norm = float(np.linalg.norm(grad[grad != 0.0]))
-        self.smoothed_grad_norm = self._smooth(self.smoothed_grad_norm, grad_norm)
         return EpochState(epoch, knobs, loss, grad_norm, lr, started)
 
     def _step(self, knobs: dict[str, float], grad: np.ndarray, lr: float) -> dict[str, float]:
@@ -282,18 +280,13 @@ class SGDLoop:
                 > self.config.loss_change_min_epoch_fraction * self.config.max_epochs
             ):
                 return "loss_converged"
-        if (
-            not self.config.stage_epochs
-            and self.smoothed_grad_norm < self.config.gradient_converged_value
-        ):
-            return "gradient_converged"
         return None
 
     def _smooth(self, average: float, value: float) -> float:
         """Exponential moving average; the first value (``average`` exactly 0) starts it."""
         if average == 0.0:
             return value
-        alpha = self.config.grad_norm_alpha
+        alpha = self.config.loss_change_alpha
         return alpha * average + (1.0 - alpha) * value
 
     def _true_diff(self, knobs: dict[str, float]) -> float:

@@ -22,9 +22,9 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pytest
 
+from accelmo.backend.madng import MadInterface
+from accelmo.backend.madng.scripts import PYTHON_IN_MAD
 from accelmo.machine.accelerators import PSB
-from accelmo.machine.mad import GradientDescentMadInterface
-from accelmo.machine.mad.scripts import PYTHON_IN_MAD
 
 from .test_closed_orbit_cofind import COORDS, _send_init, _solve
 
@@ -53,9 +53,11 @@ def _global(mad: MAD, name: str) -> float:
     return float(mad.recv())
 
 
-def _interface(seq_psb: Path) -> GradientDescentMadInterface:
-    return GradientDescentMadInterface(
-        PSB(ring=3, sequence_file=seq_psb, misalignments={"quad": {"dx"}}), py_name=PYTHON_IN_MAD
+def _interface(seq_psb: Path) -> MadInterface:
+    return MadInterface(
+        PSB(ring=3, sequence_file=seq_psb, misalignments={"quad": {"dx"}}),
+        py_name=PYTHON_IN_MAD,
+        create_knobs=True,
     )
 
 

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import pytest
 
-from accelmo.config import SimulationConfig
 from accelmo.fitting.config import OutputConfig, SequenceConfig
 from accelmo.fitting.setup import MachineSetup
 from accelmo.machine.accelerators import LHC
@@ -25,7 +24,6 @@ def lhc(seq_b1):
 def _setup(accelerator, magnet_range=f"{START}/{END}", **kwargs) -> MachineSetup:
     return MachineSetup(
         accelerator,
-        SimulationConfig(num_workers=1, num_batches=1),
         SequenceConfig(magnet_range),
         output_config=OutputConfig(write_run_log=False),
         **kwargs,
@@ -57,7 +55,7 @@ def test_true_strengths_default_to_the_initial_knobs(lhc) -> None:
 def test_values_outside_the_fit_are_kept_as_model_values(lhc) -> None:
     setup = _setup(lhc, initial_knob_strengths={KNOB: 1e-4, OUTSIDE: 2e-4, "deltap": 1e-3})
     try:
-        pt = setup.mad_iface.dp2pt(1e-3)
+        pt = setup.accelerator.dp2pt(1e-3)
         # The optimiser only sees this fit's knobs; every value reaches the workers.
         assert OUTSIDE not in setup.initial_knobs
         assert setup.initial_model_values == {KNOB: 1e-4, OUTSIDE: 2e-4, "pt": pt}
@@ -80,13 +78,12 @@ def test_a_range_without_knobs_is_rejected(lhc) -> None:
 def test_bpm_points_are_filtered_and_the_fixed_window_set(lhc) -> None:
     setup = MachineSetup(
         lhc,
-        SimulationConfig(num_workers=1, num_batches=1, use_fixed_bpm=True),
         SequenceConfig(f"{START}/{END}", bad_bpms=["BPM.10R1.B1"]),
         output_config=OutputConfig(write_run_log=False),
     )
     try:
         ranges = resolve_bpm_ranges(
-            setup, TrackingPlan(), [START, "BPM.10R1.B1", "BPM.9L1.B1"], [END]
+            setup, TrackingPlan(), [START, "BPM.10R1.B1", "BPM.9L1.B1"], [END], use_fixed_bpm=True
         )
         # The bad BPM and the one outside the range are dropped.
         assert ranges.start_bpms == [START]
@@ -95,17 +92,15 @@ def test_bpm_points_are_filtered_and_the_fixed_window_set(lhc) -> None:
         setup.close()
 
 
-def test_measurement_config_preserves_per_file_interface_options(tmp_path) -> None:
+def test_measurement_config_preserves_per_file_machine_state(tmp_path) -> None:
     config = MeasurementConfig(
         {
             tmp_path / "m0.parquet": MeasurementDetails(
-                interface_options={"machine_state": tmp_path / "state0.txt"},
+                machine_state=tmp_path / "state0.txt",
                 machine_deltap=1e-4,
             ),
             tmp_path / "m1.parquet": MeasurementDetails(
-                interface_options={
-                    "machine_state": tmp_path / "correctors1_state.txt",
-                },
+                machine_state=tmp_path / "correctors1_state.txt",
                 machine_deltap=2e-4,
             ),
         }
@@ -114,13 +109,11 @@ def test_measurement_config_preserves_per_file_interface_options(tmp_path) -> No
     assert config.files == [tmp_path / "m0.parquet", tmp_path / "m1.parquet"]
     assert config.details == [
         MeasurementDetails(
-            interface_options={"machine_state": tmp_path / "state0.txt"},
+            machine_state=tmp_path / "state0.txt",
             machine_deltap=1e-4,
         ),
         MeasurementDetails(
-            interface_options={
-                "machine_state": tmp_path / "correctors1_state.txt",
-            },
+            machine_state=tmp_path / "correctors1_state.txt",
             machine_deltap=2e-4,
         ),
     ]

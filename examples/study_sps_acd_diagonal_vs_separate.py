@@ -42,10 +42,10 @@ from xtrack_tools.acd import run_ac_dipole_tracking
 from xtrack_tools.env import initialise_env
 from xtrack_tools.monitors import process_tracking_data
 
-from accelmo.config import OptimiserConfig, SimulationConfig
+from accelmo.backend.madng.interface import MadInterface
+from accelmo.config import OptimiserConfig, TrackingDataConfig, WorkerRuntime
 from accelmo.fitting.config import OutputConfig, SequenceConfig
 from accelmo.machine.accelerators import SPS
-from accelmo.machine.mad.aba_mad_interface import AbaMadInterface
 from accelmo.tracking.config.models import MeasurementConfig, MeasurementDetails
 from accelmo.tracking.fitter import ACDMarkerFitter, FitterOptions
 
@@ -59,7 +59,19 @@ DRIVEN_TUNES = (0.12, 0.19)
 EXCITATION = 4e-4
 RAMP_TURNS = 100
 BPM_PATTERN = r"bp[hv]\..*"
-TRACK_COLUMNS = ["turn", "bunch_number", "name", "x", "px", "y", "py", "var_x", "var_y", "var_px", "var_py"]
+TRACK_COLUMNS = [
+    "turn",
+    "bunch_number",
+    "name",
+    "x",
+    "px",
+    "y",
+    "py",
+    "var_x",
+    "var_y",
+    "var_px",
+    "var_py",
+]
 # (horizontal, vertical) excitation per acquisition of each case.
 CASES = {
     "diagonal": {"xy": (EXCITATION, EXCITATION)},
@@ -80,7 +92,9 @@ class StudyData:
 def generate_cases(output_dir: Path, *, flattop_turns: int, seed: int = 42) -> StudyData:
     """Track every case's acquisitions through one quadrupole-perturbed SPS."""
     output_dir.mkdir(parents=True, exist_ok=True)
-    interface = AbaMadInterface(accelerator=SPS(sequence_file=SEQUENCE_FILE, kinetic_energy=KINETIC_ENERGY))
+    interface = MadInterface(
+        accelerator=SPS(sequence_file=SEQUENCE_FILE, kinetic_energy=KINETIC_ENERGY)
+    )
     errors, _ = interface.apply_magnet_perturbations(rel_error=None, seed=seed, magnet_type="q")
     tune_knobs = {
         name: float(value)
@@ -95,7 +109,9 @@ def generate_cases(output_dir: Path, *, flattop_turns: int, seed: int = 42) -> S
     env = initialise_env(
         matched_tunes=tune_knobs,
         magnet_strengths=magnet_strengths,
-        corrector_table=tfs.TfsDataFrame(columns=["kind", "hkick", "hkick_old", "vkick", "vkick_old"]),
+        corrector_table=tfs.TfsDataFrame(
+            columns=["kind", "hkick", "hkick_old", "vkick", "vkick_old"]
+        ),
         sequence_file=SEQUENCE_FILE,
         seq_name="sps",
         kinetic_energy=KINETIC_ENERGY,
@@ -140,21 +156,31 @@ def _track_acquisition(
     frame = process_tracking_data(monitored, RAMP_TURNS, flattop_turns, add_variance_columns=True)
     frame["bunch_number"] = 0
     # xsuite upper-cases every monitor; the MAD-NG marker names keep a lower-case side.
-    frame["name"] = frame["name"].astype(str).replace(
-        {accelerator.acd_marker_name(side).upper(): accelerator.acd_marker_name(side) for side in ("before", "after")}
+    frame["name"] = (
+        frame["name"]
+        .astype(str)
+        .replace(
+            {
+                accelerator.acd_marker_name(side).upper(): accelerator.acd_marker_name(side)
+                for side in ("before", "after")
+            }
+        )
     )
     frame.loc[:, TRACK_COLUMNS].to_parquet(path, index=False)
     return path
 
 
-def build_fitter(data: StudyData, case: str, output_dir: Path, *, max_epochs: int) -> ACDMarkerFitter:
+def build_fitter(
+    data: StudyData, case: str, output_dir: Path, *, max_epochs: int
+) -> ACDMarkerFitter:
     """Return the quadrupole fit of one case's acquisitions."""
-    accelerator = SPS(sequence_file=SEQUENCE_FILE, kinetic_energy=KINETIC_ENERGY, errors={"quad": {"k1"}})
+    accelerator = SPS(
+        sequence_file=SEQUENCE_FILE, kinetic_energy=KINETIC_ENERGY, errors={"quad": {"k1"}}
+    )
     fit_dir = output_dir / case
     fit_dir.mkdir(parents=True, exist_ok=True)
     measurements = {
-        path: MeasurementDetails(interface_options={"machine_state": data.tune_knobs_file})
-        for path in data.files[case]
+        path: MeasurementDetails(machine_state=data.tune_knobs_file) for path in data.files[case]
     }
     return ACDMarkerFitter(
         accelerator,
@@ -167,13 +193,13 @@ def build_fitter(data: StudyData, case: str, output_dir: Path, *, max_epochs: in
             warmup_lr_start=5e-8,
             max_lr=1e-6,
             min_lr=1e-7,
-            gradient_converged_value=1e-30,
             optimiser_type="adam",
             adam_eps=1e-30,
         ),
         # Noise-free tracking needs no held-out turns, so the loss-change stop follows
         # the training loss.
-        SimulationConfig(num_workers=8, num_batches=2, validation_fraction=0.0),
+        WorkerRuntime(num_workers=8),
+        TrackingDataConfig(num_batches=2, validation_fraction=0.0),
         SequenceConfig(magnet_range="$start/$end"),
         MeasurementConfig(measurements),
         options=FitterOptions(
@@ -190,7 +216,9 @@ def knob_error(knobs: dict[str, float], truth: dict[str, float]) -> float:
 
 def bpm_betas(data: StudyData, strengths: dict[str, float] | None) -> pd.DataFrame:
     """BPM ``s`` and betas of the tune-matched SPS with the given quadrupole errors."""
-    interface = AbaMadInterface(accelerator=SPS(sequence_file=SEQUENCE_FILE, kinetic_energy=KINETIC_ENERGY))
+    interface = MadInterface(
+        accelerator=SPS(sequence_file=SEQUENCE_FILE, kinetic_energy=KINETIC_ENERGY)
+    )
     interface.set_variables(**data.tune_knobs)
     if strengths:
         interface.set_magnet_strengths(strengths)
@@ -203,7 +231,8 @@ def bpm_betas(data: StudyData, strengths: dict[str, float] | None) -> pd.DataFra
 def beta_beating_rms(betas: pd.DataFrame, truth: pd.DataFrame) -> tuple[float, float]:
     """RMS relative beta difference from the true lattice, per plane."""
     return tuple(
-        float(np.sqrt(np.mean((betas[col] / truth[col] - 1.0) ** 2))) for col in ("beta11", "beta22")
+        float(np.sqrt(np.mean((betas[col] / truth[col] - 1.0) ** 2)))
+        for col in ("beta11", "beta22")
     )
 
 
@@ -240,7 +269,9 @@ def run_study(output_dir: Path, *, flattop_turns: int, max_epochs: int, seed: in
         initial_beta_beating_x=initial_x, initial_beta_beating_y=initial_y
     )
     summary.to_csv(output_dir / "summary.csv", index=False)
-    (output_dir / "summary.json").write_text(json.dumps(summary.to_dict(orient="records"), indent=2))
+    (output_dir / "summary.json").write_text(
+        json.dumps(summary.to_dict(orient="records"), indent=2)
+    )
 
     _plot_beta_beating(true_betas, nominal_betas, fit_betas, output_dir / "beta_beating.png")
     _plot_quadrupole_errors(truth, estimates, output_dir / "quadrupole_errors.png")
@@ -252,7 +283,13 @@ def _plot_beta_beating(
 ) -> None:
     fig, axes = plt.subplots(2, 1, sharex=True, figsize=(11, 6), constrained_layout=True)
     for ax, col, plane in zip(axes, ("beta11", "beta22"), ("x", "y"), strict=True):
-        ax.plot(truth["s"], 100 * (nominal[col] / truth[col] - 1), color="0.6", lw=1, label="nominal model")
+        ax.plot(
+            truth["s"],
+            100 * (nominal[col] / truth[col] - 1),
+            color="0.6",
+            lw=1,
+            label="nominal model",
+        )
         for case, betas in fits.items():
             ax.plot(truth["s"], 100 * (betas[col] / truth[col] - 1), lw=1.2, label=f"{case} fit")
         ax.set_ylabel(rf"$\Delta\beta_{plane}/\beta_{plane}$ [%]")
@@ -279,8 +316,12 @@ def _plot_quadrupole_errors(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--output-dir", type=Path, default=Path("analysis") / "sps_acd_diagonal_vs_separate")
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument(
+        "--output-dir", type=Path, default=Path("analysis") / "sps_acd_diagonal_vs_separate"
+    )
     parser.add_argument("--flattop-turns", type=int, default=200, help="Turns per acquisition.")
     parser.add_argument("--epochs", type=int, default=300, help="Optimiser epochs per fit.")
     parser.add_argument("--seed", type=int, default=42, help="Quadrupole error seed.")
@@ -288,7 +329,10 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 
     summary = run_study(
-        args.output_dir.resolve(), flattop_turns=args.flattop_turns, max_epochs=args.epochs, seed=args.seed
+        args.output_dir.resolve(),
+        flattop_turns=args.flattop_turns,
+        max_epochs=args.epochs,
+        seed=args.seed,
     )
     LOGGER.info("SPS ACD study summary:\n%s", summary.to_string(index=False))
 

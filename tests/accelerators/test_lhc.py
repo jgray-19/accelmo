@@ -13,6 +13,7 @@ from accelmo.machine.accelerators import LHC
 if TYPE_CHECKING:
     from pathlib import Path
 
+
 class TestLHCAccelerator:
     """Tests for LHC accelerator class."""
 
@@ -43,6 +44,7 @@ class TestLHCAccelerator:
         lhc = LHC(
             beam=2,
             kinetic_energy=6800.0,
+            seq_dir=1,
             sequence_file=str(test_sequence_file),
         )
         assert lhc.beam == 2
@@ -148,6 +150,7 @@ class TestLHCAccelerator:
         lhc = LHC(
             beam=2,
             kinetic_energy=6800.0,
+            seq_dir=1,
             sequence_file=str(test_sequence_file),
         )
         assert lhc.seq_name == "lhcb2"
@@ -289,9 +292,7 @@ class TestLHCAccelerator:
         result = lhc.normalise_true_strengths(test_strengths, None)
         assert result == test_strengths
 
-    def test_normalise_true_strengths_with_bend_lengths(
-        self, test_sequence_file: Path
-    ) -> None:
+    def test_normalise_true_strengths_with_bend_lengths(self, test_sequence_file: Path) -> None:
         """Test normalise_true_strengths calls normalise_lhcbend_magnets."""
         lhc = LHC(
             beam=1,

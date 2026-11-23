@@ -1,4 +1,4 @@
-"""Optimisation algorithms used by the ACCELMO.
+"""Optimisation algorithms used by accelmo.
 
 The module re-exports the concrete optimiser implementations so they can be
 imported from :mod:`accelmo.optimisers` directly, which keeps the public

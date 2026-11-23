@@ -27,6 +27,7 @@ class AdamOptimiser(BaseOptimiser):
 
     @classmethod
     def config_kwargs(cls, config: OptimiserConfig, n_params: int) -> dict[str, Any]:
+        """Constructor arguments from ``config``."""
         eps = {} if config.adam_eps is None else {"eps": config.adam_eps}
         return {
             "shape": (n_params,),
@@ -124,9 +125,7 @@ class AdamOptimiser(BaseOptimiser):
     def _load_state(self, state: dict[str, Any]) -> None:
         """Restore optimiser internal state from a dictionary."""
         if state.get("type") != self.OPTIMISER_NAME:
-            raise ValueError(
-                f"State type {state.get('type')} does not match {self.OPTIMISER_NAME}"
-            )
+            raise ValueError(f"State type {state.get('type')} does not match {self.OPTIMISER_NAME}")
 
         self.beta1 = float(state["beta1"])
         self.beta2 = float(state["beta2"])

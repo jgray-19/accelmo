@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     import pandas as pd
-    from bokeh.models import Range1d
+    from bokeh.models import DataRange1d, Range1d
 
     from accelmo.runlog import StageLog
 
@@ -36,4 +36,4 @@ class MonitorView:
     summaries: pd.DataFrame
     #: Shared x-range for plots against longitudinal position, so zooming one
     #: zooms all and survives a refresh.
-    s_range: Range1d
+    s_range: Range1d | DataRange1d

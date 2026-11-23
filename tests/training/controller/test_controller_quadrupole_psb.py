@@ -8,22 +8,24 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from accelmo.config import OptimiserConfig
+from accelmo.config import OptimiserConfig, WorkerRuntime
 from accelmo.fitting.config import OutputConfig, SequenceConfig
 from accelmo.machine.accelerators import PSB
-from accelmo.machine.mad import merge_machine_states
-from accelmo.tracking.config.helpers import create_arc_measurement_config
-from accelmo.tracking.fitter import ArcByArcFitter, FitterOptions
+from accelmo.machine.machine_state import merge_machine_states
+from accelmo.tracking.config.helpers import single_measurement_config
+from accelmo.tracking.fitter import ArcByArcFitter, FitterOptions, tracking_lm_config
 from tests.training.controller_test_utils import (
+    LM_TEST_ITERATIONS,
+    QUAD_TRACKING_DATA,
     _generate_nonoise_track,
-    _make_simulation_config_quad,
     evaluate_controller_worker_loss,
+    relative_truth_errors,
 )
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from accelmo.machine.mad.aba_mad_interface import AbaMadInterface
+    from accelmo.backend.madng.interface import MadInterface
 
 
 PSB_TARGET_QX = 0.17
@@ -38,7 +40,7 @@ def _build_psb_arc_quad_controller(
     *,
     tmp_path: Path,
     seq_psb: Path,
-    loaded_psb_interface: AbaMadInterface,
+    loaded_psb_interface: MadInterface,
     flattop_turns: int = 64,
 ) -> tuple[ArcByArcFitter, dict[str, float]]:
     """Build a PSB ring-3 arc-by-arc quadrupole fitter and its true strengths."""
@@ -54,13 +56,6 @@ def _build_psb_arc_quad_controller(
         target_qx=PSB_TARGET_QX,
         target_qy=PSB_TARGET_QY,
     )
-    simulation_config = dataclasses.replace(
-        _make_simulation_config_quad(),
-        num_workers=4,
-        num_batches=1,
-        bpm_loss_outlier_sigma=20,
-        worker_loss_outlier_sigma=20,
-    )
     ctrl = ArcByArcFitter(
         PSB(
             ring=3,
@@ -74,12 +69,12 @@ def _build_psb_arc_quad_controller(
             warmup_lr_start=1e-6,
             max_lr=3e-4,
             min_lr=3e-4,
-            gradient_converged_value=1e-13,
             optimiser_type="adam",
         ),
-        simulation_config,
+        WorkerRuntime(num_workers=4),
+        dataclasses.replace(QUAD_TRACKING_DATA, num_batches=1),
         SequenceConfig("$start/$end"),
-        create_arc_measurement_config(
+        single_measurement_config(
             off_magnet_path, machine_state=merge_machine_states(corrector_file, tune_knobs)
         ),
         bpm_start_points=PSB_BPM_START_POINTS,
@@ -99,7 +94,7 @@ def _build_psb_arc_quad_controller(
 def test_controller_quad_psb_validation_loss_is_real_out_of_sample(
     tmp_path: Path,
     seq_psb: Path,
-    loaded_psb_interface: AbaMadInterface,
+    loaded_psb_interface: MadInterface,
 ) -> None:
     """Arc-by-arc PSB fit yields a genuine held-out validation loss (not None).
 
@@ -119,9 +114,7 @@ def test_controller_quad_psb_validation_loss_is_real_out_of_sample(
     # Turns were genuinely held out, disjoint from every training batch.
     assert ctrl.data_manager.validation_turn_batches
     training_turns = {t for batch in ctrl.data_manager.turn_batches for t in batch}
-    validation_turns = {
-        t for batch in ctrl.data_manager.validation_turn_batches for t in batch
-    }
+    validation_turns = {t for batch in ctrl.data_manager.validation_turn_batches for t in batch}
     assert training_turns.isdisjoint(validation_turns)
 
     ctrl.start_session(ctrl.machine.initial_knobs, enable_validation=True)
@@ -144,7 +137,7 @@ def test_controller_quad_psb_validation_loss_is_real_out_of_sample(
 def test_controller_quad_opt_psb_ring3(
     tmp_path: Path,
     seq_psb: Path,
-    loaded_psb_interface: AbaMadInterface,
+    loaded_psb_interface: MadInterface,
     controller_test_mode: str,
 ) -> None:
     """Run a PSB ring-3 quadrupole optimisation scenario."""
@@ -163,29 +156,12 @@ def test_controller_quad_opt_psb_ring3(
         target_qy=PSB_TARGET_QY,
     )
 
-    base_sim = _make_simulation_config_quad()
-    simulation_config = dataclasses.replace(
-        base_sim,
-        num_workers=4,
-        num_batches=4,
-        bpm_loss_outlier_sigma=20,
-        worker_loss_outlier_sigma=20,
-    )
-    optimiser_config = OptimiserConfig(
-        max_epochs=300,
-        warmup_epochs=40,
-        warmup_lr_start=1e-6,
-        max_lr=1e-3,
-        min_lr=1e-4,
-        gradient_converged_value=1e-13,
-        optimiser_type="adam",
-        # Gradients are ~1e-10, far below Adam's default eps (1e-8), which would
-        # otherwise set the step size and stall the fit.
-        adam_eps=1e-16,
-    )
+    optimiser_config = tracking_lm_config(LM_TEST_ITERATIONS)
 
     sequence_config = SequenceConfig("$start/$end")
-    measurement_config = create_arc_measurement_config(off_magnet_path, machine_state=merge_machine_states(corrector_file, tune_knobs))
+    measurement_config = single_measurement_config(
+        off_magnet_path, machine_state=merge_machine_states(corrector_file, tune_knobs)
+    )
     accelerator = PSB(
         ring=3,
         kinetic_energy=loaded_psb_interface.accelerator.kinetic_energy,
@@ -196,7 +172,8 @@ def test_controller_quad_opt_psb_ring3(
     ctrl = ArcByArcFitter(
         accelerator,
         optimiser_config,
-        simulation_config,
+        WorkerRuntime(num_workers=4),
+        dataclasses.replace(QUAD_TRACKING_DATA, num_batches=4),
         sequence_config,
         measurement_config,
         bpm_start_points=PSB_BPM_START_POINTS,
@@ -218,20 +195,13 @@ def test_controller_quad_opt_psb_ring3(
     result = ctrl.run()
     estimate, unc = result.knobs, result.uncertainties
 
-    psb_abs_tol = 1e-4
-    # These knobs sit outside the recorded BPM response for the tracked turn, so their
-    # kicks never reach an observation point. They remain valid knobs, but the optimiser
-    # cannot recover them from this measurement layout.
+    # Their kicks never reach an observation point in this measurement layout.
     unobservable = {"BR.QFO11.dk1l", "BR.QDE16.dk1l", "BR.QFO162.dk1l"}
     assert set(estimate) == set(magnet_strengths)
     assert set(unc) == set(magnet_strengths)
-    for magnet, true_value in magnet_strengths.items():
-        if magnet in unobservable:
-            continue
-        est_value = estimate[magnet]
-        abs_diff = abs(est_value - true_value)
-        rel_diff = abs_diff / abs(true_value) if true_value != 0 else abs(est_value)
-        assert abs_diff <= psb_abs_tol or rel_diff < 5e-3, (
-            f"Relative difference for {magnet} is too high: {rel_diff:.2%} "
-            f"(abs diff {abs_diff:.3e})"
-        )
+    rel_error, rel_improvement = relative_truth_errors(
+        estimate, magnet_strengths, ctrl.machine.initial_knobs, unobservable
+    )
+    # measured 2026-11-12: rel error = rel improvement = 1.2e-5
+    assert rel_error < 5e-5
+    assert rel_improvement < 5e-5

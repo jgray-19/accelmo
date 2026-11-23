@@ -2,8 +2,8 @@
 
 A tilted quadrupole is a skew source: it couples the horizontal orbit and
 dispersion into the vertical plane. The rotation is driven through the element's
-own ``tilt``, the only route MAD-NG differentiates - see ``_TILT_SEED`` in
-``accelerators/base.py``. The failure mode these tests guard is silence: a tilt
+own ``tilt``, the only route MAD-NG differentiates - see ``TILT_SEED`` in
+``backend/madng/accelerator_hooks.py``. The failure mode these tests guard is silence: a tilt
 that never reaches the map raises nothing.
 """
 
@@ -15,12 +15,9 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pytest
 
+from accelmo.backend.madng.accelerator_hooks import TILT_SEED as _TILT_SEED
+from accelmo.backend.madng.interface import MadInterface
 from accelmo.machine.accelerators import PSB
-from accelmo.machine.accelerators.base import _TILT_SEED
-from accelmo.machine.mad.optimising_mad_interface import (
-    GenericMadInterface,
-    GradientDescentMadInterface,
-)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -35,7 +32,7 @@ TILT = 3e-3
 TWISS_COLUMNS = ("name", "x", "y", "dx", "dy")
 
 
-def _twiss(iface: GenericMadInterface) -> pd.DataFrame:
+def _twiss(iface: MadInterface) -> pd.DataFrame:
     """Twiss the currently loaded machine and return the coupled solution."""
     iface.mad.send("tilttws = twiss{sequence=loaded_sequence, observe=1, coupling=true}")
     return iface.mad.tilttws.to_df(columns=list(TWISS_COLUMNS)).set_index("name")
@@ -45,11 +42,11 @@ def _rms(values: np.ndarray) -> float:
     return float(np.sqrt(np.mean(np.asarray(values, dtype=float) ** 2)))
 
 
-def _tilt_knobs(iface: GradientDescentMadInterface) -> list[str]:
+def _tilt_knobs(iface: MadInterface) -> list[str]:
     return [k for k in iface.knob_names if k.endswith(".tilt")]
 
 
-def _matching_quadrupoles(iface: GenericMadInterface) -> dict[str, float]:
+def _matching_quadrupoles(iface: MadInterface) -> dict[str, float]:
     """Return ``k1`` for every quadrupole matching the PSB quadrupole pattern."""
     iface.mad.send(f"""
     local k1_by_name = {{}}
@@ -64,17 +61,17 @@ def _matching_quadrupoles(iface: GenericMadInterface) -> dict[str, float]:
 
 
 @pytest.fixture(scope="function")
-def tilt_iface(seq_psb: Path) -> GradientDescentMadInterface:
+def tilt_iface(seq_psb: Path) -> MadInterface:
     """Interface for PSB ring 3 with quadrupole tilt knobs enabled."""
     accelerator = PSB(ring=3, sequence_file=seq_psb, misalignments={"quad": {"tilt"}})
-    iface = GradientDescentMadInterface(accelerator=accelerator, discard_mad_output=True)
+    iface = MadInterface(accelerator=accelerator, discard_mad_output=True, create_knobs=True)
     yield iface
     with contextlib.suppress(Exception):
         del iface
 
 
 def test_tilt_knob_is_equivalent_to_a_dpsi_misalignment(
-    seq_psb: Path, tilt_iface: GradientDescentMadInterface
+    seq_psb: Path, tilt_iface: MadInterface
 ) -> None:
     """Driving a tilt knob reproduces the same rotation entered as ``misalign.dpsi``.
 
@@ -97,7 +94,7 @@ def test_tilt_knob_is_equivalent_to_a_dpsi_misalignment(
     )
 
     # And it moved it the way the same rotation as a misalignment does.
-    reference_iface = GenericMadInterface(
+    reference_iface = MadInterface(
         accelerator=PSB(ring=3, sequence_file=seq_psb), discard_mad_output=True
     )
     try:
@@ -119,7 +116,7 @@ def test_tilt_knob_is_equivalent_to_a_dpsi_misalignment(
 
 
 def test_tilt_knobs_start_off_an_exactly_zero_angle(
-    tilt_iface: GradientDescentMadInterface,
+    tilt_iface: MadInterface,
 ) -> None:
     """Tilt knobs start at ``_TILT_SEED``, above ``minang``, and below measurability.
 
@@ -147,7 +144,7 @@ def test_tilt_knobs_leave_vertical_offsets_working(seq_psb: Path) -> None:
     ``dy`` uses is replaced wholesale whenever it is built.
     """
     accelerator = PSB(ring=3, sequence_file=seq_psb, misalignments={"quad": {"dy", "tilt"}})
-    iface = GradientDescentMadInterface(accelerator=accelerator, discard_mad_output=True)
+    iface = MadInterface(accelerator=accelerator, discard_mad_output=True, create_knobs=True)
     try:
         dy_knobs = [k for k in iface.knob_names if k.endswith(".dy")]
         assert dy_knobs and _tilt_knobs(iface)
@@ -173,8 +170,10 @@ def test_tilt_knobs_are_off_by_default(seq_psb: Path) -> None:
     """
 
     def knob_names(**kwargs) -> list[str]:
-        iface = GradientDescentMadInterface(
-            accelerator=PSB(ring=3, sequence_file=seq_psb, **kwargs), discard_mad_output=True
+        iface = MadInterface(
+            accelerator=PSB(ring=3, sequence_file=seq_psb, **kwargs),
+            discard_mad_output=True,
+            create_knobs=True,
         )
         try:
             return list(iface.knob_names)
@@ -192,7 +191,7 @@ def test_tilt_knobs_are_off_by_default(seq_psb: Path) -> None:
 
 
 def test_unpowered_quadrupoles_get_no_tilt_knob(
-    tilt_iface: GradientDescentMadInterface,
+    tilt_iface: MadInterface,
 ) -> None:
     """Tilting a quadrupole with no gradient does nothing, so it gets no knob."""
     k1_by_name = _matching_quadrupoles(tilt_iface)

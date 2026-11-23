@@ -2,7 +2,7 @@
 
 - uncertainties are keyed by the same optimisation knob names as the fitted values;
   PSB sextupoles are used, whose ``knl[3]`` errors become ``...dk2l`` knobs;
-- the simulation config has one owner, so clamping ``num_batches`` to the data
+- the tracking data config has one owner, so clamping ``num_batches`` to the data
   reaches the loop, the data manager and the worker session alike.
 """
 
@@ -14,11 +14,11 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pytest
 
-from accelmo.config import OptimiserConfig
+from accelmo.config import OptimiserConfig, WorkerRuntime
 from accelmo.fitting.config import OutputConfig, SequenceConfig
 from accelmo.machine.accelerators import PSB
-from accelmo.machine.mad import merge_machine_states
-from accelmo.tracking.config.helpers import create_arc_measurement_config
+from accelmo.machine.machine_state import merge_machine_states
+from accelmo.tracking.config.helpers import single_measurement_config
 from accelmo.tracking.fitter import ArcByArcFitter, FitterOptions
 from tests.training.controller.test_controller_quadrupole_psb import (
     PSB_BPM_END_POINTS,
@@ -28,14 +28,14 @@ from tests.training.controller.test_controller_quadrupole_psb import (
     PSB_TRACK_BPM_PATTERN,
 )
 from tests.training.controller_test_utils import (
+    QUAD_TRACKING_DATA,
     _generate_nonoise_track,
-    _make_simulation_config_quad,
 )
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from accelmo.machine.mad.aba_mad_interface import AbaMadInterface
+    from accelmo.backend.madng.interface import MadInterface
 
 pytestmark = [pytest.mark.slow, pytest.mark.serial]
 
@@ -44,7 +44,7 @@ SEXTUPOLES_ON = {"kbr3xno311l1": 0.05}
 
 
 def _fitter(
-    tmp_path: Path, seq_psb: Path, interface: AbaMadInterface, *, num_batches: int
+    tmp_path: Path, seq_psb: Path, interface: MadInterface, *, num_batches: int
 ) -> ArcByArcFitter:
     track = tmp_path / "track.parquet"
     corrector, _, tune_knobs = _generate_nonoise_track(
@@ -70,11 +70,11 @@ def _fitter(
             warmup_lr_start=1e-6,
             max_lr=1e-6,
             min_lr=1e-6,
-            gradient_converged_value=0.0,
         ),
-        dataclasses.replace(_make_simulation_config_quad(), num_workers=2, num_batches=num_batches),
+        WorkerRuntime(num_workers=2),
+        dataclasses.replace(QUAD_TRACKING_DATA, num_batches=num_batches),
         SequenceConfig("$start/$end"),
-        create_arc_measurement_config(
+        single_measurement_config(
             track,
             machine_state={**merge_machine_states(corrector, tune_knobs), **SEXTUPOLES_ON},
         ),
@@ -91,7 +91,7 @@ def _fitter(
 
 
 def test_sextupole_uncertainties_keyed_like_knobs(
-    tmp_path: Path, seq_psb: Path, loaded_psb_interface: AbaMadInterface
+    tmp_path: Path, seq_psb: Path, loaded_psb_interface: MadInterface
 ) -> None:
     fitter = _fitter(tmp_path, seq_psb, loaded_psb_interface, num_batches=1)
     result = fitter.run()
@@ -102,16 +102,16 @@ def test_sextupole_uncertainties_keyed_like_knobs(
 
 
 def test_num_batches_clamped_to_the_data_reaches_every_consumer(
-    tmp_path: Path, seq_psb: Path, loaded_psb_interface: AbaMadInterface
+    tmp_path: Path, seq_psb: Path, loaded_psb_interface: MadInterface
 ) -> None:
     fitter = _fitter(tmp_path, seq_psb, loaded_psb_interface, num_batches=10_000)
-    simulation_config = fitter.machine.simulation_config
+    tracking_data = fitter.tracking_data
 
-    assert simulation_config.num_batches < 10_000
-    assert fitter.loop.num_batches == simulation_config.num_batches
-    assert fitter.data_manager.simulation_config is simulation_config
+    assert tracking_data.num_batches < 10_000
+    assert fitter.loop.num_batches == tracking_data.num_batches
+    assert fitter.data_manager.tracking_data is tracking_data
     session = fitter.start_session()
     try:
-        assert session.simulation_config is simulation_config
+        assert session.tracking_data is tracking_data
     finally:
         session.terminate()

@@ -16,8 +16,8 @@ import tfs
 from omc3.model_creator import create_instance_and_model
 from pymadng_utils.madx.make_sequence import make_madx_sequence
 
+from accelmo.backend.madng.interface import MadInterface
 from accelmo.machine.accelerators import LHC, PSB
-from accelmo.machine.mad.aba_mad_interface import AbaMadInterface
 
 if TYPE_CHECKING:
     from collections.abc import Generator
@@ -28,10 +28,7 @@ logging.getLogger("xdeps").setLevel(logging.WARNING)
 
 def pytest_runtest_setup(item: pytest.Item) -> None:
     """Prevent serial tests from running inside pytest-xdist workers."""
-    if (
-        item.get_closest_marker("serial")
-        and getattr(item.config, "workerinput", None) is not None
-    ):
+    if item.get_closest_marker("serial") and getattr(item.config, "workerinput", None) is not None:
         pytest.fail(f"{item.nodeid} is marked serial and cannot run under pytest-xdist")
 
 
@@ -155,27 +152,29 @@ def corrector_table(corrector_file: Path) -> tfs.TfsDataFrame:
 
 
 @pytest.fixture(scope="function")
-def loaded_interface(seq_b1: Path) -> Generator[AbaMadInterface, None, None]:
-    """Create a fresh AbaMadInterface for each test."""
-    iface = AbaMadInterface(accelerator=LHC(beam=1, sequence_file=seq_b1, kinetic_energy=6800.0))
+def loaded_interface(seq_b1: Path) -> Generator[MadInterface, None, None]:
+    """Create a fresh MadInterface for each test."""
+    iface = MadInterface(accelerator=LHC(beam=1, sequence_file=seq_b1, kinetic_energy=6800.0))
     yield iface
     with contextlib.suppress(Exception):
         del iface
 
 
 @pytest.fixture(scope="function")
-def loaded_psb_interface(seq_psb: Path) -> Generator[AbaMadInterface, None, None]:
+def loaded_psb_interface(seq_psb: Path) -> Generator[MadInterface, None, None]:
     """Fixture that returns an interface with PSB ring 3 loaded and beam set up."""
-    iface = AbaMadInterface(accelerator=PSB(ring=3, sequence_file=seq_psb))
+    iface = MadInterface(accelerator=PSB(ring=3, sequence_file=seq_psb))
     yield iface
     with contextlib.suppress(Exception):
         del iface
 
 
 @pytest.fixture(scope="function")
-def beam2_interface(seq_b2: Path) -> Generator[AbaMadInterface, None, None]:
-    """Create a fresh AbaMadInterface for beam 2 tests."""
-    iface = AbaMadInterface(accelerator=LHC(beam=2, sequence_file=seq_b2, kinetic_energy=6800.0))
+def beam2_interface(seq_b2: Path) -> Generator[MadInterface, None, None]:
+    """Create a fresh MadInterface for beam 2 tests."""
+    iface = MadInterface(
+        accelerator=LHC(beam=2, sequence_file=seq_b2, kinetic_energy=6800.0, seq_dir=1)
+    )
     yield iface
     with contextlib.suppress(Exception):
         del iface

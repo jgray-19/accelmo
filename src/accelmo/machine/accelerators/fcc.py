@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from pymadng_utils.accelerators.fcc import FCC as BaseFCC  # noqa: N811
 
@@ -44,6 +44,7 @@ class FCC(BaseFCC, Accelerator):
         misalignments: Mapping[str, Iterable[str]] | None = None,
         optimise_energy: bool = False,
         custom_knobs_to_optimise: list[str] | None = None,
+        backend: str = "madng",
     ):
         """Initialise the FCC-ee accelerator.
 
@@ -59,11 +60,12 @@ class FCC(BaseFCC, Accelerator):
             misalignments=misalignments,
             optimise_energy=optimise_energy,
             custom_knobs_to_optimise=custom_knobs_to_optimise,
+            backend=backend,
         )
 
     def copy_with(self, **overrides) -> FCC:
         """Return a new FCC instance with selected parameters overridden."""
-        kwargs = {
+        kwargs: dict[str, Any] = {
             "sequence_file": self.sequence_file,
             "kinetic_energy": self.kinetic_energy,
             "particle": self.particle,

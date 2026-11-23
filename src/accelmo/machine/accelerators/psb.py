@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from pymadng_utils.accelerators.psb import PSB as BasePSB  # noqa: N811
+from pymadng_utils.mad.ac_kickers import AC_KICKERS
 
-from accelmo.machine.accelerators.base import MISALIGNMENT_ATTRS, Accelerator, MagnetFamily
+from accelmo.machine.accelerators.base import (
+    MISALIGNMENT_ATTRS,
+    Accelerator,
+    MagnetFamily,
+)
 from accelmo.machine.accelerators.magnet_grouping import (
     collapse_psb_grouped_quadrupole_knobs,
     expand_psb_grouped_quadrupole_knobs,
@@ -51,11 +56,18 @@ class PSB(BasePSB, Accelerator):
             {"multipole": PATTERN_SEXTUPOLE}, errors=frozenset({"knl[3]"}), nonzero_attr="knl[3]"
         ),
         "skew_sextupole": MagnetFamily(
-            {"multipole": PATTERN_SKEW_SEXTUPOLE}, errors=frozenset({"ksl[3]"}), nonzero_attr="ksl[3]"
+            {"multipole": PATTERN_SKEW_SEXTUPOLE},
+            errors=frozenset({"ksl[3]"}),
+            nonzero_attr="ksl[3]",
         ),
         "corrector": MagnetFamily(
             {"hkicker": PATTERN_CORRECTOR_H, "vkicker": PATTERN_CORRECTOR_V},
             errors=frozenset({"kick"}),
+        ),
+        # Flattop AC kickers installed at the AC dipole (``acd_drive_tunes``).
+        "acd": MagnetFamily(
+            {"hackicker": "^hackicker_[ab]$", "vackicker": "^vackicker_[ab]$"},
+            errors=frozenset({"volt"}),
         ),
     }
 
@@ -70,12 +82,23 @@ class PSB(BasePSB, Accelerator):
         misalignments: Mapping[str, Iterable[str]] | None = None,
         optimise_energy: bool = False,
         group_quadrupoles_by_cell: bool = False,
+        differential_cell_tilt: bool = False,
         custom_knobs_to_optimise: list[str] | None = None,
+        backend: str = "madng",
+        acd_drive_tunes: tuple[tuple[float, float], ...] | None = None,
     ):
         """Initialise PSB accelerator for a specific ring.
 
         ``errors`` / ``misalignments`` are keyed by ``FAMILIES``: ``quad``,
-        ``bend``, ``sextupole``, ``skew_sextupole``, ``corrector``.
+        ``bend``, ``sextupole``, ``skew_sextupole``, ``corrector``, ``acd``.
+        ``acd_drive_tunes`` installs flattop AC kickers at the AC dipole: one (qx, qy) drive
+        tune pair per measurement file. Each plane is kicked by a sin(phi) + b cos(phi)
+        (``AC_KICKERS``, knobs ``hackicker_a.volt`` etc., start at 0; set them through
+        initial knobs). With more than one file each file gets its own (a, b) knobs
+        (``hackicker_a.volt_f<i>``).
+        ``differential_cell_tilt`` (needs ``group_quadrupoles_by_cell``) fits one roll per cell,
+        ``BR.QCELL<c>.tilt``: QFO<c>1/2 roll by +v and QDE<c> by -v. The common QFO/QDE roll
+        drives ~60x less f1001 than the differential one and is left out.
         """
         if ring not in (1, 2, 3, 4):
             raise ValueError(f"PSB ring must be 1, 2, 3, or 4, got {ring}")
@@ -90,49 +113,65 @@ class PSB(BasePSB, Accelerator):
             misalignments=misalignments,
             optimise_energy=optimise_energy,
             custom_knobs_to_optimise=custom_knobs_to_optimise,
+            backend=backend,
         )
         self.group_quadrupoles_by_cell = bool(group_quadrupoles_by_cell)
+        self.differential_cell_tilt = bool(differential_cell_tilt)
+        if self.differential_cell_tilt and not self.group_quadrupoles_by_cell:
+            raise ValueError("differential_cell_tilt needs group_quadrupoles_by_cell")
+        self.acd_drive_tunes = acd_drive_tunes
+        if "acd" in self.errors and acd_drive_tunes is None:
+            raise ValueError("Fitting the acd family needs acd_drive_tunes")
+        self.acd_files = len(acd_drive_tunes or ((),))
+        if self.acd_files > 1 and "volt" not in self.errors.get("acd", ()):
+            raise ValueError("More than one ACD file needs the kick fitted (one (a, b) per file)")
 
     def copy_with(self, **overrides) -> PSB:
         """Return a new PSB instance with selected parameters overridden."""
-        kwargs = {
+        kwargs: dict[str, Any] = {
             "ring": self.ring,
             "sequence_file": self.sequence_file,
             "kinetic_energy": self.kinetic_energy,
             "particle": self.particle,
             "bpm_pattern": self.bpm_pattern,
             "group_quadrupoles_by_cell": self.group_quadrupoles_by_cell,
+            "differential_cell_tilt": self.differential_cell_tilt,
+            "acd_drive_tunes": self.acd_drive_tunes,
             **self.selection_kwargs(),
         }
         return PSB(**{**kwargs, **overrides})
 
-    def get_mad_attr_spec(self, kind: str, attribute: str) -> dict[str, str]:
-        """Share the two QFO knobs in each cell when native grouping is enabled."""
-        suffixes = {"k1": "dk1l", "k0s": "dk0sl", "k1s": "dk1sl", "dx": "dx", "dy": "dy", "ds": "ds", "tilt": "tilt"}
-        if not self.group_quadrupoles_by_cell or kind != "quadrupole":
-            return {}
-        suffix = suffixes.get(attribute)
-        if suffix is None:
-            return {}
-        return {
-            "name_expr": (
-                'string.gsub(e.name, "^(BR%.QFO)(%d+)(%d)$", '
-                f'"%1CELL%2") .. ".{suffix}"'
-            )
-        }
+    @property
+    def has_ac_kickers(self) -> bool:
+        """True when ``acd_drive_tunes`` is set."""
+        return self.acd_drive_tunes is not None
+
+    def ac_kicker_freqs(self, file_index: int) -> tuple[float, float] | None:
+        """Drive tunes of the AC kickers for file ``file_index``."""
+        return None if self.acd_drive_tunes is None else self.acd_drive_tunes[file_index]
+
+    def ac_kicker_volt_knobs(self, file_index: int) -> tuple[str, ...] | None:
+        """Per-file AC-kicker voltage knobs, or None with one ACD file."""
+        if self.acd_files == 1:
+            return None
+        return tuple(f"{name}.volt_f{file_index}" for name in AC_KICKERS)
 
     def format_result_knobs(self, knobs: dict[str, float]) -> dict[str, float]:
         """Return physical PSB knob values, expanding cell-grouped QFO knobs."""
         formatted = super().format_result_knobs(knobs)
         if not self.group_quadrupoles_by_cell:
             return formatted
-        return expand_psb_grouped_quadrupole_knobs(formatted)
+        return expand_psb_grouped_quadrupole_knobs(
+            formatted, differential_tilt=self.differential_cell_tilt
+        )
 
     def normalise_initial_knobs(self, knobs: dict[str, float]) -> dict[str, float]:
         """Collapse physical PSB QFO pairs when native grouping is enabled."""
         if not self.group_quadrupoles_by_cell:
             return super().normalise_initial_knobs(knobs)
-        return collapse_psb_grouped_quadrupole_knobs(knobs)
+        return collapse_psb_grouped_quadrupole_knobs(
+            knobs, differential_tilt=self.differential_cell_tilt
+        )
 
     @property
     def seq_name(self) -> str:
@@ -158,6 +197,6 @@ class PSB(BasePSB, Accelerator):
         name = bpm_name.upper()
         if any(token in name for token in (".BPM", ".BWS", ".BPP", ".BPT")):
             return "HV"
-        if name.endswith("_AFTER") or name.endswith("_BEFORE"):
+        if name.endswith(("_AFTER", "_BEFORE")):
             return "HV"
         raise ValueError(f"Unsupported PSB monitor name for plane inference: {bpm_name}")

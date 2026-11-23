@@ -80,7 +80,9 @@ def test_files_are_reopened_while_logging(tmp_path, monkeypatch) -> None:
     assert stage.history()["loss"].tolist() == [10.0, 9.0, 8.0, 7.0, 1.0]
 
 
-def test_resume_appends_to_the_interrupted_run_and_drops_rows_after_the_checkpoint(tmp_path) -> None:
+def test_resume_appends_to_the_interrupted_run_and_drops_rows_after_the_checkpoint(
+    tmp_path,
+) -> None:
     run_log = _write_stage(tmp_path / "stage", steps=4)
     run_log.close()  # no finish(): the fit died
 

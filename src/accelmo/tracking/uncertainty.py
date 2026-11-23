@@ -10,12 +10,12 @@ from typing import TYPE_CHECKING
 import numpy as np
 import psutil
 
-from accelmo.fitting.protocol import STOP, Command, CommandKind, WorkerChannels
-from accelmo.fitting.worker import KickPlane
+from accelmo.fitting.protocol import STOP, SetUncertaintyMode, WorkerChannels
+from accelmo.tracking.dispatch.setup import KickPlane
 
 if TYPE_CHECKING:
     from accelmo.fitting.pool import WorkerPool
-    from accelmo.tracking.dispatch.setup import WorkerRuntimeMetadata
+    from accelmo.tracking.dispatch.setup import TrackingWorkerConfig
 
 LOGGER = logging.getLogger(__name__)
 
@@ -79,7 +79,9 @@ def noise_matrix(part: UncertaintyPart) -> np.ndarray:
 
 
 def drain_uncertainty(
-    pool: WorkerPool[WorkerRuntimeMetadata], n_knobs: int, propagate_uncertainty: bool
+    pool: WorkerPool[TrackingWorkerConfig],
+    n_knobs: int,
+    propagate_uncertainty: bool,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Stop ``pool`` in memory-bounded chunks and return the normal matrix ``A`` and noise ``B``.
 
@@ -122,7 +124,7 @@ def _drain_parts(
     workers = [pool.workers[idx] for idx in indices]
     channels = WorkerChannels([pool.conns[idx] for idx in indices], workers)
     if not propagate_uncertainty:
-        channels.ack_all(Command(CommandKind.SET_UNCERTAINTY_MODE, {"enabled": False}))
+        channels.ack_all(SetUncertaintyMode(enabled=False))
     channels.send_all(STOP)
     parts = channels.recv_all()
     for part in parts:
@@ -143,7 +145,7 @@ def _concurrency(pool: WorkerPool, n_knobs: int) -> int:
     largest = 0
     for meta, particles in zip(pool.metadata, pool.particle_counts):
         planes = 2 if meta.kick_plane == KickPlane.XY else 1
-        points = len(meta.bpm_names) * meta.n_run_turns
+        points = len(meta.bpm_names) * meta.geometry.n_turns
         rows = particles * planes * (2 * points + 1)
         largest = max(largest, rows * (n_knobs + 2) * 8)
     available = psutil.virtual_memory().available

@@ -5,8 +5,8 @@ from typing import TYPE_CHECKING
 import pytest
 import tfs
 
+from accelmo.backend.madng.interface import MadInterface
 from accelmo.machine.accelerators import PSB
-from accelmo.machine.mad.aba_mad_interface import AbaMadInterface
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -26,7 +26,7 @@ def test_psb_model_dir_contains_saved_sequence(psb_model_dir: Path) -> None:
     assert "hacmap" in sequence_text.lower()
     assert "vacmap" in sequence_text.lower()
 
-    interface = AbaMadInterface(accelerator=PSB(ring=3, sequence_file=sequence))
+    interface = MadInterface(accelerator=PSB(ring=3, sequence_file=sequence))
     live_twiss = interface.run_twiss(observe=0)
 
     assert live_twiss.headers["q1"] % 1 == pytest.approx(NATURAL_TUNES[0], abs=2e-4)

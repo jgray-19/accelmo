@@ -84,7 +84,7 @@ def test_a_failing_source_is_reported_not_retried(tmp_path) -> None:
     assert "no MAD here" in cache.error({"x": 1})
 
 
-def test_monitor_follows_the_latest_step_and_draws_the_active_panel(tmp_path, caplog) -> None:
+def test_monitor_shows_the_latest_step_and_draws_only_the_active_tab(tmp_path, caplog) -> None:
     _write_run(tmp_path / "runs" / "stage")
     seen = []
 
@@ -99,19 +99,20 @@ def test_monitor_follows_the_latest_step_and_draws_the_active_panel(tmp_path, ca
     monitor = Monitor(tmp_path / "runs", spec, cache, refresh_seconds=1)
 
     monitor.refresh()
-    assert monitor.step_slider.value == 4
-    _wait(lambda: (monitor.refresh(), len(monitor._summaries) == 6)[1])
+    stage = monitor._stage()
+    knobs = stage.knob_history()
+    assert monitor._steps == (-1, 0, 1, 2, 3, 4)
+    _wait(lambda: all(cache.has_summary(stage.metadata, knobs.loc[s]) for s in knobs.index))
 
+    monitor._draw_active()
     assert seen[-1] == (4, True)
-    assert sorted(monitor._summaries) == [-1, 0, 1, 2, 3, 4]
-    assert monitor.panes[0].object is not None
-    assert all(pane.object is None for pane in monitor.panes[1:]), "hidden tabs must not be drawn"
-    for index, pane in enumerate(monitor.panes[1:], start=1):
+    assert len(monitor.holders[0]) == 1
+    assert all(len(holder) == 0 for holder in monitor.holders[1:]), "hidden tabs must not be drawn"
+    for index, holder in enumerate(monitor.holders[1:], start=1):
         monitor.tabs.active = index  # drawn on first show
-        assert pane.object is not None
+        assert len(holder) == 1
     monitor.tabs.active = 0
     assert not [r for r in caplog.records if r.name == "accelmo.monitor.app"], "a panel failed"
 
-    monitor.step_slider.value = 2
-    assert monitor.follow.value is False
-    assert seen[-1] == (2, True)
+    monitor.step_select.value = 2
+    _wait(lambda: (monitor._draw_active(), seen[-1] == (2, True))[1])

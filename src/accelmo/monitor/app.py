@@ -46,17 +46,27 @@ class Monitor:
     tab afresh if (and only if) there is new data for it.
     """
 
-    def __init__(self, root: Path | Sequence[Path], spec: MonitorSpec, cache: OpticsCache | None, refresh_seconds: float):
+    def __init__(
+        self,
+        root: Path | Sequence[Path],
+        spec: MonitorSpec,
+        cache: OpticsCache | None,
+        refresh_seconds: float,
+    ):
         self.root = Path(root) if isinstance(root, str | Path) else [Path(r) for r in root]
         self.spec = spec
         self.cache = cache
         self.refresh_seconds = refresh_seconds
 
         self.stage_select = pn.widgets.Select(label="Stage", options={})
-        self.step_select = pn.widgets.Select(label="Step", options={"Latest": LATEST_STEP}, value=LATEST_STEP)
+        self.step_select = pn.widgets.Select(
+            label="Step", options={"Latest": LATEST_STEP}, value=LATEST_STEP
+        )
         self.best_button = pn.widgets.Button(label="Go to best step")
         self.redraw_button = pn.widgets.Button(label="Redraw")
-        self.backfill = pn.widgets.Checkbox(label="Compute optics for the whole history", value=True)
+        self.backfill = pn.widgets.Checkbox(
+            label="Compute optics for the whole history", value=True
+        )
         self.status = pn.pane.Markdown()
 
         panels: list[tuple[str, Callable[[MonitorView], Model]]] = list(spec.panels)
@@ -83,6 +93,7 @@ class Monitor:
     # -- layout ------------------------------------------------------------------------
 
     def layout(self) -> pn.template.BaseTemplate:
+        """The Panel page of the monitor."""
         template = pn.template.FastListTemplate(
             title="accelmo monitor",
             sidebar=[
@@ -144,7 +155,9 @@ class Monitor:
         if self.step_select.value != LATEST_STEP and self.step_select.value not in steps:
             self.step_select.value = LATEST_STEP
 
-    def _queue_optics(self, stage: StageLog, knobs: pd.DataFrame, step: int) -> tuple[bool, bool, int]:
+    def _queue_optics(
+        self, stage: StageLog, knobs: pd.DataFrame, step: int
+    ) -> tuple[bool, bool, int]:
         """Queue what is missing; return whether the references and the optics at ``step`` are
         on disk, and how many steps have a summary."""
         cache = self.cache
@@ -184,9 +197,18 @@ class Monitor:
     # -- the page ----------------------------------------------------------------------
 
     @staticmethod
-    def _fingerprint(panel, stage: StageLog, step: int, references: bool, optics: bool, summaries: int) -> tuple:
+    def _fingerprint(
+        panel, stage: StageLog, step: int, references: bool, optics: bool, summaries: int
+    ) -> tuple:
         """What a tab shows, as a few comparable values; summaries count only for the panels that plot them."""
-        return (stage.directory, stage.version(), step, references, optics, summaries if panel in SUMMARY_PANELS else None)
+        return (
+            stage.directory,
+            stage.version(),
+            step,
+            references,
+            optics,
+            summaries if panel in SUMMARY_PANELS else None,
+        )
 
     def refresh(self) -> None:
         """Rescan stages, queue optics, update the sidebar. Never touches the plots."""
@@ -198,10 +220,14 @@ class Monitor:
             self.status.object = f"No run logs below `{self.root}` yet."
             return
         if self.stage_select.value not in options.values():
-            self.stage_select.value = next(iter(options.values()))  # newest; re-enters via _on_stage
+            self.stage_select.value = next(
+                iter(options.values())
+            )  # newest; re-enters via _on_stage
             return
 
         stage = self._stage()
+        if stage is None:
+            return
         knobs = stage.knob_history()
         if knobs.empty:
             self.status.object = f"No knob history recorded yet in `{stage.directory}`."
@@ -242,8 +268,10 @@ class Monitor:
             step=step,
             history=stage.history(),
             knobs=knobs,
-            references=self.cache.references(metadata) if references else None,
-            optics=self.cache.optics(metadata, knobs.loc[step], SELECTED) if optics else None,
+            references=self.cache.references(metadata) if references and self.cache else None,
+            optics=self.cache.optics(metadata, knobs.loc[step], SELECTED)
+            if optics and self.cache
+            else None,
             summaries=self._read_summaries(stage, knobs),
             s_range=DataRange1d(),  # fresh: a range kept across draws keeps every old figure alive
         )
@@ -256,7 +284,7 @@ class Monitor:
         enable_middle_click_fit(body)
         self.holders[index][:] = [pn.pane.Bokeh(body, sizing_mode="stretch_width")]
         self.redraw_button.button_type = "default"
-        self._update_status(stage, knobs, step, references, optics, summaries, True)
+        self._update_status(stage, knobs, step, references, optics, summaries, fresh=True)
 
     def _update_status(self, stage, knobs, step, references, optics, summaries, fresh) -> None:
         result = stage.result
@@ -266,7 +294,9 @@ class Monitor:
         ]
         if self.cache is not None and stage.metadata:
             lines.append(f"Optics: {summaries}/{len(knobs)} steps, {self.cache.pending} queued")
-            error = self.cache.error(stage.metadata) or self.cache.error(stage.metadata, knobs.loc[step])
+            error = self.cache.error(stage.metadata) or self.cache.error(
+                stage.metadata, knobs.loc[step]
+            )
             if error:
                 lines.append(f"<span style='color:#c0392b'>Error: {error}</span>")
             elif not references or not optics:
@@ -292,7 +322,11 @@ def serve(
     spec = spec or MonitorSpec()
     cache = None
     if spec.make_source is not None:
-        cache = OpticsCache(spec, cache_dir or Path(root if isinstance(root, str | Path) else root[0]) / ".optics_cache", workers=workers)
+        cache = OpticsCache(
+            spec,
+            cache_dir or Path(root if isinstance(root, str | Path) else root[0]) / ".optics_cache",
+            workers=workers,
+        )
     pn.extension(sizing_mode="stretch_width")
     LOGGER.info("Serving the monitor of %s on http://%s:%d", root, address, port)
     pn.serve(

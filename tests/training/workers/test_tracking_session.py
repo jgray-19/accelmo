@@ -6,16 +6,16 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from accelmo.config import SimulationConfig
+from accelmo.backend.protocol import TrackGeometry
+from accelmo.config import TrackingDataConfig, TrackingParameters, WorkerRuntime
 from accelmo.fitting.pool import WorkerPool
-from accelmo.fitting.protocol import STOP, Ack, CommandKind, LossReply
-from accelmo.fitting.worker import KickPlane, WorkerConfig
+from accelmo.fitting.protocol import STOP, Ack
+from accelmo.fitting.worker import WorkerConfig
 from accelmo.machine.accelerators import PSB
 from accelmo.tracking.config.tracking import TrackingPlan
 from accelmo.tracking.data_manager import FileTracks
-from accelmo.tracking.dispatch.payloads import WorkerPayloadBuilder
-from accelmo.tracking.dispatch.screening import OutlierScreener
-from accelmo.tracking.dispatch.setup import WorkerRuntimeMetadata, WorkerSetupHelper
+from accelmo.tracking.dispatch.setup import KickPlane, TrackingWorkerConfig, plan_workers
+from accelmo.tracking.ranges import BpmRanges
 from accelmo.tracking.session import TrackingSession
 from accelmo.tracking.uncertainty import UncertaintyPart, drain_uncertainty
 from accelmo.tracking.worker import PrecomputedTrackingWeights, TrackingData, TrackingWorker
@@ -67,13 +67,16 @@ class _ConnThatMustNotPoll:
         pass
 
 
-def _start_pipe_worker(child_conn: multiprocessing.connection.Connection, responses: list[object]) -> threading.Thread:
+def _start_pipe_worker(
+    child_conn: multiprocessing.connection.Connection, responses: list[object]
+) -> threading.Thread:
     """Start a daemon thread that acts as a fake worker over a real pipe.
 
     The thread receives one binary message per response (via recv_bytes), then sends
     the corresponding response back via send(). This matches the WorkerChannels
     protocol where the parent sends via send_bytes and receives via recv.
     """
+
     def _run() -> None:
         for response in responses:
             child_conn.recv_bytes()
@@ -82,18 +85,6 @@ def _start_pipe_worker(child_conn: multiprocessing.connection.Connection, respon
     thread = threading.Thread(target=_run, daemon=True)
     thread.start()
     return thread
-
-
-def _start_recording_worker(sink: list[object]) -> multiprocessing.connection.Connection:
-    """Return a parent pipe end whose fake worker records one message and acks it."""
-    parent, child = multiprocessing.Pipe()
-
-    def _run() -> None:
-        sink.append(child.recv())
-        child.send(Ack(0))
-
-    threading.Thread(target=_run, daemon=True).start()
-    return parent
 
 
 BPMS = ["BR3.BPM1L3", "BR3.BPM2L3", "BR3.BPM3L3", "BR3.BPM4L3"]
@@ -105,33 +96,24 @@ def _make_psb(tmp_path: Path) -> PSB:
     return PSB(ring=3, sequence_file=seq_file)
 
 
-def _make_setup_helper(
-    tmp_path: Path,
-    *,
-    all_bpms: list[str] | None = None,
-    interface_options_per_file: list[dict] | None = None,
-) -> WorkerSetupHelper:
-    bpms = all_bpms or BPMS
-    return WorkerSetupHelper(
-        accelerator=_make_psb(tmp_path),
-        all_bpms=bpms,
+def _plan_file_workers(tmp_path: Path, file_idx: int) -> list[TrackingWorkerConfig]:
+    """Workers of one file over the first three BPMs, each file with its own machine state."""
+    bpms = BPMS[:3]
+    ranges = BpmRanges(
+        TrackingPlan(),
+        [bpms[0]],
+        [bpms[1]],
+        bpms,
+        use_fixed_bpm=True,
         fixed_start=bpms[0],
         fixed_end=bpms[-1],
-        use_fixed_bpm=True,
-        bad_bpms=None,
-        file_kick_planes=dict.fromkeys(range(4), "xy"),
-        magnet_range="$start/$end",
-        interface_options_per_file=interface_options_per_file
-        or [{"machine_state": tmp_path / "correctors_state.txt"}],
-        debug=False,
-        mad_logfile=None,
-        python_logfile=None,
-        tracking_plan=TrackingPlan(),
     )
-
-
-def _screener(tmp_path: Path) -> OutlierScreener:
-    return OutlierScreener(WorkerPayloadBuilder(_make_psb(tmp_path)))
+    base = WorkerConfig(
+        accelerator=_make_psb(tmp_path),
+        magnet_range="$start/$end",
+        machine_state=tmp_path / f"corr{file_idx}_state.txt",
+    )
+    return plan_workers(base, ranges, file_idx, "xy", set(bpms))
 
 
 def _make_tracks(all_bpms: list[str], turns: list[int]) -> FileTracks:
@@ -148,27 +130,19 @@ def _make_tracks(all_bpms: list[str], turns: list[int]) -> FileTracks:
         "var_y": np.ones_like(grid),
         "var_py": np.ones_like(grid),
     }
-    return FileTracks(
-        turns=np.array(turns), markers=list(all_bpms), values=values, kick_plane="xy"
-    )
+    return FileTracks(turns=np.array(turns), markers=list(all_bpms), values=values, kick_plane="xy")
 
 
 def test_session_payloads_take_per_file_artifacts_from_the_file_turn_map(tmp_path: Path) -> None:
     session = TrackingSession(
-        _make_setup_helper(
-            tmp_path,
-            all_bpms=BPMS[:3],
-            interface_options_per_file=[
-                {"machine_state": tmp_path / "corr0_state.txt"},
-                {"machine_state": tmp_path / "corr1_state.txt"},
-            ],
-        ),
-        SimulationConfig(num_workers=2, num_batches=1, optimise_momenta=False),
+        _make_psb(tmp_path),
+        WorkerRuntime(2),
+        TrackingDataConfig(1, optimise_momenta=False),
+        TrackingParameters(),
         turn_batches=[[2], [202]],
         validation_turn_batches=[],
         file_turn_map={2: 0, 202: 1},
-        start_bpms=[BPMS[0]],
-        end_bpms=[BPMS[1]],
+        worker_plans={f: _plan_file_workers(tmp_path, f) for f in (0, 1)},
         machine_deltaps=[0.0, 1e-3],
     )
 
@@ -180,112 +154,18 @@ def test_session_payloads_take_per_file_artifacts_from_the_file_turn_map(tmp_pat
         turn_batches=[[2], [202]],
     )
 
-    assert [file_idx for _, _, file_idx in payloads] == [0, 1, 0, 1]
-    assert [config.interface_options for _, config, _ in payloads] == [
-        {"machine_state": tmp_path / "corr0_state.txt"},
-        {"machine_state": tmp_path / "corr1_state.txt"},
-        {"machine_state": tmp_path / "corr0_state.txt"},
-        {"machine_state": tmp_path / "corr1_state.txt"},
+    assert [config.file_idx for _, config in payloads] == [0, 0, 1, 1]
+    assert [config.machine_state for _, config in payloads] == [
+        tmp_path / "corr0_state.txt",
+        tmp_path / "corr0_state.txt",
+        tmp_path / "corr1_state.txt",
+        tmp_path / "corr1_state.txt",
     ]
 
-    init_pts = [float(data.init_pts[0]) for data, _, _ in payloads]
-    assert init_pts[0] == init_pts[2]
-    assert init_pts[1] == init_pts[3]
-    assert init_pts[0] != init_pts[1]
-
-
-def test_build_bpm_masks_from_diagnostics_aggregates_multi_turn_losses(tmp_path: Path) -> None:
-    metadata = [
-        WorkerRuntimeMetadata(
-            worker_id=0,
-            file_idx=0,
-            start_bpm="BPH.13208",
-            end_bpm="BPV.20108",
-            sdir=1,
-            kick_plane=KickPlane.XY,
-            n_run_turns=2,
-            bpm_names=["BPH.13208", "BPH.13608"],
-        )
-    ]
-
-    masks = _screener(tmp_path).build_bpm_masks_from_diagnostics(
-        diagnostics=[LossReply(0, 102.0, np.array([1.0, 50.0, 1.0, 50.0]))],
-        worker_metadata=metadata,
-        bpm_sigma_threshold=0.5,
-    )
-
-    assert len(masks) == 1
-    assert masks[0].tolist() == [True, False]
-
-
-def test_apply_screening_actions_expands_masks_across_turns(tmp_path: Path) -> None:
-    pool = WorkerPool()
-    received: list[list[object]] = [[], []]
-    pool.conns = [_start_recording_worker(sink) for sink in received]
-    pool.workers = [_FakeWorker(), _FakeWorker()]  # type: ignore[list-item]
-    pool.metadata = [
-        WorkerRuntimeMetadata(
-            worker_id=0,
-            file_idx=0,
-            start_bpm="BPH.13208",
-            end_bpm="BPV.20108",
-            sdir=1,
-            kick_plane=KickPlane.XY,
-            n_run_turns=2,
-            bpm_names=["BPH.13208", "BPH.13608"],
-        ),
-        WorkerRuntimeMetadata(
-            worker_id=1,
-            file_idx=1,
-            start_bpm="BPV.13308",
-            end_bpm="BPV.20108",
-            sdir=1,
-            kick_plane=KickPlane.XY,
-            n_run_turns=1,
-            bpm_names=["BPV.13308", "BPV.20108"],
-        ),
-    ]
-
-    _screener(tmp_path).apply_screening_actions(
-        pool,
-        bpm_masks=[np.array([True, False]), np.array([False, True])],
-        worker_disabled=[False, True],
-    )
-
-    for sink, mask, disabled in zip(
-        received, ([True, False, True, False], [False, True]), (False, True), strict=True
-    ):
-        (command,) = sink
-        assert command.kind is CommandKind.APPLY_MASK
-        assert command.payload["keep_bpm_mask"].tolist() == mask
-        assert command.payload["disable_worker"] is disabled
-
-def test_summarise_screening_losses_logs_pre_and_projected_loss(tmp_path: Path, caplog) -> None:
-    metadata = [
-        WorkerRuntimeMetadata(
-            worker_id=0,
-            file_idx=0,
-            start_bpm="BPH.13208",
-            end_bpm="BPV.20108",
-            sdir=1,
-            kick_plane=KickPlane.XY,
-            n_run_turns=2,
-            bpm_names=["BPH.13208", "BPH.13608"],
-        )
-    ]
-
-    with caplog.at_level("INFO"):
-        _screener(tmp_path).summarise_screening_losses(
-            diagnostics=[LossReply(0, 20.0, np.array([1.0, 9.0, 1.0, 9.0]))],
-            bpm_masks=[np.array([True, False])],
-            worker_disabled=[False],
-            worker_metadata=metadata,
-        )
-
-    assert "Pre-screening loss summary" in caplog.text
-    assert "Projected post-screening loss summary" in caplog.text
-    assert "total=2.000000e+01" in caplog.text
-    assert "total=2.000000e+00" in caplog.text
+    init_pts = [float(data.init_pts[0]) for data, _ in payloads]
+    assert init_pts[0] == init_pts[1]
+    assert init_pts[2] == init_pts[3]
+    assert init_pts[0] != init_pts[2]
 
 
 def test_validation_worker_keeps_all_held_out_turns_with_nondividing_batch_count(
@@ -304,23 +184,22 @@ def test_validation_worker_keeps_all_held_out_turns_with_nondividing_batch_count
         init_pts=np.zeros((n_tracks,), dtype=np.float64),
         reading_ids=np.zeros(shape, dtype=np.int64),
         init_reading_ids=np.zeros((n_tracks,), dtype=np.int64),
-        init_variances=np.ones((n_tracks, 2), dtype=np.float64),
+        init_variances=np.ones((n_tracks, 4), dtype=np.float64),
+        start_turn_offsets=np.zeros(n_tracks, dtype=np.int64),
         precomputed_weights=PrecomputedTrackingWeights(
             x=np.ones(shape, dtype=np.float64),
             y=np.ones(shape, dtype=np.float64),
             px=np.ones(shape, dtype=np.float64),
             py=np.ones(shape, dtype=np.float64),
-            scale=1.0,
         ),
     )
-    config = WorkerConfig(
+    config = TrackingWorkerConfig(
         accelerator=accelerator,
-        tracking_start_bpm="BPH.13008",
-        tracking_end_bpm="BPH.13408",
         magnet_range="$start/$end",
-        interface_options={},
-        sdir=1,
         kick_plane="xy",
+        geometry=TrackGeometry(start_bpm="BPH.13008", end_bpm="BPH.13408", sdir=1),
+        file_idx=0,
+        bpm_names=["BPH.13008", "BPH.13408"],
     )
 
     worker = TrackingWorker(
@@ -328,7 +207,9 @@ def test_validation_worker_keeps_all_held_out_turns_with_nondividing_batch_count
         worker_id=0,
         data=data,
         config=config,
-        simulation_config=SimulationConfig(num_workers=1, num_batches=8),
+        runtime=WorkerRuntime(1),
+        tracking_data=TrackingDataConfig(8),
+        parameters=TrackingParameters(),
         validation=True,
     )
 
@@ -346,17 +227,15 @@ def _uncertainty_pool(file_indices: list[int], responses: list[list[object]]) ->
         pool.conns.append(parent)
     pool.workers = [_FakeWorker() for _ in file_indices]  # type: ignore[misc]
     pool.metadata = [
-        WorkerRuntimeMetadata(
-            worker_id=idx,
+        TrackingWorkerConfig(
+            accelerator=None,
+            magnet_range="$start/$end",
+            geometry=TrackGeometry(start_bpm=BPMS[0], end_bpm=BPMS[-1]),
             file_idx=file_idx,
-            start_bpm=BPMS[0],
-            end_bpm=BPMS[-1],
-            sdir=1,
-            kick_plane=KickPlane.XY,
-            n_run_turns=1,
             bpm_names=BPMS,
+            kick_plane=KickPlane.XY,
         )
-        for idx, file_idx in enumerate(file_indices)
+        for file_idx in file_indices
     ]
     pool.particle_counts = [1 for _ in file_indices]
     return pool
@@ -382,13 +261,14 @@ def test_drain_uncertainty_merges_shared_readings_per_file() -> None:
 
 def test_terminate_kills_training_and_validation_workers(tmp_path: Path) -> None:
     session = TrackingSession(
-        _make_setup_helper(tmp_path),
-        SimulationConfig(num_workers=1, num_batches=1),
+        _make_psb(tmp_path),
+        WorkerRuntime(1),
+        TrackingDataConfig(1),
+        TrackingParameters(),
         turn_batches=[],
         validation_turn_batches=[],
         file_turn_map={},
-        start_bpms=[],
-        end_bpms=[],
+        worker_plans={},
         machine_deltaps=[],
     )
     training = [_FakeWorker(), _FakeWorker()]

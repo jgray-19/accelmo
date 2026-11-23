@@ -3,7 +3,9 @@ Tracking Fit Tour
 
 A tour of :class:`~accelmo.tracking.fitter.ArcByArcFitter` and
 :class:`~accelmo.tracking.fitter.ACDMarkerFitter`: what each part of the code does, in the
-order it runs. Underlined words are defined in the :ref:`tour-glossary` at the bottom
+order it runs. The other fitters differ only in where the particles start and which
+readings are compared (:doc:`fit_families`). Other model backends are described in
+:doc:`backends`. Underlined words are defined in the :ref:`tour-glossary` at the bottom
 of the page.
 
 The idea
@@ -14,14 +16,14 @@ The idea
 2. **Simulate.** :term:`MAD-NG` tracks each measured turn through the model. It
    returns the position at each BPM and its derivative with respect to each
    :term:`knob`.
-3. **Fit.** Gradient descent changes the knobs until the model positions match the
-   measured positions.
+3. **Fit.** The optimiser (Adam, L-BFGS or Levenberg-Marquardt) changes the knobs until
+   the model positions match the measured positions.
 
 Package map
 -----------
 
 ``accelmo.config``
-    ``OptimiserConfig`` and ``SimulationConfig``.
+    ``OptimiserConfig``, ``WorkerRuntime``, ``TrackingDataConfig`` and ``TrackingParameters``.
 
 ``accelmo.tracking``
     The tracking fitters.
@@ -50,12 +52,6 @@ Package map
 ``accelmo.optimisers``
     Update rules: ``adam.py``, ``lbfgs.py``.
 
-``accelmo.measurements``
-    Preprocessing.
-
-    * ``reconstruction.py``: raw data → fitter input
-    * ``acd_pipeline.py``: optics analysis for :term:`ACD <AC dipole>` data
-
 Not used by the tracking fitters: ``poco``, ``analysis``, ``runlog``, ``monitor``.
 
 .. code-block:: text
@@ -64,50 +60,11 @@ Not used by the tracking fitters: ``poco``, ``analysis``, ``runlog``, ``monitor`
       │
       └─▶ optimisers
 
-.. _tour-preprocessing:
+Fitter input
+------------
 
-Preprocessing
--------------
-
-Turns raw turn-by-turn BPM data into the :term:`parquet` file the fitter reads.
-Entry point: :func:`~accelmo.measurements.reconstruction.process_single_dataframe`,
-called once per :term:`bunch`.
-
-.. code-block:: text
-
-   raw BPM data (name, turn, x, y)
-      ──▶ trim ──▶ variances ──▶ SVD clean ──▶ reconstruct px, py ──▶ parquet
-
-.. list-table::
-   :header-rows: 1
-   :widths: 28 32 40
-
-   * - Step
-     - Code
-     - What it does
-   * - ACD only: optics analysis
-     - ``measurements/acd_pipeline.py``
-     - omc3 (Harpy) measures the optics from the data and writes them to an analysis
-       folder.
-   * - Trim to the :term:`kick`
-     - ``measurements/preprocessing.py``
-     - Optional. Drops the turns before the kick.
-   * - Assign variances
-     - ``measurements/variances.py``
-     - Adds ``var_x``, ``var_y`` columns: one value for every BPM, or a per-BPM noise
-       table. Bad BPMs get zero weight.
-   * - SVD clean
-     - ``tmom_recon.svd``
-     - Removes noise from x and y with an SVD.
-   * - Reconstruct px, py
-     - ``tmom_recon.calculate_pz``
-     - Computes the momenta at each BPM from the positions and the measured optics.
-   * - ACD only: add marker rows
-     - ``measurements/reconstruction.py``
-     - Adds rows for ``<acd>_before`` and ``<acd>_after``.
-
-Output columns: ``name, turn, bunch_number, x, px, y, py, var_x, var_y, var_px,
-var_py``.
+The fitter reads one :term:`parquet` file per measurement with the columns
+``name, turn, bunch_number, x, px, y, py, var_x, var_y, var_px, var_py``.
 
 Arc-by-arc vs ACD marker
 ------------------------
@@ -146,9 +103,6 @@ backward (orange), for one turn. With ``acd_excited=True``, a range containing t
    * -
      - ArcByArcFitter
      - ACDMarkerFitter
-   * - Setup function
-     - ``arc_by_arc_setup``
-     - ``acd_marker_setup``
    * - :term:`Plan <plan>` class
      - ``TrackingPlan`` or ``ACDArcByArcTrackingPlan``
      - ``ACDTrackingPlan``
@@ -260,7 +214,7 @@ From ``fitter = ArcByArcFitter(...)`` to ``fitter.run()``. Paths are relative to
      - ``tracking/sgd/loop.py``
      - Sends ``Evaluate(knobs, batch)`` to every worker.
    * - Track
-     - ``machine/mad/scripts.py``
+     - ``backend/madng/scripts.py``
      - MAD-NG tracks the batch and stores x, y and their knob derivatives at each BPM.
    * - Loss and gradient
      - ``tracking/worker.py``
@@ -269,7 +223,8 @@ From ``fitter = ArcByArcFitter(...)`` to ``fitter.run()``. Paths are relative to
    * - Step
      - ``tracking/sgd/loop.py``
      - Sums the gradients from all workers and updates the knobs with Adam or
-       L-BFGS.
+       L-BFGS. With a ``LevenbergMarquardtConfig`` solver the fit runs the
+       Levenberg-Marquardt loop over every batch instead.
    * - End of :term:`epoch`
      - ``tracking/sgd/loop.py``
      - Computes the validation loss, saves the best knobs, checks whether to stop,

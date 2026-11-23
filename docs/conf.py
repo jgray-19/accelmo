@@ -65,7 +65,6 @@ napoleon_use_ivar = True
 autodoc_mock_imports = [
     "bokeh",
     "matplotlib",
-    "nxcals",
     "numpy",
     "omc3",
     "pandas",
@@ -75,9 +74,11 @@ autodoc_mock_imports = [
     "pymadng_utils",
     "scipy",
     "tfs",
-    "tmom_recon",
     "turn_by_turn",
     "uncertainties",
+    "madng_tpsa",
+    "xtrack",
+    "xtrack_tools",
 ]
 
 templates_path = ["_templates"]
@@ -106,7 +107,7 @@ def setup(app):  # type: ignore[override]
 
 # -- Options for HTML output -------------------------------------------------
 
-html_theme = "shibuya"
+html_theme = "furo"
 html_static_path = ["_static"]
 html_title = "accelmo documentation"
 
@@ -118,7 +119,9 @@ intersphinx_mapping: dict[str, tuple[str, str | None]] = {}
 # -- MyST configuration ------------------------------------------------------
 
 myst_enable_extensions = [
+    "amsmath",
     "colon_fence",
+    "dollarmath",
     "deflist",
     "fieldlist",
 ]

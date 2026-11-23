@@ -1,4 +1,4 @@
-"""Public interface for the ACCELMO package.
+"""Public interface for the accelmo package.
 
 The package bundles configuration helpers, optimiser implementations, and
 simulation orchestrators for magnet knob tuning studies.

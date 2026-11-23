@@ -21,10 +21,10 @@ import pytest
 xt = pytest.importorskip("xtrack")
 xtt = pytest.importorskip("xtrack_tools")
 
+from accelmo.backend.madng import MadInterface  # noqa: E402
+from accelmo.backend.madng.scripts import CLOSED_TWISS_INIT, PYTHON_IN_MAD  # noqa: E402
 from accelmo.machine.accelerators import LHC  # noqa: E402
 from accelmo.machine.accelerators.base import MagnetFamily  # noqa: E402
-from accelmo.machine.mad import GradientDescentMadInterface  # noqa: E402
-from accelmo.machine.mad.scripts import CLOSED_TWISS_INIT, PYTHON_IN_MAD  # noqa: E402
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -67,9 +67,12 @@ class MadngOrbit:
 
     def __init__(self, sequence: Path) -> None:
         accelerator = MainQuadDxDyLHC(
-            beam=1, sequence_file=sequence, kinetic_energy=KINETIC_ENERGY, misalignments={"quad": {"dx", "dy"}}
+            beam=1,
+            sequence_file=sequence,
+            kinetic_energy=KINETIC_ENERGY,
+            misalignments={"quad": {"dx", "dy"}},
         )
-        self.iface = GradientDescentMadInterface(accelerator, py_name=PYTHON_IN_MAD)
+        self.iface = MadInterface(accelerator, py_name=PYTHON_IN_MAD, create_knobs=True)
         self.knobs = list(self.iface.knob_names)
         mad = self.iface.mad
         kept = [
@@ -95,7 +98,9 @@ class MadngOrbit:
         out = {}
         for coord in COORDS:
             out[coord] = np.asarray(mad.recv(), dtype=float).ravel()
-            out[f"jac_{coord}"] = np.asarray(mad.recv(), dtype=float).reshape(len(bpms), len(self.knobs))
+            out[f"jac_{coord}"] = np.asarray(mad.recv(), dtype=float).reshape(
+                len(bpms), len(self.knobs)
+            )
         return Orbit(bpms, **out)
 
     def close(self) -> None:
@@ -106,14 +111,20 @@ class XsuiteOrbit:
     """Closed 4D orbit of the xsuite line built from the same sequence, with dx / dy as element shifts."""
 
     def __init__(self, sequence: Path) -> None:
-        env = xtt.create_xsuite_environment(sequence_file=sequence, kinetic_energy=KINETIC_ENERGY, seq_name="lhcb1")
+        env = xtt.create_xsuite_environment(
+            sequence_file=sequence, kinetic_energy=KINETIC_ENERGY, seq_name="lhcb1"
+        )
         self.line = env["lhcb1"]
 
     def set_errors(self, values: dict[str, float], knobs: list[str]) -> None:
         """Set every knob (``MQ.11R2.B1.dx``) to its value in ``values``, zero if absent."""
         for knob in knobs:
             name, plane = knob.rsplit(".", 1)
-            setattr(self.line.element_dict[name.lower()], "shift_x" if plane == "dx" else "shift_y", values.get(knob, 0.0))
+            setattr(
+                self.line.element_dict[name.lower()],
+                "shift_x" if plane == "dx" else "shift_y",
+                values.get(knob, 0.0),
+            )
 
     def orbit(self, bpms: list[str]) -> Orbit:
         rows = self.line.twiss(method="4d", only_orbit=True).rows[bpms]
@@ -202,7 +213,9 @@ def test_directional_derivative_matches_xsuite(models, errors) -> None:
     h = STEP
     orbits = []
     for sign in (+1.0, -1.0):
-        xsuite.set_errors({k: errors[k] + sign * h * direction[k] for k in madng.knobs}, madng.knobs)
+        xsuite.set_errors(
+            {k: errors[k] + sign * h * direction[k] for k in madng.knobs}, madng.knobs
+        )
         orbits.append(xsuite.orbit(jacobian.bpms))
     xsuite.set_errors({}, madng.knobs)
     for coord in COORDS:

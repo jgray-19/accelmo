@@ -25,7 +25,8 @@ Two families of fit are provided:
        :class:`~accelmo.poco.calibrated.CalibratedClosedOrbitFitter`
    * - Closed twiss
      - Closed orbit, phase advance, beta and dispersion
-     - :class:`~accelmo.poco.fitter.ClosedTwissFitter`
+     - :class:`~accelmo.poco.closed_orbit.ClosedOrbitFitter` with
+       :func:`~accelmo.poco.closed_orbit.closed_twiss_series`
 
 All fitters return a :class:`~accelmo.fitting.results.FitResult`.
 
@@ -36,9 +37,9 @@ Python 3.11 or later is required.
 
 .. code-block:: bash
 
-   git clone https://github.com/jgray-19/sgd-magnet-tuner.git
-   cd sgd-magnet-tuner
-   pip install -e ".[test,docs,tracking]"
+   git clone https://github.com/jgray-19/accelmo.git
+   cd accelmo
+   uv sync --extra test --extra docs --extra tracking
 
 Optional dependency groups:
 
@@ -50,14 +51,10 @@ Optional dependency groups:
      - Contents
    * - ``tracking``
      - omc3, cpymad, pyarrow, psutil (required by the tracking workflows)
-   * - ``measurements``
-     - tmom-recon (momentum reconstruction)
    * - ``monitor``
      - Panel, for the live fit monitor (``python -m accelmo.monitor``)
-   * - ``cern``
-     - nxcals (CERN logging database access)
    * - ``test``
-     - pytest, pytest-cov, pytest-xdist, xtrack-tools
+     - pytest, pytest-cov, pytest-xdist
    * - ``docs``
      - Sphinx and theme
    * - ``dev``
@@ -67,7 +64,7 @@ Build this documentation with:
 
 .. code-block:: bash
 
-   pip install -e ".[docs]"
+   uv sync --extra docs
    cd docs && make html
 
 Companion packages
@@ -82,18 +79,11 @@ Companion packages
    * - `pymadng-utils <https://jgray-19.github.io/pymadng-utils/>`_
      - Shared accelerator abstractions, dp/p and pt conversion
        (``pymadng_utils.physics``), knob-file I/O.
-   * - `tmom-recon <https://jgray-19.github.io/tmom-recon/>`_
-     - Transverse momentum, AC-dipole and optics reconstruction.
    * - `xtrack_tools <https://jgray-19.github.io/xtrack_tools/>`_
      - Tracking helpers and dataframe conversion, used by the tests.
 
-Install them from GitHub:
-
-.. code-block:: bash
-
-   pip install git+https://github.com/jgray-19/pymadng-utils.git
-   pip install git+https://github.com/jgray-19/tmom-recon.git
-   pip install git+https://github.com/jgray-19/xtrack_tools.git
+``pymadng-utils`` is a normal dependency. ``xtrack_tools`` is pinned in the ``dev``
+dependency group, so ``uv sync`` installs both.
 
 The measurement and campaign workflows built on this package are maintained in
 separate repositories (``lhc_measurements``, ``psb_md``, ``psb_loco``, ``lhc_loco``
@@ -104,7 +94,17 @@ and ``fcc_loco``) and are not documented here.
    :caption: Contents
 
    user_guide
+   fit_families
+   measurement_data
+   loss_and_uncertainty
    tracking_tour
    architecture
-   measurements
+   backends
+   start_gain_chain_rule
    api_reference
+
+.. toctree::
+   :maxdepth: 1
+   :caption: Background
+
+   adamw_madng_2025

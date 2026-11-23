@@ -14,6 +14,7 @@ PLANES = ("x", "y")
 
 
 def bpm_gain_name(plane: str, bpm: str) -> str:
+    """Fit-parameter name of the gain of ``bpm`` in ``plane``."""
     return f"{PREFIX}.{plane}.{bpm}"
 
 
@@ -23,14 +24,17 @@ def bpm_gain_names(bpms: list[str] | tuple[str, ...]) -> list[str]:
 
 
 def is_bpm_gain(name: str) -> bool:
+    """True if ``name`` is a BPM gain parameter."""
     return name.startswith(f"{PREFIX}.")
 
 
 def without_bpm_gains(knobs: dict[str, float]) -> dict[str, float]:
+    """``knobs`` without the BPM gains."""
     return {k: v for k, v in knobs.items() if not is_bpm_gain(k)}
 
 
 def only_bpm_gains(knobs: dict[str, float]) -> dict[str, float]:
+    """Only the BPM gains of ``knobs``."""
     return {k: v for k, v in knobs.items() if is_bpm_gain(k)}
 
 
@@ -39,7 +43,7 @@ def bpm_gains(knobs: dict[str, float], plane: str, bpms: list[str] | tuple[str, 
     return np.array([knobs.get(bpm_gain_name(plane, bpm), 0.0) for bpm in bpms])
 
 
-def bpm_reading(position: np.ndarray, gains: np.ndarray) -> np.ndarray:
+def bpm_reading(position: np.ndarray | float, gains: np.ndarray) -> np.ndarray:
     """What a BPM with ``gains`` reports for ``position`` (gains broadcast on the last axis)."""
     return (1.0 + gains) * position
 

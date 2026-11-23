@@ -6,10 +6,11 @@ import multiprocessing as mp
 
 import numpy as np
 
-from accelmo.config import SimulationConfig
-from accelmo.fitting.worker import WorkerConfig
-from accelmo.machine.accelerators import PSB
+from accelmo.backend.protocol import TrackGeometry
+from accelmo.config import TrackingDataConfig, TrackingParameters, WorkerRuntime
 from accelmo.fitting.bpm_gains import bpm_gain_names, point_gain_index
+from accelmo.machine.accelerators import PSB
+from accelmo.tracking.dispatch.setup import TrackingWorkerConfig
 from accelmo.tracking.worker import PrecomputedTrackingWeights, TrackingData, TrackingWorker
 
 BPMS = ("B1", "B2", "B3")
@@ -32,21 +33,25 @@ def _worker(tmp_path, optimise_momenta: bool) -> TrackingWorker:
         init_pts=np.zeros(N_PARTICLES),
         reading_ids=np.zeros(shape, dtype=np.int64),
         init_reading_ids=np.zeros(N_PARTICLES, dtype=np.int64),
-        init_variances=np.ones((N_PARTICLES, 2)),
+        init_variances=np.ones((N_PARTICLES, 4)),
+        start_turn_offsets=np.zeros(N_PARTICLES, dtype=np.int64),
         precomputed_weights=PrecomputedTrackingWeights(
-            **{o: rng.uniform(0.5, 2.0, shape) for o in ("x", "y", "px", "py")}, scale=1.0
+            **{o: rng.uniform(0.5, 2.0, shape) for o in ("x", "y", "px", "py")}
         ),
         gain_bpms=BPMS,
         point_gain_index=point_gain_index(POINTS, BPMS),
     )
-    config = WorkerConfig(
+    config = TrackingWorkerConfig(
         accelerator=PSB(ring=3, sequence_file=seq_file),
-        tracking_start_bpm="BR3.BPM1L3",
-        tracking_end_bpm="BR3.BPM3L3",
         magnet_range="$start/$end",
+        geometry=TrackGeometry(start_bpm="BR3.BPM1L3", end_bpm="BR3.BPM3L3"),
+        file_idx=0,
+        bpm_names=["BR3.BPM1L3", "BR3.BPM2L3", "BR3.BPM3L3"],
     )
-    sim = SimulationConfig(num_workers=1, num_batches=1, optimise_momenta=optimise_momenta)
-    return TrackingWorker(mp.Pipe()[1], 0, data, config, sim)
+    tracking_data = TrackingDataConfig(num_batches=1, optimise_momenta=optimise_momenta)
+    return TrackingWorker(
+        mp.Pipe()[1], 0, data, config, WorkerRuntime(1), tracking_data, TrackingParameters()
+    )
 
 
 class _LinearModel:
@@ -79,7 +84,9 @@ def _finite_differences(worker, model, params, step=1e-6):
         up, down = params.copy(), params.copy()
         up[i] += step
         down[i] -= step
-        fd[i] = (_loss_and_grad(worker, model, up)[0] - _loss_and_grad(worker, model, down)[0]) / (2 * step)
+        fd[i] = (_loss_and_grad(worker, model, up)[0] - _loss_and_grad(worker, model, down)[0]) / (
+            2 * step
+        )
     return fd
 
 
@@ -99,7 +106,9 @@ def test_gain_derivatives_match_finite_differences(tmp_path) -> None:
         _, knob_grad, results = _loss_and_grad(worker, model, params, gain_columns=False)
         np.testing.assert_allclose(knob_grad, fd[:N_KNOBS], rtol=1e-6, atol=1e-8)
         numerator, curvature = worker._gain_sums(results, 0)
-        np.testing.assert_allclose(2 * (params[N_KNOBS:] * curvature - numerator), fd[N_KNOBS:], rtol=1e-6, atol=1e-8)
+        np.testing.assert_allclose(
+            2 * (params[N_KNOBS:] * curvature - numerator), fd[N_KNOBS:], rtol=1e-6, atol=1e-8
+        )
         # B3 is never observed: its sums are zero.
         assert curvature[2] == 0.0 and curvature[5] == 0.0
 

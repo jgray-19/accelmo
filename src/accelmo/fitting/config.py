@@ -2,16 +2,9 @@
 
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
-
-from accelmo.config import TRAINING_RUNS_ROOT
-
-if TYPE_CHECKING:
-    from pathlib import Path
-
-logger = logging.getLogger(__name__)
+from pathlib import Path
+from typing import Any
 
 
 @dataclass
@@ -24,12 +17,8 @@ class SequenceConfig:
     :class:`MeasurementDetails`.
     """
 
-    magnet_range: str
+    magnet_range: str = "$start/$end"
     bad_bpms: list[str] | None = None
-
-    def log_state(self) -> None:
-        """Log the current sequence config settings."""
-        logger.info("SequenceConfig: %s", self)
 
 
 @dataclass
@@ -49,11 +38,7 @@ class OutputConfig:
 
     write_run_log: bool = True
     include_uncertainty: bool = True
-    run_log_root: Path = field(default_factory=lambda: TRAINING_RUNS_ROOT)
+    run_log_root: Path = field(default_factory=lambda: Path("runs"))
     run_metadata: dict[str, Any] = field(default_factory=dict)
     mad_logfile: Path | None = None
     python_logfile: Path | None = None
-
-    def log_state(self) -> None:
-        """Log the current output config settings."""
-        logger.info("OutputConfig: %s", self)
