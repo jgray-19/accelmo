@@ -2,7 +2,6 @@
 # requires-python = ">=3.12"
 # dependencies = ["accelmo[tracking]", "xtrack>=0.118.6", "xtrack-tools"]
 # [tool.uv.sources]
-# accelmo = { path = "..", editable = true }
 # xtrack-tools = { git = "https://github.com/jgray-19/xtrack_tools", rev = "0e6779d35546db12182a99d25c1cba60d395c90e" }
 # ///
 """Speed of MAD-NG and xsuite (xtrack TPSA) for the PSB fits: POCO and the DLMN methods.
