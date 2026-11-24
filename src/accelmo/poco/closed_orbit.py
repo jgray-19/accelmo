@@ -28,6 +28,7 @@ from accelmo.poco.workers.closed_orbit import (
     ClosedOrbitWorker,
     validate_series,
 )
+from accelmo.poco.workers.closed_twiss import ORBIT_COORDS
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -134,7 +135,6 @@ class ClosedOrbitFitter(LMFitter):
 
     worker_class = ClosedOrbitWorker
     supports_energy = True
-    loss_only_trials = True
     log_suffix = "closed_orbit_opt"
     fit_label = "Closed-orbit"
 
@@ -197,6 +197,9 @@ class ClosedOrbitFitter(LMFitter):
             debug=debug,
         )
         self.worker_payloads = self._create_series_payloads()
+        self.loss_only_trials = all(
+            name in ORBIT_COORDS for item in self.series for name in item.observables or observables
+        )
 
     @staticmethod
     def _worker_count(n_series: int, max_workers: int | None) -> int:

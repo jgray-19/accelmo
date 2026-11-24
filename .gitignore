@@ -169,6 +169,8 @@ artifacts/training/runs/
 *_analysis*/
 *_results/
 analysis*/
+!src/accelmo/analysis/
+!tests/analysis/
 b1_flat_60_18cm/
 betabeat/
 data/
