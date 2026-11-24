@@ -25,9 +25,6 @@ a saved file is reused). The generating line is the most accurate one: full dipo
 orbit response changed by 1e-11 relative against four times finer slicing. Both fits then use
 their own, faster default models.
 
-Run from the repository root (heavy: run on ``cs-ccr-dev3.cern.ch``; needs xtrack in the
-environment, so use a venv with ``accelmo[tracking]``, ``xtrack`` and ``xtrack-tools``):
-
 ```bash
 uv run examples/benchmark_madng_vs_xsuite_lhc_loco.py
 uv run examples/benchmark_madng_vs_xsuite_lhc_loco.py --backends madng --workers 32
