@@ -28,6 +28,7 @@ from accelmo.backend.madng.scripts import (
     build_tracking_script,
     build_validation_init_script,
     build_validation_script,
+    build_zero_field_removal_script,
     dump_debug_script,
 )
 from accelmo.backend.protocol import ClosedSolution, TrackResult
@@ -380,6 +381,7 @@ class ClosedOrbitEngine:
         mad["optics_columns"] = self._value_columns + self._derivative_columns
         mad["orbit_coords"] = self.orbit_coords
         mad.send(_strip_comment_lines(CLOSED_TWISS_INIT.read_text()))
+        mad.send(build_zero_field_removal_script())
         self._solver = "compute_closed_twiss()" if self.optics_names else "compute_closed_orbit()"
         #: Knobs are plain numbers (after a ``jacobian=False`` solve) until the next full solve.
         self._plain = False

@@ -105,17 +105,28 @@ class _KnobProblem(LMProblem):
     def __init__(
         self,
         knob_names: list[str],
-        evaluate_workers: Callable[[dict[str, float]], list[GradReply]],
+        evaluate_workers: Callable[..., list[GradReply]],
         prior: np.ndarray,
         history: list,
+        *,
+        loss_only_trials: bool,
     ) -> None:
         self.knob_names = knob_names
         self.evaluate_workers = evaluate_workers
         self.prior = prior
         self.history = history
+        self.loss_only_trials = loss_only_trials
 
     def knobs(self, params: np.ndarray) -> dict[str, float]:
         return dict(zip(self.knob_names, (float(v) for v in params), strict=True))
+
+    def trial_loss(self, params: np.ndarray) -> float | None:
+        reduced = reduce_replies(
+            self.evaluate_workers(self.knobs(params), loss_only=True), len(self.knob_names)
+        )
+        if reduced.particle_lost:
+            return None
+        return reduced.loss + float(params @ self.prior @ params)
 
     def evaluate(self, params: np.ndarray, iteration: int) -> LMPoint:
         reduced = reduce_replies(self.evaluate_workers(self.knobs(params)), len(self.knob_names))
@@ -146,6 +157,8 @@ class LMFitter:
     fit_label: str
     #: Whether ``accelerator.optimise_energy`` is supported: ``pt`` is then fitted as the last knob.
     supports_energy: bool = False
+    #: Whether a rejected step costs a plain-orbit chi² instead of a full evaluation (orbit-only workers).
+    loss_only_trials: bool = False
 
     def __init__(
         self,
@@ -275,9 +288,10 @@ class LMFitter:
         )
         problem = _KnobProblem(
             knob_names,
-            lambda knobs: self._evaluate_workers(channels, knobs),
+            lambda knobs, **kwargs: self._evaluate_workers(channels, knobs, **kwargs),
             np.diag(inverse_variances(self.knob_sigma)),
             self.history,
+            loss_only_trials=self.loss_only_trials and not self.machine.accelerator.optimise_energy,
         )
         optimiser, self.diagnostics = run_levenberg_marquardt(
             initial, problem, self.lm_config, run_log=run_log, param_names=knob_names
@@ -286,9 +300,11 @@ class LMFitter:
         hessian = optimiser.best_hessian
         return problem.knobs(optimiser.best.value), None if hessian is None else 0.5 * hessian
 
-    def _evaluate_workers(self, channels, knobs: dict[str, float]) -> list[GradReply]:
+    def _evaluate_workers(
+        self, channels, knobs: dict[str, float], *, loss_only: bool = False
+    ) -> list[GradReply]:
         """Send ``knobs`` to the workers and return the replies to be summed, in order."""
-        channels.send_all(Evaluate(knobs))
+        channels.send_all(Evaluate(knobs, loss_only=loss_only))
         return channels.recv_all()
 
 

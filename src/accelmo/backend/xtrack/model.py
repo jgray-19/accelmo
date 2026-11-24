@@ -30,6 +30,22 @@ LOGGER = logging.getLogger(__name__)
 QUAD_MODEL = "mat-kick-mat-exact"
 QUAD_INTEGRATOR = "yoshida-6"
 QUAD_KICKS = 1  # yoshida-6 rounds up to a full 7-kick slice
+#: Thick magnets that are exact drifts when every strength is zero, and their strength attributes.
+_ZERO_FIELD_STRENGTHS = {
+    "Quadrupole": ("k1", "k1s"),
+    "Sextupole": ("k2", "k2s"),
+    "Octupole": ("k3", "k3s"),
+}
+_ZERO_FIELD_ATTRIBUTES = (
+    "knl",
+    "ksl",
+    "knl_rel",
+    "ksl_rel",
+    "shift_x",
+    "shift_y",
+    "shift_s",
+    "rot_s_rad",
+)
 
 #: MAD-X base element kinds the knob families select.
 _KINDS = {
@@ -287,6 +303,37 @@ class XtrackModel:
             names[index : index + 1] = [half, centre, half]
             index += 1
         self.line = self._make_line(names[index:] + names[:index])
+
+    def remove_zero_field_magnets(self) -> int:
+        """Replace thick zero-field magnets by exact drifts and merge neighbouring drifts; returns how many removed.
+
+        As the MAD-NG ``build_zero_field_removal_script``: call it once machine state and knobs are
+        installed: a magnet whose strength comes from a variable later changed (not a knob) would
+        stay a drift. A magnet carrying a knob, or misaligned, is kept.
+        """
+        line = self.line
+        knobbed = {knob.rpartition(".")[0] for knob in self.knob_names}
+        off: set[str] = set()
+        for name in dict.fromkeys(line.element_names):
+            element = line.element_dict[name]
+            strengths = _ZERO_FIELD_STRENGTHS.get(type(element).__name__)
+            if strengths is None or not float(element.length) > 0.0:
+                continue
+            attributes = (*strengths, *_ZERO_FIELD_ATTRIBUTES)
+            if any(np.any(np.asarray(getattr(element, a)) != 0.0) for a in attributes):
+                continue
+            if name.upper() in knobbed:
+                continue
+            off.add(name)
+        for name in off:
+            self.env.new(f"{name}_off", "Drift", length=float(line[name].length), model="exact")
+        names = [f"{name}_off" if name in off else name for name in line.element_names]
+        self.line = self._make_line(names)
+        self.line.discard_tracker()
+        self.line.merge_consecutive_drifts(keep=[bpm.lower() for bpm in self.all_bpms])
+        self.line.build_tracker()
+        self.names = list(self.line.element_names)
+        return len(off)
 
     def close(self) -> None:
         """Nothing to release: the line lives in this process."""

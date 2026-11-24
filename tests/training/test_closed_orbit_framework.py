@@ -67,7 +67,9 @@ def test_knob_prior_adds_to_the_workers_chi2() -> None:
         normal,
     )
     names = ["q1.dk1l", "q2.dk1l", "q3.dk1l"]
-    point = _KnobProblem(names, lambda _knobs: [reply], prior, []).evaluate(k, iteration=1)
+    point = _KnobProblem(names, lambda _knobs: [reply], prior, [], loss_only_trials=False).evaluate(
+        k, iteration=1
+    )
 
     chi2 = float(residual @ (weights * residual)) + float(k @ prior @ k)
     assert point.loss == pytest.approx(chi2, rel=1e-14)

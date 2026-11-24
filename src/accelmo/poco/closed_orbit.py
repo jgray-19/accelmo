@@ -134,6 +134,7 @@ class ClosedOrbitFitter(LMFitter):
 
     worker_class = ClosedOrbitWorker
     supports_energy = True
+    loss_only_trials = True
     log_suffix = "closed_orbit_opt"
     fit_label = "Closed-orbit"
 
@@ -247,11 +248,11 @@ class ClosedOrbitFitter(LMFitter):
         )
         return grouped
 
-    def _evaluate_workers(self, channels, knobs):
+    def _evaluate_workers(self, channels, knobs, *, loss_only=False):
         """As the base class; the reference worker's published orbit is relayed to the signal workers first."""
         if self._reference_worker is None:
-            return super()._evaluate_workers(channels, knobs)
-        channels.send_all(Evaluate(knobs))
+            return super()._evaluate_workers(channels, knobs, loss_only=loss_only)
+        channels.send_all(Evaluate(knobs, loss_only=loss_only))
         (reply,) = channels.recv_some([self._reference_worker])
         if not isinstance(reply, GradReply):
             raise RuntimeError(f"Unexpected reference worker payload: {reply!r}")

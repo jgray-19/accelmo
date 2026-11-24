@@ -12,11 +12,11 @@ from typing import TYPE_CHECKING
 
 import madng_tpsa
 import numpy as np
-import xtrack as xt
 import xtrack.tpsa as xtpsa
 from xtrack.tpsa._knobs import KnobParameters
 
 from accelmo.backend.protocol import ClosedSolution, TrackResult
+from accelmo.backend.xtrack.closed_orbit import COORD_INDEX, COORDS, ClosedOrbitSolver
 from accelmo.backend.xtrack.model import XtrackModel, _range_indices
 
 if TYPE_CHECKING:
@@ -29,8 +29,8 @@ if TYPE_CHECKING:
     from accelmo.machine.machine_state import MachineState
 
 LOGGER = logging.getLogger(__name__)
-COORDS = ("x", "px", "y", "py")
-_COORD_INDEX = {name: i for i, name in enumerate(COORDS)}
+#: One Yoshida-6 slice; LHC orbit responses match 128 kicks to 2e-11 relative.
+CLOSED_ORBIT_MULTIPOLE_KICKS = 7
 
 
 def _monomials(n_knobs: int) -> np.ndarray:
@@ -212,12 +212,12 @@ class TrackingEngine:
             else:
                 records[i] = record
         observables = self.plan.observables
-        obs = {o: records[:, :, _COORD_INDEX[o], 0] for o in observables}
+        obs = {o: records[:, :, COORD_INDEX[o], 0] for o in observables}
         if self.plan.validation:
             return TrackResult(obs, n_total=len(coords), n_lost=n_lost)
-        d_dk = {o: records[:, :, _COORD_INDEX[o], 5:].transpose(0, 2, 1) for o in observables}
+        d_dk = {o: records[:, :, COORD_INDEX[o], 5:].transpose(0, 2, 1) for o in observables}
         d_dc0 = (
-            {o: records[:, :, _COORD_INDEX[o], 1:5].transpose(0, 2, 1) for o in observables}
+            {o: records[:, :, COORD_INDEX[o], 1:5].transpose(0, 2, 1) for o in observables}
             if start_derivatives
             else None
         )
@@ -248,12 +248,23 @@ class ClosedOrbitEngine:
         if optics_names:
             raise NotImplementedError("xtrack backend: closed orbit only (no optics)")
         self.model = _model(config, init_knobs)
+        LOGGER.info(
+            "xtrack backend: %d zero-field magnets removed", self.model.remove_zero_field_magnets()
+        )
+        for configure in (
+            self.model.line.configure_sextupole_model,
+            self.model.line.configure_octupole_model,
+        ):
+            configure(
+                model="drift-kick-drift-exact",
+                integrator="yoshida-6",
+                num_multipole_kicks=CLOSED_ORBIT_MULTIPOLE_KICKS,
+            )
         self.orbit_coords = list(orbit_coords)
         self.knob_names = list(self.model.knob_names)
         self.fit_pt = False
         self.params = _Parametric(self.model, self.knob_names)
-        self.monomials = _monomials(len(self.knob_names))
-        self.pt = 0.0
+        self.solver = ClosedOrbitSolver(self.model, self.params, _monomials(len(self.knob_names)))
 
     def set_knobs(self, knobs: Mapping[str, float]) -> None:
         """See :meth:`accelmo.backend.protocol.ClosedOrbitEngine.set_knobs`."""
@@ -269,69 +280,15 @@ class ClosedOrbitEngine:
 
     def set_pt(self, pt: float) -> None:
         """See :meth:`accelmo.backend.protocol.ClosedOrbitEngine.set_pt`."""
-        self.pt = float(pt)
+        self.solver.pt = float(pt)
 
     def set_warm_start(self, key: str) -> None:
-        """xsuite searches the closed orbit from zero every time."""
-
-    def _twiss(self, *, only_orbit: bool):
-        """Plain 4D twiss at ``ptau = pt``; ``None`` when no closed orbit is found."""
-        self.params.plain()
-        ref = self.model.particle_ref
-        delta0 = float(
-            xt.Particles(p0c=ref.p0c[0], mass0=ref.mass0, q0=ref.q0, ptau=self.pt).delta[0]
-        )
-        try:
-            return self.model.line.twiss(method="4d", delta0=delta0, only_orbit=only_orbit)
-        except Exception as exc:  # noqa: BLE001  xsuite raises several types when no orbit exists
-            LOGGER.warning("xtrack backend: closed orbit not found (%s)", exc)
-            return None
+        """See :meth:`accelmo.backend.protocol.ClosedOrbitEngine.set_warm_start`."""
+        self.solver.key = key
 
     def solve(self, observables: Sequence[str], *, jacobian: bool = True) -> ClosedSolution | None:
         """See :meth:`accelmo.backend.protocol.ClosedOrbitEngine.solve`."""
-        twiss = self._twiss(only_orbit=True)
-        if twiss is None:
-            return None
-        if not jacobian:
-            rows = [name.lower() for name in self.model.all_bpms]
-            values = np.array([twiss.rows[rows][name] for name in observables])
-            return ClosedSolution(list(self.model.all_bpms), values, None)
-        co = twiss.particle_on_co
-        line, ref = self.model.line, self.model.particle_ref
-        self.params.apply()
-        particle = xtpsa.ParticlesTpsa(
-            order=1,
-            descriptor=self.params.descriptor,
-            x=co.x[0],
-            px=co.px[0],
-            y=co.y[0],
-            py=co.py[0],
-            zeta=co.zeta[0],
-            delta=co.delta[0],
-            p0c=ref.p0c[0],
-            mass0=ref.mass0,
-            q0=ref.q0,
-        )
-        observed = [name.lower() for name in self.model.all_bpms]
-        try:
-            line.track(
-                particle,
-                multi_element_monitor_at=observed,
-                monitor_monomials=dict.fromkeys(COORDS, self.monomials),
-            )
-        except RuntimeError as exc:
-            LOGGER.warning("xtrack backend: parametric turn lost (%s)", exc)
-            return None
-        record = np.asarray(line.tracker.record_multi_element_last_track.coefficients)[0]
-        record = record.reshape(len(observed), len(COORDS), -1)
-        transverse = [0, 1, 2, 3]
-        one_turn = particle.jacobian()[np.ix_(transverse, transverse)]
-        param = particle.param_jacobian()[transverse]
-        shift = np.linalg.solve(np.eye(4) - one_turn, param)
-        rows = [_COORD_INDEX[name] for name in observables]
-        values = record[:, rows, 0].T
-        jacobian = (record[:, rows, 1:5] @ shift + record[:, rows, 5:]).transpose(1, 0, 2)
-        return ClosedSolution(list(self.model.all_bpms), values, jacobian)
+        return self.solver.solve(observables, jacobian=jacobian)
 
     def close(self) -> None:
         """Release the line."""

@@ -17,6 +17,7 @@ from accelmo.poco.workers.closed_twiss import (
     ORBIT_COORDS,
     Observable,
     align_observables,
+    weighted_chi2,
     weighted_least_squares,
 )
 
@@ -389,7 +390,8 @@ class ClosedOrbitWorker(AbstractWorker[list[ClosedOrbitSeriesData], WorkerConfig
     def _compare_to_reference(series: SeriesState, signal, reference):
         """Subtract the reference only in the relative observable planes."""
         if isinstance(signal, np.ndarray):  # values alone (loss-only)
-            return signal - reference * series.subtract[:, None]
+            orbit = reference if isinstance(reference, np.ndarray) else reference[0]
+            return signal - orbit * series.subtract[:, None]
         model = signal[0] - reference[0] * series.subtract[:, None]
         ref_jacobian = reference[1]
         if (
@@ -430,8 +432,13 @@ class ClosedOrbitWorker(AbstractWorker[list[ClosedOrbitSeriesData], WorkerConfig
         rows = message.rows(self.orbit_coords)
         return block[rows, :, 0], block[rows, :, 1:]
 
-    def _publish_reference(self, knob_updates: dict[str, float]) -> GradReply:
-        """Reference worker: solve the reference state of every distinct reference momentum and publish them."""
+    def _publish_reference(
+        self, knob_updates: dict[str, float], *, loss_only: bool = False
+    ) -> GradReply:
+        """Reference worker: solve the reference state of every distinct reference momentum and publish them.
+
+        ``loss_only`` solves plain orbits and refreshes only the published orbits.
+        """
         if self._publisher is None:
             self._publisher = ReferencePublisher()
         series = self.series[0]
@@ -445,13 +452,18 @@ class ClosedOrbitWorker(AbstractWorker[list[ClosedOrbitSeriesData], WorkerConfig
                 self._enter_state("reference", knob_updates)
                 self.engine.set_pt(reference_pt)
                 self._set_co_key(series, "reference", reference_pt)
-                state = self._model_and_jacobian(
-                    series, context=f" (shared reference, pt={reference_pt:+.9g})"
+                context = f" (shared reference, pt={reference_pt:+.9g})"
+                state = (self._orbit_plain if loss_only else self._model_and_jacobian)(
+                    series, context=context
                 )
                 if state is None:
                     return self._failure()
                 states.append(state)
-        published = self._publisher.publish(states, reference_pts, tuple(self.orbit_coords))
+        coords = tuple(self.orbit_coords)
+        if loss_only:
+            published = self._publisher.publish_orbits(states, reference_pts, coords)
+            return GradReply(self.worker_id, 0.0, np.zeros(1), extra=published)
+        published = self._publisher.publish(states, reference_pts, coords)
         return self._reply(np.zeros(n), 0.0, np.zeros((n, n)), extra=published)
 
     def close(self) -> None:
@@ -468,6 +480,8 @@ class ClosedOrbitWorker(AbstractWorker[list[ClosedOrbitSeriesData], WorkerConfig
     def evaluate(self, message: Evaluate) -> GradReply:
         """Sum the loss, gradient and Hessians of every series at ``message.knobs``."""
         self.engine.set_knobs(message.knobs)
+        if message.loss_only:
+            return self._loss_only(message.knobs)
         if self.reference_only:
             return self._publish_reference(message.knobs)
         n = self.n_params
@@ -483,6 +497,30 @@ class ClosedOrbitWorker(AbstractWorker[list[ClosedOrbitSeriesData], WorkerConfig
                 loss += part[1]
                 normal_matrix += part[2]
         return self._reply(gradient, loss, normal_matrix)
+
+    def _loss_only(self, knob_updates: dict[str, float]) -> GradReply:
+        """Chi² alone from plain closed-orbit solves (after a full evaluation has aligned the series)."""
+        if self.reference_only:
+            return self._publish_reference(knob_updates, loss_only=True)
+        loss = 0.0
+        with self._reference_round():
+            for series in self.series:
+                part = self._chi2_series(series, knob_updates)
+                if part is None:
+                    return GradReply(self.worker_id, float("nan"), np.zeros(1))
+                loss += part
+        return GradReply(self.worker_id, loss, np.zeros(1))
+
+    def _chi2_series(self, series: SeriesState, knob_updates: dict[str, float]) -> float | None:
+        """Chi² of one series from orbit values alone; ``None`` if a closed orbit is lost."""
+        loss = 0.0
+        with self._in_series(series):
+            for index, model in self._models(series, knob_updates, self._orbit_plain):
+                if model is None:
+                    return None
+                _, targets, weights = series.aligned()[1][index]
+                loss += weighted_chi2(model, targets, weights)
+        return loss
 
     def _evaluate_series(self, series: SeriesState, knob_updates: dict[str, float]):
         """Gradient, chi² and normal matrix of one series; ``None`` if a closed orbit is lost."""

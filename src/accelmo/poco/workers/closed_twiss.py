@@ -135,6 +135,21 @@ def align_observables(
     return targets, weights
 
 
+def _masked_residual(values: np.ndarray, target: np.ndarray, weight: np.ndarray) -> np.ndarray:
+    """``values - target`` where the weight is positive, else 0 (unmeasured BPMs may be NaN)."""
+    return np.where(weight > 0.0, values - target, 0.0)
+
+
+def weighted_chi2(model: np.ndarray, targets, weights) -> float:
+    """Chi² of the inverse-variance weighted residuals of every orbit observable block."""
+    return float(
+        sum(
+            np.sum(weight * _masked_residual(values, target, weight) ** 2)
+            for values, target, weight in zip(model, targets, weights, strict=True)
+        )
+    )
+
+
 def weighted_least_squares(
     model: np.ndarray, jacobian: np.ndarray, observables, targets, weights
 ) -> tuple[np.ndarray, float, np.ndarray]:
@@ -150,7 +165,7 @@ def weighted_least_squares(
             values, jac = _to_advance(values, jac)
 
         weight = weights[index]
-        residual = np.where(weight > 0.0, values - targets[index], 0.0)
+        residual = _masked_residual(values, targets[index], weight)
         grad += 2.0 * (weight * residual) @ jac
         weighted_jac = jac * np.sqrt(weight)[:, None]
         normal_matrix += weighted_jac.T @ weighted_jac  # numpy uses a symmetric rank-k update
