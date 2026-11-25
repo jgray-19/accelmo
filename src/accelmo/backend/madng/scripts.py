@@ -184,19 +184,17 @@ def _observation_gate_definition() -> str:
     return "function is_observation_point(elm, slc)\nreturn slc == -4 and elm:is_observed()\nend"
 
 
-def build_track_speedup_script(track_methods: dict[str, int]) -> str:
-    """Remove zero-field magnets without knob parameters and set per-kind track methods.
+def build_zero_field_removal_script() -> str:
+    """Lua that removes thick zero-field magnets; the gaps are tracked as implicit drifts.
 
-    Run after machine state and TPSA knobs are installed: knob values are TPSA, so an
-    element carrying a knob is never removed. The gaps are tracked as implicit drifts.
+    Run after machine state and TPSA knobs are installed. An element carrying a knob is never
+    removed (its strength is TPSA), nor is one whose strength is a deferred expression, which a
+    machine-state variable can still change.
     """
-    methods = ", ".join(f"{kind}={method}" for kind, method in track_methods.items())
-    return f"""! Generated track speed-up script
-local KINDS = {{quadrupole=true, sextupole=true, octupole=true, decapole=true, dodecapole=true,
-               hkicker=true, vkicker=true, kicker=true, tkicker=true, solenoid=true, rfcavity=true}}
-local ATTR = {{"k0", "k0s", "k1", "k1s", "k2", "k2s", "k3", "k3s", "k4", "k4s", "k5", "k5s",
+    return """local KINDS = {quadrupole=true, sextupole=true, octupole=true, decapole=true, dodecapole=true}
+local ATTR = {"k0", "k0s", "k1", "k1s", "k2", "k2s", "k3", "k3s", "k4", "k4s", "k5", "k5s",
               "kick", "hkick", "vkick", "ks", "ksi", "volt", "angle", "knl", "ksl", "dknl", "dksl",
-              "dx", "dy", "ds", "dtheta", "dphi", "dpsi", "tilt"}}
+              "dx", "dy", "ds", "dtheta", "dphi", "dpsi", "tilt"}
 local function zero(v)
     local t = type(v)
     if t == "nil" or t == "boolean" then return not v end
@@ -211,15 +209,24 @@ local function is_off(e, i)
     if not (KINDS[e.kind] and e.is_thick and e.l > 0) or e.misalign or loaded_sequence:align(i) then
         return false
     end
-    for _, a in ipairs(ATTR) do if not zero(e[a]) then return false end end
+    for _, a in ipairs(ATTR) do
+        if type(rawget(e, a)) == "function" or not zero(e[a]) then return false end
+    end
     return true
 end
 -- remove needs increasing indexes: drop the (by-name) cycle around it
 local cycle_ref = loaded_sequence.__cycle
 loaded_sequence:cycle(nil)
-loaded_sequence:remove {{select=is_off}}
+loaded_sequence:remove {select=is_off}
 loaded_sequence:cycle(cycle_ref)
-local methods = {{{methods}}}
+"""
+
+
+def build_track_speedup_script(track_methods: dict[str, int]) -> str:
+    """Remove zero-field magnets and set per-kind track methods."""
+    methods = ", ".join(f"{kind}={method}" for kind, method in track_methods.items())
+    return f"""! Generated track speed-up script
+{build_zero_field_removal_script()}local methods = {{{methods}}}
 loaded_sequence:foreach(\\e => e.method = methods[e.kind] end, {{select=\\e -> methods[e.kind] ~= nil}})
 """
 

@@ -28,6 +28,7 @@ from accelmo.poco.workers.closed_orbit import (
     ClosedOrbitWorker,
     validate_series,
 )
+from accelmo.poco.workers.closed_twiss import ORBIT_COORDS
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -196,6 +197,9 @@ class ClosedOrbitFitter(LMFitter):
             debug=debug,
         )
         self.worker_payloads = self._create_series_payloads()
+        self.loss_only_trials = all(
+            name in ORBIT_COORDS for item in self.series for name in item.observables or observables
+        )
 
     @staticmethod
     def _worker_count(n_series: int, max_workers: int | None) -> int:
@@ -247,11 +251,11 @@ class ClosedOrbitFitter(LMFitter):
         )
         return grouped
 
-    def _evaluate_workers(self, channels, knobs):
+    def _evaluate_workers(self, channels, knobs, *, loss_only=False):
         """As the base class; the reference worker's published orbit is relayed to the signal workers first."""
         if self._reference_worker is None:
-            return super()._evaluate_workers(channels, knobs)
-        channels.send_all(Evaluate(knobs))
+            return super()._evaluate_workers(channels, knobs, loss_only=loss_only)
+        channels.send_all(Evaluate(knobs, loss_only=loss_only))
         (reply,) = channels.recv_some([self._reference_worker])
         if not isinstance(reply, GradReply):
             raise RuntimeError(f"Unexpected reference worker payload: {reply!r}")

@@ -48,6 +48,9 @@
 local matrix, vector in MAD
 local cofind, track in MAD
 
+-- Longer loop unrolling and trace recording: the element loops of track/cofind otherwise abort back to the interpreter.
+require('jit.opt').start('loopunroll=60', 'maxrecord=8000')
+
 num_knobs = #knob_names
 ! Jacobian buffers keep one (all zero) column when there are no knobs: the only fitted parameter may be the momentum pt, which
 ! the worker handles outside MAD, and MAD vectors and matrices need at least one element.

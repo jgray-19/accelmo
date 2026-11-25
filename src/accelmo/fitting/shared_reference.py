@@ -61,6 +61,17 @@ class ReferencePublisher:
             block[index, ..., 1:] = jacobian
         return SharedReference(self._block.name, tuple(reference_pts), tuple(coords), shape)
 
+    def publish_orbits(
+        self, orbits: list[np.ndarray], reference_pts: tuple[float, ...], coords: tuple[str, ...]
+    ) -> SharedReference:
+        """Rewrite the orbits of the published block, leaving the Jacobians of the last :meth:`publish`."""
+        if self._block is None or self._shape is None:
+            raise RuntimeError("Reference orbits are published only after a full publish")
+        block = np.ndarray(self._shape, dtype=np.float64, buffer=self._block.buf)
+        for index, orbit in enumerate(orbits):
+            block[index, ..., 0] = orbit
+        return SharedReference(self._block.name, tuple(reference_pts), tuple(coords), self._shape)
+
     def close(self) -> None:
         """Release and delete the block (readers must be done with it)."""
         if self._block is not None:
