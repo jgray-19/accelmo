@@ -22,6 +22,7 @@ dependencies = [
     "matplotlib",
     "uncertainties",
     "scipy>=1.17.1",
+    "rich",
 ]
 
 [project.urls]

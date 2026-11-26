@@ -59,6 +59,10 @@ Every fit writes a run log (:mod:`accelmo.runlog`) under
 ``result.json``
     How the fit ended. Written when it finishes.
 
+Workers log to ``workers/python_worker_<id>.log`` in the same directory
+(:mod:`accelmo.fitting.worker_logging`); their warnings are relayed to the main process.
+The fitters feed a live terminal view, :class:`~accelmo.dashboard.FitDashboard`.
+
 Optics are not stored. :mod:`accelmo.monitor` recomputes them from the knobs on demand,
 caches them, and serves live plots of a running or finished fit
 (``python -m accelmo.monitor RUN_LOG_ROOT --spec module:SPEC``). The machine side
@@ -94,6 +98,8 @@ Package layout
 Imports only point down this list; the two engines never import each other
 (``tests/test_package_layers.py`` checks it).
 
+``accelmo.dashboard``
+    The live terminal view of a fit. Draws plain numbers; the fitters feed it.
 ``accelmo.monitor``
     Live plots served from run logs; optics recomputed from the logged knobs. Imports
     only ``runlog``; the machine side plugs in through ``OpticsSource``.
