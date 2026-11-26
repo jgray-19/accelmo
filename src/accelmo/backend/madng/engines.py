@@ -533,7 +533,7 @@ def closed_orbit_table(
         if magnet_strengths:
             iface.update_knob_values(dict(magnet_strengths))
         iface.mad.send(
-            "local pt = python:recv()\n"
+            f"local pt = {iface.py_name}:recv()\n"
             "moref = twiss{sequence=loaded_sequence, observe=1, X0={pt=pt}, coupling=true}"
         ).send(float(pt))
         frame = iface.mad.moref.to_df(columns=["name", *columns])
