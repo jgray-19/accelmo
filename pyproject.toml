@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "accelmo"
-version = "0.0.1"
+version = "0.0.2"
 description = "Accelerator Effective Lattice Modelling and Optimisation"
 authors = [
     { name = "Joshua Gray" },
