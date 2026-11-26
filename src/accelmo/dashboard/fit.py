@@ -19,6 +19,7 @@ from rich.table import Table
 from rich.text import Text
 
 from accelmo.dashboard.plot import Series, log_plot
+from accelmo.dashboard.resources import GIB, ResourceMonitor
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping, Sequence
@@ -33,6 +34,8 @@ PLOT_HEIGHT = 8
 SHORT_FIT_STEPS = 30
 SHORT_PLOT_HEIGHT = 4
 WARNING_LINES = 3
+#: Redraws per second, so the resource line moves during a long step.
+REFRESH_PER_SECOND = 1
 #: Epochs averaged for the epoch time and ETA.
 ETA_WINDOW = 10
 #: Epochs without a new best before the status turns "stalled".
@@ -152,8 +155,16 @@ class FitDashboard:
         self.best: Best | None = None
         self.last_best_epoch = -1
         self.stop_reason: str | None = None
+        self.rejected_steps = 0
+        self.resources = ResourceMonitor()
         self._warnings = _WarningTail()
-        self._live = Live(console=self.console, auto_refresh=False, transient=False)
+        self._live = Live(
+            console=self.console,
+            get_renderable=self._render,
+            auto_refresh=True,
+            refresh_per_second=REFRESH_PER_SECOND,
+            transient=False,
+        )
         self._running = False
         self._console_handlers: list[logging.Handler] = []
         self._row = Text()
@@ -270,6 +281,8 @@ class FitDashboard:
         """The fit stage is over: show why the loop ended."""
         self.stop_reason = reason
         self._row.append(f" · stopped: {reason}", style=LABEL_STYLE)
+        if self.rejected_steps:
+            self._row.append(f" · {self.rejected_steps} rejected", style=WARN)
         fit = self.phases["fit"]
         fit.status, fit.seconds = "done", time.monotonic() - fit.started
         self._refresh()
@@ -301,9 +314,27 @@ class FitDashboard:
         self._row = self._status_row(grad_norm, lr, note)
         self._refresh()
 
+    def rejected(
+        self, *, epoch: int, loss: float, grad_norm: float, lr: float, epoch_time: float
+    ) -> None:
+        """Record a step the optimiser turned down (``loss`` is NaN when the orbit was lost)."""
+        if not self.enabled:
+            return
+        self.epoch = epoch
+        self.rejected_steps += 1
+        self.epoch_times.append(epoch_time)
+        outcome = (
+            "orbit lost" if np.isnan(loss) else f"{self.chi2_label} {loss * self.loss_scale:.3e}"
+        )
+        self._row = Text.assemble(
+            (f"grad {grad_norm:.1e} · {self.rate_name} {lr:.1e} · ", LABEL_STYLE),
+            (f"● rejected ({outcome}), retrying from best · {self.rejected_steps} so far", WARN),
+        )
+        self._refresh()
+
     def _refresh(self) -> None:
         if self._running:
-            self._live.update(self._render(), refresh=True)
+            self._live.refresh()
 
     def _render(self) -> Group:
         width = max(self.console.width, MIN_WIDTH)
@@ -321,7 +352,17 @@ class FitDashboard:
         footer = (
             [Text(f"run log {self.run_log_path}", style=LABEL_STYLE)] if self.run_log_path else []
         )
-        return Group(self._strip(), layout, *footer, *self._warnings.lines)
+        return Group(self._strip(), layout, self._resources_line(), *footer, *self._warnings.lines)
+
+    def _resources_line(self) -> Text:
+        self.resources.sample()
+        usage = self.resources
+        return Text(
+            f"cpu {usage.cores:.1f}/{usage.machine_cores} cores · "
+            f"mem {usage.memory / GIB:.1f} GB (peak {usage.peak_memory / GIB:.1f}) · "
+            f"{usage.processes} processes",
+            style=LABEL_STYLE,
+        )
 
     def _strip(self) -> Text:
         """One line: each stage with its mark, detail and time."""

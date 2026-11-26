@@ -130,11 +130,20 @@ def run_levenberg_marquardt(
             )
             break
         problem.after_step(params, optimiser)
+        now = time.time()
         if not update.accepted:
             _log_unaccepted(iteration, update, optimiser.best.loss)
+            if dashboard is not None:
+                dashboard.rejected(
+                    epoch=iteration,
+                    loss=update.loss,
+                    grad_norm=update.grad_norm,
+                    lr=update.damping,
+                    epoch_time=now - last_time,
+                )
+            last_time = now
             continue
 
-        now = time.time()
         if dashboard is not None:
             dashboard.update(
                 epoch=iteration,
@@ -167,7 +176,9 @@ def run_levenberg_marquardt(
 
     if dashboard is not None:
         dashboard.finish(
-            "converged" if last_update is not None and last_update.converged else "max_iterations"
+            last_update.reason
+            if last_update is not None and last_update.converged
+            else "max_iterations"
         )
     diagnostics = FitDiagnostics(
         converged=bool(last_update is not None and last_update.converged),

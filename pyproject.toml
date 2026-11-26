@@ -23,6 +23,7 @@ dependencies = [
     "uncertainties",
     "scipy>=1.17.1",
     "rich",
+    "psutil",
 ]
 
 [project.urls]
@@ -47,7 +48,6 @@ tracking = [
     "omc3 > 0.26.0",
     "cpymad",
     "pyarrow",
-    "psutil",
 ]
 monitor = [
     "panel>=1.5",

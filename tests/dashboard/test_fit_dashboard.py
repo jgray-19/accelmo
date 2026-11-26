@@ -209,3 +209,52 @@ def test_lm_loop_feeds_the_dashboard_every_accepted_iteration() -> None:
     assert "iter" in text
     assert "χ² " in text
     assert "stopped:" in text
+
+
+def test_rejected_steps_advance_the_bar_and_are_counted() -> None:
+    console, stream = _console()
+    with _dashboard(console) as dashboard:
+        dashboard.update(
+            epoch=0,
+            loss=1.0,
+            validation_loss=None,
+            grad_norm=1.0,
+            lr=1e-3,
+            epoch_time=1.0,
+            true_diff=None,
+            knobs={"a": 0.0, "b": 0.0, "c": 0.0},
+            new_best=True,
+        )
+        dashboard.rejected(epoch=1, loss=3.0, grad_norm=1.0, lr=1e-2, epoch_time=1.0)
+        dashboard.rejected(epoch=2, loss=float("nan"), grad_norm=0.0, lr=1e-1, epoch_time=1.0)
+        dashboard.finish("max_iterations")
+    text = stream.getvalue()
+    assert dashboard.epoch == 2
+    assert dashboard.rejected_steps == 2
+    assert len(dashboard.chi2) == 1
+    assert "3/10" in text
+    assert "rejected (orbit lost)" in text
+    assert "stopped: max_iterations · 2 rejected" in text
+
+
+def test_resource_line_counts_a_child_process() -> None:
+    import subprocess
+    import time
+
+    from accelmo.dashboard.resources import ResourceMonitor
+
+    monitor = ResourceMonitor()
+    with subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"]) as child:
+        try:
+            time.sleep(0.2)
+            monitor.sample()
+            assert monitor.processes >= 2
+            assert monitor.memory > 0
+            assert monitor.peak_memory >= monitor.memory
+        finally:
+            child.kill()
+    console, stream = _console()
+    with _dashboard(console):
+        pass
+    assert "cpu " in stream.getvalue()
+    assert " GB (peak " in stream.getvalue()
