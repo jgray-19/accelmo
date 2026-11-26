@@ -276,7 +276,7 @@ class TestAcceleratorBase:
             sequence_file=test_sequence_file,
             kinetic_energy=6800.0,
         )
-        with caplog.at_level(logging.INFO):
+        with caplog.at_level(logging.DEBUG):
             acc.log_optimisation_targets()
         assert "No optimisation targets set" in caplog.text
 
@@ -287,7 +287,7 @@ class TestAcceleratorBase:
             kinetic_energy=6800.0,
             optimise_energy=True,
         )
-        with caplog.at_level(logging.INFO):
+        with caplog.at_level(logging.DEBUG):
             acc.log_optimisation_targets()
         assert "beam energy" in caplog.text
 
@@ -300,7 +300,7 @@ class TestAcceleratorBase:
             errors={"quad": {"k1"}},
             custom_knobs_to_optimise=["K1"],
         )
-        with caplog.at_level(logging.INFO):
+        with caplog.at_level(logging.DEBUG):
             acc.log_optimisation_targets()
         assert "beam energy" in caplog.text
         assert "quad k1" in caplog.text

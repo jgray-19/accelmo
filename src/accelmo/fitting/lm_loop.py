@@ -18,6 +18,7 @@ from accelmo.optimisers.levenberg_marquardt import (
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from accelmo.dashboard import FitDashboard
     from accelmo.optimisers.levenberg_marquardt import LevenbergMarquardtConfig
     from accelmo.runlog import RunLog
 
@@ -77,6 +78,7 @@ def run_levenberg_marquardt(
     *,
     run_log: RunLog | None = None,
     param_names: Sequence[str] | None = None,
+    dashboard: FitDashboard | None = None,
 ) -> tuple[LevenbergMarquardtOptimiser, FitDiagnostics]:
     """Minimise with Levenberg-Marquardt steps ``(H + lam·diag H) delta = -g``.
 
@@ -86,12 +88,13 @@ def run_levenberg_marquardt(
     solve early.
 
     With ``run_log``, every accepted iteration's loss is logged, and its parameters
-    too when ``param_names`` names them.
+    too when ``param_names`` names them. ``dashboard`` (already in its fit stage) shows each
+    accepted iteration.
 
     Returns the optimiser, whose ``best_params`` are the solution, and how the fit ended.
     """
     optimiser = LevenbergMarquardtOptimiser(config, initial_params=params)
-    run_start = time.time()
+    last_time = time.time()
     last_update = None
     completed_iterations = 0
     accepted_evaluations = 0
@@ -131,7 +134,27 @@ def run_levenberg_marquardt(
             _log_unaccepted(iteration, update, optimiser.best.loss)
             continue
 
-        _log_iteration(iteration, update.loss, update.grad_norm, update.damping, run_start)
+        now = time.time()
+        if dashboard is not None:
+            dashboard.update(
+                epoch=iteration,
+                loss=update.loss,
+                validation_loss=None,
+                grad_norm=update.grad_norm,
+                lr=update.damping,
+                epoch_time=now - last_time,
+                true_diff=None,
+                knobs=_named(param_names, accepted_params) if param_names else {},
+                new_best=True,
+            )
+        last_time = now
+        logger.debug(
+            "LM iter %d: loss=%.3e, |g|=%.3e, lam=%.1e",
+            iteration,
+            update.loss,
+            update.grad_norm,
+            update.damping,
+        )
         if run_log is not None:
             run_log.log(
                 iteration, loss=update.loss, grad_norm=update.grad_norm, lm_lambda=update.damping
@@ -142,6 +165,10 @@ def run_levenberg_marquardt(
             logger.info("Levenberg-Marquardt converged (%s) at iter %d", update.reason, iteration)
             break
 
+    if dashboard is not None:
+        dashboard.finish(
+            "converged" if last_update is not None and last_update.converged else "max_iterations"
+        )
     diagnostics = FitDiagnostics(
         converged=bool(last_update is not None and last_update.converged),
         reason=None if last_update is None else last_update.reason,
@@ -185,7 +212,7 @@ def _log_unaccepted(iteration: int, update: LevenbergMarquardtUpdate, best_loss:
             "Iter %d: closed orbit lost; retrying from best (lam=%.1e)", iteration, update.damping
         )
     else:
-        logger.info(
+        logger.debug(
             "Iter %d: step rejected (loss %.6e >= best %.6e); retrying from best (lam=%.1e)",
             iteration,
             update.loss,
@@ -196,17 +223,3 @@ def _log_unaccepted(iteration: int, update: LevenbergMarquardtUpdate, best_loss:
 
 def _named(names: Sequence[str], params: np.ndarray) -> dict[str, float]:
     return dict(zip(names, (float(v) for v in params), strict=True))
-
-
-def _log_iteration(
-    iteration: int, loss: float, grad_norm: float, lam: float, run_start: float
-) -> None:
-    """Log one accepted iteration to the console."""
-    logger.info(
-        "LM iter %d: loss=%.3e, |g|=%.3e, lam=%.1e, tt=%.1fs",
-        iteration,
-        loss,
-        grad_norm,
-        lam,
-        time.time() - run_start,
-    )

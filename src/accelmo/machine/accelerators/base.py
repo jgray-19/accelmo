@@ -194,9 +194,9 @@ class Accelerator(BaseAccelerator, ABC):
         if self.custom_knobs_to_optimise:
             seen[f"custom knobs: {self.custom_knobs_to_optimise}"] = None
         if seen:
-            LOGGER.info("Optimisation targets: %s", ", ".join(seen))
+            LOGGER.debug("Optimisation targets: %s", ", ".join(seen))
         else:
-            LOGGER.info("No optimisation targets set.")
+            LOGGER.debug("No optimisation targets set.")
 
     @abstractmethod
     def copy_with(self, **overrides) -> Accelerator:

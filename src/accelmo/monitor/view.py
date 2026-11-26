@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from typing import Any
+
     import pandas as pd
     from bokeh.models import DataRange1d, Range1d
 
@@ -37,3 +39,26 @@ class MonitorView:
     #: Shared x-range for plots against longitudinal position, so zooming one
     #: zooms all and survives a refresh.
     s_range: Range1d | DataRange1d
+
+
+def uncertainty_status(info: dict[str, Any] | None) -> str | None:
+    """One status line for the uncertainty stage recorded in ``uncertainty.json``, or ``None``."""
+    if info is None:
+        return None
+    hessian = info.get("hessian", "?")
+    note = f" ({info['note']})" if info.get("note") else ""
+    match info.get("state"):
+        case "running" if info.get("total"):
+            eta = info.get("eta")
+            when = "ETA unknown" if eta is None else f"ETA {eta:.0f} s"
+            return (
+                f"Uncertainty ({hessian}{note}): {info['done']}/{info['total']} batches, "
+                f"{info['elapsed']:.0f} s elapsed, {when}"
+            )
+        case "running":
+            return f"Uncertainty ({hessian}{note}): running"
+        case "done":
+            return f"Uncertainty ({hessian}{note}): done in {info['seconds']:.1f} s"
+        case "failed":
+            return f"Uncertainty failed after {info['seconds']:.1f} s: {info['error']}"
+    return None

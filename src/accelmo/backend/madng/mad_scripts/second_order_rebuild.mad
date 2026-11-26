@@ -1,0 +1,19 @@
+-- Rebuild the base map, the knob strengths and every particle map at TPSA order 2.
+-- The constant parts (knob values, start coordinates, pt) carry over. The strengths take an
+-- order-2 zero so functions of them keep their second derivatives (parameters are order 1).
+local consts = table.new(num_batches, 0)
+for b=1,num_batches do
+    consts[b] = table.new(batch_size, 0)
+    for j=1,batch_size do consts[b][j] = da_x0_c[b][j]:get0() end
+end
+
+da_x0_base = damap{nv=6, np=#knob_names, mo=2, po=2, pn=knob_names}
+local zero = da_x0_base.x:same()
+for _, param in ipairs(knob_names) do
+    loaded_sequence[param] = loaded_sequence[param]:get0() + zero + da_x0_base[param]
+end
+make_particle_maps()
+for b=1,num_batches do
+    for j=1,batch_size do da_x0_c[b][j]:set0(consts[b][j]) end
+end
+collectgarbage()

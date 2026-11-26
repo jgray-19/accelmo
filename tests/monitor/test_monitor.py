@@ -116,3 +116,62 @@ def test_monitor_shows_the_latest_step_and_draws_only_the_active_tab(tmp_path, c
 
     monitor.step_select.value = 2
     _wait(lambda: (monitor._draw_active(), seen[-1] == (2, True))[1])
+
+
+def test_monitor_status_follows_the_uncertainty_stage(tmp_path) -> None:
+    directory = tmp_path / "runs" / "stage"
+    _write_run(directory)
+    spec = MonitorSpec(make_source=FakeSource, panels=[])
+    monitor = Monitor(tmp_path / "runs", spec, OpticsCache(spec, tmp_path / "cache"), 1)
+
+    monitor.refresh()
+    assert "Uncertainty" not in monitor.status.object
+
+    run_log = RunLog(directory, name="fit", resume=True)
+    run_log.begin({"a": 0.0, "b": 0.0})
+    run_log.record_uncertainty(
+        state="running", hessian="true", knobs={"a": 1.0}, done=3, total=12, elapsed=30.0, eta=90.0
+    )
+    run_log.close()
+    monitor.refresh()
+    assert "Uncertainty (true): 3/12 batches, 30 s elapsed, ETA 90 s" in monitor.status.object
+
+    run_log = RunLog(directory, name="fit", resume=True)
+    run_log.begin({"a": 0.0, "b": 0.0})
+    run_log.record_uncertainty(state="failed", seconds=12.0, error="MemoryError: boom")
+    run_log.close()
+    monitor.refresh()
+    assert "Uncertainty failed after 12.0 s: MemoryError: boom" in monitor.status.object
+
+
+@pytest.mark.parametrize(
+    ("info", "expected"),
+    [
+        (None, None),
+        ({"state": "running", "hessian": "gauss_newton"}, "Uncertainty (gauss_newton): running"),
+        (
+            {
+                "state": "running",
+                "hessian": "true",
+                "done": 0,
+                "total": 5,
+                "elapsed": 2.0,
+                "eta": None,
+            },
+            "Uncertainty (true): 0/5 batches, 2 s elapsed, ETA unknown",
+        ),
+        (
+            {
+                "state": "done",
+                "hessian": "gauss_newton",
+                "seconds": 3.25,
+                "note": "true skipped: memory",
+            },
+            "Uncertainty (gauss_newton (true skipped: memory)): done in 3.2 s",
+        ),
+    ],
+)
+def test_uncertainty_status_line(info, expected) -> None:
+    from accelmo.monitor.view import uncertainty_status
+
+    assert uncertainty_status(info) == expected

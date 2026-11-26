@@ -20,7 +20,7 @@ from bokeh.models import DataRange1d
 from accelmo.monitor.cache import BACKFILL, LATEST, SELECTED, OpticsCache, refinement_order
 from accelmo.monitor.panels import GENERIC_PANELS, OPTICS_PANELS, enable_middle_click_fit, message
 from accelmo.monitor.source import MonitorSpec
-from accelmo.monitor.view import MonitorView
+from accelmo.monitor.view import MonitorView, uncertainty_status
 from accelmo.runlog import StageLog, find_stages
 
 if TYPE_CHECKING:
@@ -292,6 +292,8 @@ class Monitor:
             f"**{stage.name}** — {'finished: ' + str(result.get('reason')) if result else 'running'}",
             f"Step {step} of {int(knobs.index[-1])} ({len(knobs)} recorded)",
         ]
+        if (line := uncertainty_status(stage.uncertainty)) is not None:
+            lines.append(line)
         if self.cache is not None and stage.metadata:
             lines.append(f"Optics: {summaries}/{len(knobs)} steps, {self.cache.pending} queued")
             error = self.cache.error(stage.metadata) or self.cache.error(

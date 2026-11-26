@@ -197,6 +197,31 @@ combinations that the data cannot constrain, so the problem can be regularised o
 knob set reduced before running the fit. Use
 :meth:`~accelmo.tracking.fitter.TrackingFitter.check_degeneracy` on a tracking fitter.
 
+Terminal dashboard and logs
+---------------------------
+
+A tracking fit draws a live terminal dashboard (:class:`~accelmo.dashboard.FitDashboard`):
+a strip of stages (data, model, workers, fit, uncertainty), progress with ETA, the loss
+history, the best epoch so far and the last warnings. It does nothing when the output is
+not a terminal; the run log has the numbers then.
+
+Call :func:`accelmo.logs.configure_logging` once at the top of a script to print WARNING
+and above to the terminal and, with ``file=``, write INFO and above to a file. The
+dashboard hides the console handler while it is on screen and shows warnings in its own
+strip.
+
+Each worker process writes every record at ``WorkerRuntime.logging_level`` (default
+DEBUG) to ``workers/python_worker_<id>.log`` in the run log directory. Only WARNING
+and above are relayed to the main process, tagged with the worker name, so they reach the
+dashboard and the main log. A worker with its own ``python_logfile`` keeps it.
+
+.. note::
+
+   Workers are forked processes, and the warning relay reaches them only by fork (Linux, the
+   default start method up to Python 3.13). The ``spawn`` and ``forkserver`` start methods, the
+   default on macOS, Windows and Python 3.14, are not supported: a spawned worker would write its
+   own log file but its warnings would not reach the main process or the dashboard.
+
 Monitoring a fit
 ----------------
 

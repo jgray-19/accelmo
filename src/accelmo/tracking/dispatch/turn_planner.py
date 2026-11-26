@@ -134,7 +134,7 @@ class WorkerTurnPlanner:
             )
             num_turn_batches = len(turns_by_file)
 
-        LOGGER.info(
+        LOGGER.debug(
             "Worker planning: requested=%d workers, %d workers per turn batch",
             num_workers,
             workers_per_batch,
@@ -142,7 +142,7 @@ class WorkerTurnPlanner:
         limiting_factor = (
             "training-turn count" if total_turns < worker_turn_batches else "num_workers cap"
         )
-        LOGGER.info(
+        LOGGER.debug(
             "Turn-batch planning: num_workers_cap->%d batches, training turns=%d across %d files, "
             "selected=%d batches [limited by %s]",
             worker_turn_batches,
@@ -151,7 +151,7 @@ class WorkerTurnPlanner:
             num_turn_batches,
             limiting_factor,
         )
-        LOGGER.info(
+        LOGGER.debug(
             "Planned workers: %d turn batches x up to %d workers = up to %d workers "
             "(num_batches=%d is MAD-internal sub-batching, does not affect worker count)",
             num_turn_batches,

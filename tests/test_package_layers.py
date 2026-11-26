@@ -32,6 +32,8 @@ FORBIDDEN = {
     "runlog": {"backend", "machine", "fitting", "tracking", "poco", "monitor"},
     "monitor": {"backend", "machine", "fitting", "tracking", "poco"},
     "backend": {"tracking", "poco", "momentum_reference"},
+    # The dashboard draws plain numbers; the fitters feed it.
+    "dashboard": {"backend", "machine", "fitting", "tracking", "poco", "monitor", "runlog"},
 }
 
 #: Libraries owned by one backend subpackage.

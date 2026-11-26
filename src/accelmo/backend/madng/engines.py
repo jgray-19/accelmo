@@ -21,7 +21,14 @@ from accelmo.backend.madng.interface import MadInterface
 from accelmo.backend.madng.machine_state import get_vars, set_vars
 from accelmo.backend.madng.scripts import (
     CLOSED_TWISS_INIT,
+    PARTICLE_MAPS,
     PYTHON_IN_MAD,
+    SCALE_GLOBALS,
+    SECOND_ORDER,
+    SECOND_ORDER_REBUILD,
+    SET_KNOBS_PLAIN,
+    SET_KNOBS_TPSA,
+    TRACK_BATCH,
     build_track_speedup_script,
     build_tracking_init_script,
     build_tracking_preflight_script,
@@ -31,7 +38,7 @@ from accelmo.backend.madng.scripts import (
     build_zero_field_removal_script,
     dump_debug_script,
 )
-from accelmo.backend.protocol import ClosedSolution, TrackResult
+from accelmo.backend.protocol import ClosedSolution, SecondOrderBlocks, TrackResult
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -101,16 +108,11 @@ class _MadngSession:
 
     def set_knobs(self, knobs: Mapping[str, float], *, plain: bool) -> None:
         """Set this process's knobs; ``plain`` assigns numbers instead of the TPSA constant part."""
-        template = (
-            "loaded_sequence['{}'] = {:.15e}" if plain else "loaded_sequence['{}']:set0({:.15e})"
-        )
-        commands = [
-            template.format(name, value)
-            for name, value in knobs.items()
-            if name != "pt" and name in self._settable
-        ]
-        if commands:
-            self.mad.send("\n".join(commands))
+        names = [name for name in knobs if name != "pt" and name in self._settable]
+        if names:
+            self.mad["set_names"] = names
+            self.mad.send(SET_KNOBS_PLAIN if plain else SET_KNOBS_TPSA)
+            self.mad.send(np.array([[knobs[name]] for name in names], dtype=np.float64))
 
     def fitted_knobs_without_pt(self) -> list[str]:
         """``pt`` is applied per particle or pinned on the map, never a sequence knob."""
@@ -223,27 +225,20 @@ init_coords = python:recv()
 init_pts = python:recv()
 """)
         mad.send(init_coords).send(init_pts)
-        mad.send("""
-da_x0_c = table.new(num_batches, 0)
-for i=1,num_batches do
-    da_x0_c[i] = table.new(batch_size, 0)
-    for j=1,batch_size do
-        da_x0_c[i][j] = da_x0_base:copy()
-        da_x0_c[i][j]:set0(init_coords[i][j])
-    end
-end
-""")
+        mad.send(PARTICLE_MAPS.read_text())
+        mad.send(TRACK_BATCH.read_text())
         mad.send(self._init_script)
 
     def set_pts(self, pt: float, first_batch: int, last_batch: int) -> None:
         """See :meth:`accelmo.backend.protocol.TrackingEngine.set_pts`."""
         self.session.mad.send(f"""
+local pt = python:recv()
 for b = {first_batch + 1}, {last_batch + 1} do
     for i = 1, batch_size do
-        da_x0_c[b][i].pt:set0({pt:.15e} + init_pts[b][i])
+        da_x0_c[b][i].pt:set0(pt + init_pts[b][i])
     end
 end
-""")
+""").send(float(pt))
 
     def set_start_coords(
         self, x: np.ndarray, px: np.ndarray, y: np.ndarray, py: np.ndarray
@@ -301,20 +296,29 @@ end
         )
         return TrackResult(obs, d_dk, d_dc0, int(loss_info["n_lost"]), int(loss_info["n_total"]))
 
+    def begin_second_order(self) -> None:
+        """See :meth:`accelmo.backend.protocol.TrackingEngine.begin_second_order`."""
+        self.session.mad.send(SECOND_ORDER_REBUILD.read_text())
+
+    def second_order(
+        self, batch: int, weighted_residuals: dict[str, np.ndarray]
+    ) -> SecondOrderBlocks:
+        """See :meth:`accelmo.backend.protocol.TrackingEngine.second_order`."""
+        mad = self.session.mad
+        observables = self.plan.observables
+        mad["observables"] = list(observables)
+        mad.send(f"batch = {batch + 1}")
+        mad.send(SECOND_ORDER.read_text())
+        for observable in observables:
+            mad.send(np.ascontiguousarray(weighted_residuals[observable], dtype=np.float64))
+        knob_knob = np.asarray(mad.recv())
+        knob_start = np.asarray(mad.recv()).reshape(-1, len(knob_knob), 4)
+        start_start = np.asarray(mad.recv()).reshape(-1, 4, 4)
+        return SecondOrderBlocks(knob_knob, knob_start, start_start)
+
     def close(self) -> None:
         """Close the MAD-NG process."""
         self.session.close()
-
-
-def _strip_comment_lines(text: str) -> str:
-    """Remove full-line comments and blank lines before sending to MAD-NG."""
-    kept = []
-    for line in text.splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith(("--", "!")):
-            continue
-        kept.append(line)
-    return "\n".join(kept)
 
 
 def read_orbit_only(mad: MAD, n_coords: int, n_knobs: int):
@@ -380,7 +384,7 @@ class ClosedOrbitEngine:
         ]
         mad["optics_columns"] = self._value_columns + self._derivative_columns
         mad["orbit_coords"] = self.orbit_coords
-        mad.send(_strip_comment_lines(CLOSED_TWISS_INIT.read_text()))
+        mad.send(CLOSED_TWISS_INIT.read_text())
         mad.send(build_zero_field_removal_script())
         self._solver = "compute_closed_twiss()" if self.optics_names else "compute_closed_orbit()"
         #: Knobs are plain numbers (after a ``jacobian=False`` solve) until the next full solve.
@@ -401,7 +405,7 @@ class ClosedOrbitEngine:
 
     def set_pt(self, pt: float) -> None:
         """See :meth:`accelmo.backend.protocol.ClosedOrbitEngine.set_pt`."""
-        self.session.mad.send(f"x0map.pt:set0({pt:.15e})")
+        self.session.mad.send("x0map.pt:set0(python:recv())").send(float(pt))
 
     def set_warm_start(self, key: str) -> None:
         """See :meth:`accelmo.backend.protocol.ClosedOrbitEngine.set_warm_start`."""
@@ -480,12 +484,13 @@ class ClosedOrbitEngine:
 
     def scale_globals(self, scaled: Sequence[tuple[str, float, float, str]]) -> None:
         """Set each global ``name`` to the deferred ``kick * (gain + knob)``, so it follows the knob."""
-        commands = [
-            f"MADX['{name}'] = \\-> {kick:.15e} * ({gain:.15e} + loaded_sequence['{knob}'])"
-            for name, kick, gain, knob in scaled
-        ]
-        if commands:
-            self.session.mad.send("\n".join(commands))
+        if not scaled:
+            return
+        mad = self.session.mad
+        mad["scale_names"] = [name for name, _, _, _ in scaled]
+        mad["scale_knobs"] = [knob for _, _, _, knob in scaled]
+        mad.send(SCALE_GLOBALS.read_text())
+        mad.send(np.array([[kick, gain] for _, kick, gain, _ in scaled], dtype=np.float64))
 
 
 def open_model(
@@ -528,9 +533,9 @@ def closed_orbit_table(
         if magnet_strengths:
             iface.update_knob_values(dict(magnet_strengths))
         iface.mad.send(
-            f"moref = twiss{{sequence=loaded_sequence, observe=1, "
-            f"X0={{pt={float(pt):.15e}}}, coupling=true}}"
-        )
+            f"local pt = {iface.py_name}:recv()\n"
+            "moref = twiss{sequence=loaded_sequence, observe=1, X0={pt=pt}, coupling=true}"
+        ).send(float(pt))
         frame = iface.mad.moref.to_df(columns=["name", *columns])
     finally:
         iface.close()

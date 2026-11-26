@@ -312,8 +312,14 @@ class CalibratedClosedOrbitFitter(ClosedOrbitFitter):
         problem = _CalibratedProblem(
             self, channels, knob_names, g_names, b_names, self.knob_sigma, zero_mean
         )
+        self.begin_dashboard_fit(knob_names + g_names, u, gain_names=g_names)
         optimiser, self.diagnostics = run_levenberg_marquardt(
-            u, problem, self.lm_config, run_log=run_log, param_names=knob_names + g_names
+            u,
+            problem,
+            self.lm_config,
+            run_log=run_log,
+            param_names=knob_names + g_names,
+            dashboard=self.dashboard,
         )
         best_u = optimiser.best.value
         self.calibration_result = dict(zip(g_names, best_u[n_q:].tolist(), strict=True))

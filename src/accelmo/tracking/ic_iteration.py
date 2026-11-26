@@ -68,7 +68,9 @@ def fit_step(
     starts = fitter.fitted_starts if fit_start_coords else state.starts
     assert result.diagnostics is not None and fitter.session is not None
     loss = result.diagnostics.best_loss / fitter.session.n_training_points
-    logger.info(f"step {sorted(errors)} starts={fit_start_coords} turns={n_turns}: loss {loss:.6e}")
+    logger.info(
+        "step %s starts=%s turns=%s: loss %.6e", sorted(errors), fit_start_coords, n_turns, loss
+    )
     return State(
         {**state.knobs, **result.knobs},
         starts,

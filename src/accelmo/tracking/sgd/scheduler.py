@@ -1,9 +1,6 @@
 """Learning-rate schedulers used by optimisation fitters."""
 
-import logging
 import math
-
-LOGGER = logging.getLogger(__name__)
 
 
 class LRScheduler:
@@ -36,9 +33,6 @@ class LRScheduler:
         self.start_lr = start_lr
         self.max_lr = max_lr
         self.min_lr = min_lr
-        LOGGER.info(
-            f"Initialised LRScheduler with warmup_epochs={warmup_epochs}, decay_epochs={decay_epochs}, start_lr={start_lr}, max_lr={max_lr}, min_lr={min_lr}"
-        )
 
     def __call__(self, epoch: int) -> float:
         """

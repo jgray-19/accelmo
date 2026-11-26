@@ -134,7 +134,7 @@ class OptimisationCheckpointer:
                     cast("dict[str, Any]", optimiser_state), remap=remap
                 )
             except (KeyError, TypeError, ValueError) as exc:
-                LOGGER.info("Skipping optimiser state restore: %s", exc)
+                LOGGER.warning("Skipping optimiser state restore: %s", exc)
 
         return {
             "saved_epoch": int(payload.get("saved_epoch", 0)),

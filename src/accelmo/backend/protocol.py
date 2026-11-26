@@ -95,6 +95,19 @@ class TrackRequest:
 
 
 @dataclass
+class SecondOrderBlocks:
+    """``Σ_points wr ∂²m`` of one batch, with ``wr`` the weighted residuals sent in.
+
+    ``knob_knob`` is ``(K, K)`` over the engine's knobs (``pt`` last when fitted), summed over the
+    particles; ``knob_start`` is ``(P, K, 4)`` and ``start_start`` ``(P, 4, 4)`` per particle.
+    """
+
+    knob_knob: np.ndarray
+    knob_start: np.ndarray
+    start_start: np.ndarray
+
+
+@dataclass
 class TrackResult:
     """One tracked batch.
 
@@ -164,6 +177,14 @@ class TrackingEngine(Protocol):
 
     def track(self, batch: int, *, start_derivatives: bool) -> TrackResult:
         """Track batch ``batch`` (0-based); ``start_derivatives`` also fills ``d_dc0``."""
+
+    def begin_second_order(self) -> None:
+        """Switch to second-order derivatives, keeping the knobs, starts and ``pt``; ``track`` still works."""
+
+    def second_order(
+        self, batch: int, weighted_residuals: dict[str, np.ndarray]
+    ) -> SecondOrderBlocks:
+        """Contract ``weighted_residuals[o]`` ``(P, N)`` with the second derivatives of ``o`` (after ``begin_second_order``)."""
 
     def close(self) -> None:
         """Release the model."""

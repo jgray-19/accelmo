@@ -141,6 +141,7 @@ Shared Fitting Base
    accelmo.fitting.worker
    accelmo.fitting.shared_reference
    accelmo.fitting.pool
+   accelmo.fitting.worker_logging
    accelmo.fitting.lifecycle
    accelmo.fitting.reduction
    accelmo.fitting.weights
@@ -178,6 +179,10 @@ Run Logs And Monitor
 .. autosummary::
    :toctree: _autosummary
 
+   accelmo.logs
+   accelmo.dashboard
+   accelmo.dashboard.fit
+   accelmo.dashboard.plot
    accelmo.runlog
    accelmo.runlog.reader
    accelmo.runlog.writer

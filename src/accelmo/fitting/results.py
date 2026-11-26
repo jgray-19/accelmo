@@ -24,6 +24,18 @@ class FitDiagnostics:
 
 
 @dataclass(frozen=True)
+class UncertaintyInfo:
+    """How the uncertainties of a fit were computed."""
+
+    #: ``"true"`` or ``"gauss_newton"``: the Hessian that was used.
+    hessian: str
+    #: Wall time of the uncertainty stage.
+    seconds: float
+    #: Why a requested Hessian was replaced, empty when it was not.
+    note: str = ""
+
+
+@dataclass(frozen=True)
 class FitResult:
     """Fitted knobs, their 1-sigma uncertainties (by knob name) and how the fit ended."""
 
@@ -34,3 +46,5 @@ class FitResult:
     extra: dict[str, float] = field(default_factory=dict)
     #: 1-sigma uncertainties of ``extra``, by the same names.
     extra_uncertainties: dict[str, float] = field(default_factory=dict)
+    #: ``None`` when the uncertainties were not computed or the stage failed.
+    uncertainty: UncertaintyInfo | None = None

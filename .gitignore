@@ -241,3 +241,4 @@ tests/data/sequences/*.mad
 *.o
 /test_run_*.txt
 scratch_tmp
+logs/

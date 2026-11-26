@@ -37,10 +37,10 @@ def filter_bad_bpms(
     for bpm in bad_bpms:
         if bpm in filtered_start:
             filtered_start.remove(bpm)
-            LOGGER.warning(f"Removed bad BPM {bpm} from start points")
+            LOGGER.warning("Removed bad BPM %s from start points", bpm)
         if bpm in filtered_end:
             filtered_end.remove(bpm)
-            LOGGER.warning(f"Removed bad BPM {bpm} from end points")
+            LOGGER.warning("Removed bad BPM %s from end points", bpm)
 
     return filtered_start, filtered_end
 
@@ -74,7 +74,7 @@ def resolve_bpm_ranges(
     start_bpms, end_bpms = filter_bad_bpms(
         bpm_start_points, bpm_end_points, sequence_config.bad_bpms
     )
-    LOGGER.info(
+    LOGGER.debug(
         "%s after filtering bad BPMs: start points %s; end points %s",
         type(plan).__name__,
         start_bpms,

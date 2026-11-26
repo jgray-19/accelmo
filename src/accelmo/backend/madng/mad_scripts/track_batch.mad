@@ -1,0 +1,15 @@
+-- Track one batch of maps with the standard options and return the final flow.
+function track_batch(atexit_fn, x0)
+    local _, mflw = track {
+        sequence=loaded_sequence,
+        X0=x0,
+        nturn=n_run_turns,
+        save=false,
+        atexit=atexit_fn,
+        range=tracking_range,
+        dir=sdir,
+        aperture={kind='circle', 100},
+        method=6,
+    }
+    return mflw
+end

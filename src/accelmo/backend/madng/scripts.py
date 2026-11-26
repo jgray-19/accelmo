@@ -9,6 +9,20 @@ mad_dir = Path(__file__).absolute().parent
 MAD_SCRIPTS_DIR = mad_dir / "mad_scripts"
 
 CLOSED_TWISS_INIT = MAD_SCRIPTS_DIR / "run_closed_twiss_init.mad"
+PARTICLE_MAPS = MAD_SCRIPTS_DIR / "particle_maps.mad"
+SECOND_ORDER_REBUILD = MAD_SCRIPTS_DIR / "second_order_rebuild.mad"
+SECOND_ORDER = MAD_SCRIPTS_DIR / "second_order.mad"
+TRACK_BATCH = MAD_SCRIPTS_DIR / "track_batch.mad"
+SCALE_GLOBALS = MAD_SCRIPTS_DIR / "scale_globals.mad"
+
+#: Set knobs from ``set_names`` and one received vector; ``plain`` assigns numbers, not TPSA constants.
+SET_KNOBS_PLAIN = (
+    "local v = python:recv()\nfor i, name in ipairs(set_names) do loaded_sequence[name] = v[i] end"
+)
+SET_KNOBS_TPSA = (
+    "local v = python:recv()\n"
+    "for i, name in ipairs(set_names) do loaded_sequence[name]:set0(v[i]) end"
+)
 
 TRACKING_OBSERVABLES = ("x", "y", "px", "py")
 LOGGER = logging.getLogger(__name__)
@@ -146,33 +160,6 @@ def _send_block(
     return _join_lines(lines)
 
 
-def _track_call(*, x0: str, atexit: str, level: int = 0) -> str:
-    """Render a MAD ``track{...}`` call with the standard tracking arguments.
-
-    Only ``x0`` and the ``atexit`` callback differ between the tracking,
-    preflight, validation and Hessian scripts; ``level`` indents the whole call
-    for use inside a ``for`` loop.
-    """
-    fields = [
-        "sequence=loaded_sequence",
-        f"X0={x0}",
-        "nturn=n_run_turns",
-        "save=false",
-        f"atexit={atexit}",
-        "range=tracking_range",
-        "dir=sdir",
-        "aperture={kind='circle', 100}",
-        "method=6",
-    ]
-    return _join_lines(
-        [
-            _indent(level, "local _, mflw = track {"),
-            *(_indent(level + 1, f"{field},") for field in fields),
-            _indent(level, "}"),
-        ]
-    )
-
-
 def _observation_gate_definition() -> str:
     """Return the MAD predicate shared by every observation callback.
 
@@ -296,7 +283,7 @@ def build_tracking_script(
     observables = _validate_observables(observables)
     return f"""! Generated tracking script
 reset_before_tracking()
-{_track_call(x0="da_x0_c[batch]", atexit="save_data")}
+local mflw = track_batch(save_data, da_x0_c[batch])
 
 local n_lost = 0
 for i=1,batch_size do
@@ -322,7 +309,7 @@ local observed = 0
 local function preflight_counter(elm, mflw, _, slc)
     if is_observation_point(elm, slc) then observed = observed + 1 end
 end
-{_track_call(x0="da_x0_c[1][1]", atexit="preflight_counter")}
+local mflw = track_batch(preflight_counter, da_x0_c[1][1])
 {PYTHON_IN_MAD}:send({{
     observed=observed,
     expected=nbpms * n_run_turns,
@@ -368,7 +355,7 @@ def build_validation_script(observables: tuple[str, ...]) -> str:
     observables = _validate_observables(observables)
     return f"""! Generated validation script
 reset_before_validation()
-{_track_call(x0="da_x0_c[batch]", atexit="save_val_data")}
+track_batch(save_val_data, da_x0_c[batch])
 
 {_send_block(observables, include_derivatives=False)}
 """

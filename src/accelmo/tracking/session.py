@@ -11,11 +11,14 @@ validation loss and the uncertainty drain. Worker ranges come from
 from __future__ import annotations
 
 import logging
+import time
 from collections import Counter
 from typing import TYPE_CHECKING
 
 import numpy as np
 
+from accelmo.config import UNCERTAINTY_HESSIANS
+from accelmo.fitting.bpm_gains import without_bpm_gains
 from accelmo.fitting.pool import WorkerPool
 from accelmo.fitting.protocol import (
     LossReply,
@@ -25,10 +28,17 @@ from accelmo.fitting.protocol import (
     UpdateInitCoords,
 )
 from accelmo.tracking.dispatch.payloads import WorkerPayloadBuilder
-from accelmo.tracking.uncertainty import drain_uncertainty
+from accelmo.tracking.uncertainty import (
+    StageProgress,
+    UncertaintyCollection,
+    drain_uncertainty,
+    second_order_blocker,
+)
 from accelmo.tracking.worker import TrackingWorker
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from accelmo.config import TrackingDataConfig, TrackingParameters, WorkerRuntime
     from accelmo.machine.accelerators import Accelerator
     from accelmo.tracking.data_manager import FileTracks
@@ -73,11 +83,14 @@ class TrackingSession:
         self.payload_builder = WorkerPayloadBuilder(accelerator, gain_bpms)
         self.training: WorkerPool[TrackingWorkerConfig] = WorkerPool()
         self.validation: WorkerPool[TrackingWorkerConfig] = WorkerPool()
+        #: Parameters of the MAD-NG maps (magnet knobs): no gains, and not ``pt``.
+        self.n_mad_knobs = 0
 
     def start(self, tracks: dict[int, FileTracks], initial_knobs: dict[str, float]) -> None:
         """Spawn the training and validation workers, each starting from ``initial_knobs``."""
+        self.n_mad_knobs = len([name for name in without_bpm_gains(initial_knobs) if name != "pt"])
         training_payloads, validation_payloads = self.build_payloads(tracks)
-        LOGGER.info(
+        LOGGER.debug(
             "Starting %d trn worker(s) + %d held-out val worker(s)",
             len(training_payloads),
             len(validation_payloads),
@@ -91,7 +104,7 @@ class TrackingSession:
                 (m.file_idx, m.geometry.bpm_range, m.geometry.sdir)
                 for m in self.validation.metadata
             }
-            LOGGER.info(
+            LOGGER.debug(
                 "Validation setup: payloads=%d, covered_ranges=%d, tracks=%d",
                 len(validation_payloads),
                 len(covered),
@@ -152,7 +165,7 @@ class TrackingSession:
         """Log measurement-file usage and check that at least one worker exists."""
         num_files = len(self.worker_plans)
         file_usage = Counter(config.file_idx for _, config in payloads)
-        LOGGER.info(
+        LOGGER.debug(
             "Created %d workers using files: %s",
             len(payloads),
             ", ".join(f"file_{idx}={count} workers" for idx, count in sorted(file_usage.items())),
@@ -282,13 +295,54 @@ class TrackingSession:
         self.training.channels.ack_all(SetKnobs(knobs))
 
     def stop_and_collect_uncertainty(
-        self, n_knobs: int, propagate_uncertainty: bool = True
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """Stop every worker and return the normal matrix ``A`` and noise ``B`` of the training workers."""
-        LOGGER.info("Terminating workers...")
-        normal, noise = drain_uncertainty(self.training, n_knobs, propagate_uncertainty)
+        self,
+        n_knobs: int,
+        hessians: tuple[str, ...] | None = None,
+        on_progress: Callable[[int, int, float, float | None], None] | None = None,
+    ) -> UncertaintyCollection:
+        """Stop every worker and return ``A`` and ``B`` of the training workers per Hessian.
+
+        ``hessians`` defaults to the configured one; ``()`` stops without computing. The true
+        Hessian is replaced by Gauss-Newton, with the reason in ``skipped``, when the backend has
+        no second derivatives or one worker's second-order maps do not fit in memory.
+        ``on_progress(done, total, elapsed, eta)`` follows the second-order pass.
+        """
+        start = time.monotonic()
+        requested = (self.parameters.uncertainty_hessian,) if hessians is None else tuple(hessians)
+        if unknown := set(requested) - set(UNCERTAINTY_HESSIANS):
+            raise ValueError(f"hessians must be from {UNCERTAINTY_HESSIANS}, got {sorted(unknown)}")
+        skipped: dict[str, str] = {}
+        if "true" in requested:
+            reason = self._true_hessian_blocker()
+            if reason is not None:
+                skipped["true"] = reason
+                LOGGER.warning("True Hessian skipped, using Gauss-Newton: %s", reason)
+        run = tuple(dict.fromkeys("gauss_newton" if h in skipped else h for h in requested))
+        true_run = "true" in run
+        progress = (
+            StageProgress(len(self.training) * self.tracking_data.num_batches, on_progress)
+            if true_run
+            else None
+        )
+        LOGGER.debug("Terminating workers, computing the %s Hessian...", " and ".join(run))
+        matrices = drain_uncertainty(
+            self.training,
+            n_knobs,
+            run,
+            self.tracking_data.num_batches if true_run else None,
+            progress,
+        )
         self.validation.stop()
-        return normal, noise
+        seconds = time.monotonic() - start
+        LOGGER.debug("Uncertainty stage took %.1f s", seconds)
+        return UncertaintyCollection(matrices, skipped, seconds)
+
+    def _true_hessian_blocker(self) -> str | None:
+        """Why the true Hessian cannot run on these workers, or ``None``."""
+        backend = self.payload_builder.accelerator.backend
+        if backend != "madng":
+            return f"the {backend} backend has no second derivatives"
+        return second_order_blocker(self.training, self.n_mad_knobs, self.tracking_data.num_batches)
 
     def terminate(self) -> None:
         """Kill every worker without waiting, for aborting after an error or interrupt.
@@ -296,6 +350,6 @@ class TrackingSession:
         Workers may be stuck in a failed simulation and not respond to a stop
         message, so SIGTERM is sent and the processes are reaped.
         """
-        LOGGER.info("Terminating workers...")
+        LOGGER.debug("Terminating workers...")
         self.training.kill()
         self.validation.kill()

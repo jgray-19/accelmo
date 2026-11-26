@@ -10,7 +10,13 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import pandas as pd
 
-from accelmo.runlog.writer import HISTORY_FILE, KNOBS_FILE, RESULT_FILE, STAGE_FILE
+from accelmo.runlog.writer import (
+    HISTORY_FILE,
+    KNOBS_FILE,
+    RESULT_FILE,
+    STAGE_FILE,
+    UNCERTAINTY_FILE,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -66,6 +72,12 @@ class StageLog:
     def result(self) -> dict[str, Any] | None:
         """How the fit ended, or ``None`` while it is still running (or was killed)."""
         path = self.directory / RESULT_FILE
+        return json.loads(path.read_text()) if path.exists() else None
+
+    @property
+    def uncertainty(self) -> dict[str, Any] | None:
+        """The uncertainty stage's state (fitted knobs, progress, timing), or ``None`` before it starts."""
+        path = self.directory / UNCERTAINTY_FILE
         return json.loads(path.read_text()) if path.exists() else None
 
     @property

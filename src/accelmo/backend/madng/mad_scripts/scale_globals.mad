@@ -1,0 +1,6 @@
+-- Each global scale_names[i] follows kick * (gain + knob) with (kick, gain) from the received rows.
+local rows = python:recv()
+for i, name in ipairs(scale_names) do
+    local kick, gain, knob = rows:get(i, 1), rows:get(i, 2), scale_knobs[i]
+    MADX[name] = \-> kick * (gain + loaded_sequence[knob])
+end

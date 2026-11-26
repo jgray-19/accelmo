@@ -201,7 +201,7 @@ class TestLHCAccelerator:
             kinetic_energy=6800.0,
             sequence_file=str(test_sequence_file),
         )
-        with caplog.at_level(logging.INFO):
+        with caplog.at_level(logging.DEBUG):
             lhc.log_optimisation_targets()
         assert "No optimisation targets set" in caplog.text
 
@@ -214,7 +214,7 @@ class TestLHCAccelerator:
             optimise_energy=True,
             errors={"bend": {"k0"}, "quad": {"k1"}, "sextupole": {"k2"}, "corrector": {"kick"}},
         )
-        with caplog.at_level(logging.INFO):
+        with caplog.at_level(logging.DEBUG):
             lhc.log_optimisation_targets()
         assert "bend k0" in caplog.text
         assert "quad k1" in caplog.text

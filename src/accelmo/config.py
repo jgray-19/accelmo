@@ -8,6 +8,9 @@ from dataclasses import dataclass, field
 #: Optimisers :class:`OptimiserConfig` can name.
 OPTIMISER_TYPES = ("adam", "lbfgs")
 
+#: Hessians :class:`TrackingParameters` can use for the uncertainty.
+UNCERTAINTY_HESSIANS = ("true", "gauss_newton")
+
 
 @dataclass(frozen=True)
 class OptimiserConfig:
@@ -66,8 +69,8 @@ class WorkerRuntime:
 
     num_workers: int
 
-    # Logging level for worker processes (separate from main process)
-    logging_level: int = field(default=logging.WARNING)
+    # Level of each worker's own log file; WARNING and above also reach the main process.
+    logging_level: int = field(default=logging.DEBUG)
 
     # BLAS/LAPACK threads per worker process. Every worker does dense linear algebra
     # (e.g. the Gauss-Newton Hessian) while the other workers do the same, so the
@@ -141,12 +144,21 @@ class TrackingParameters:
     # LM only: planes ("x", "y") whose mean BPM gain is held at 0, for a common scale the data leave free.
     bpm_gain_zero_mean_planes: tuple[str, ...] = field(default=())
 
+    # Uncertainty only: "true" is the full chi-square Hessian, Σ w (J Jᵀ + r ∂²m), from order-2 TPSA;
+    # "gauss_newton" drops the residual term r ∂²m. The LM fit itself always uses Gauss-Newton.
+    uncertainty_hessian: str = field(default="true")
+
     @property
     def start_derivatives(self) -> bool:
         """Whether the workers return the start-coordinate derivative blocks."""
         return self.fit_start_coords or self.starts_follow_gains
 
     def __post_init__(self):
+        if self.uncertainty_hessian not in UNCERTAINTY_HESSIANS:
+            raise ValueError(
+                f"uncertainty_hessian must be one of {UNCERTAINTY_HESSIANS}, "
+                f"got {self.uncertainty_hessian!r}"
+            )
         if unknown := set(self.bpm_gain_zero_mean_planes) - {"x", "y"}:
             raise ValueError(f"bpm_gain_zero_mean_planes takes 'x' and 'y', got {sorted(unknown)}")
         if self.bpm_gain_zero_mean_planes and self.bpm_gain_sigma is None:

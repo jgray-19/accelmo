@@ -5,11 +5,12 @@ import threading
 from typing import TYPE_CHECKING
 
 import numpy as np
+import pytest
 
 from accelmo.backend.protocol import TrackGeometry
 from accelmo.config import TrackingDataConfig, TrackingParameters, WorkerRuntime
 from accelmo.fitting.pool import WorkerPool
-from accelmo.fitting.protocol import STOP, Ack
+from accelmo.fitting.protocol import STOP, Ack, UncertaintyProgress
 from accelmo.fitting.worker import WorkerConfig
 from accelmo.machine.accelerators import PSB
 from accelmo.tracking.config.tracking import TrackingPlan
@@ -17,7 +18,13 @@ from accelmo.tracking.data_manager import FileTracks
 from accelmo.tracking.dispatch.setup import KickPlane, TrackingWorkerConfig, plan_workers
 from accelmo.tracking.ranges import BpmRanges
 from accelmo.tracking.session import TrackingSession
-from accelmo.tracking.uncertainty import UncertaintyPart, drain_uncertainty
+from accelmo.tracking.uncertainty import (
+    StageProgress,
+    UncertaintyPart,
+    drain_uncertainty,
+    eliminate_fitted_starts,
+    second_order_blocker,
+)
 from accelmo.tracking.worker import PrecomputedTrackingWeights, TrackingData, TrackingWorker
 
 if TYPE_CHECKING:
@@ -72,15 +79,17 @@ def _start_pipe_worker(
 ) -> threading.Thread:
     """Start a daemon thread that acts as a fake worker over a real pipe.
 
-    The thread receives one binary message per response (via recv_bytes), then sends
-    the corresponding response back via send(). This matches the WorkerChannels
-    protocol where the parent sends via send_bytes and receives via recv.
+    The thread receives one binary message per entry of ``responses`` (via recv_bytes), then
+    sends the reply back via send(); an entry that is a list is several replies to that one
+    message (a worker's progress messages and final payload follow the ``STOP``). This matches
+    the WorkerChannels protocol where the parent sends via send_bytes and receives via recv.
     """
 
     def _run() -> None:
         for response in responses:
             child_conn.recv_bytes()
-            child_conn.send(response)
+            for reply in response if isinstance(response, list) else [response]:
+                child_conn.send(reply)
 
     thread = threading.Thread(target=_run, daemon=True)
     thread.start()
@@ -249,9 +258,9 @@ def test_drain_uncertainty_merges_shared_readings_per_file() -> None:
         UncertaintyPart(2.0 * np.eye(2), np.array([8]), g_c[None, :], np.array([0.2])),
         UncertaintyPart(3.0 * np.eye(2), np.array([7]), g_b[None, :], np.array([0.1])),
     ]
-    pool = _uncertainty_pool([0, 1, 0], [[part] for part in parts])
+    pool = _uncertainty_pool([0, 1, 0], [[Ack(0), {"gauss_newton": part}] for part in parts])
 
-    normal, noise = drain_uncertainty(pool, 2, propagate_uncertainty=True)
+    normal, noise = drain_uncertainty(pool, 2, ("gauss_newton",))["gauss_newton"]
 
     shared = g_a + g_b
     np.testing.assert_allclose(normal, 6.0 * np.eye(2))
@@ -295,10 +304,119 @@ def test_pool_stop_does_not_wait_for_final_payload() -> None:
 
 
 def test_drain_uncertainty_disables_the_hessian_before_shutdown() -> None:
-    # Two messages: ack for set_uncertainty_mode, then the empty part on termination
-    pool = _uncertainty_pool([0], [[Ack(0), UncertaintyPart.empty(2)]])
+    # Two messages: ack for the mode, then the empty reply on termination
+    pool = _uncertainty_pool([0], [[Ack(0), {}]])
 
-    total, _ = drain_uncertainty(pool, 2, propagate_uncertainty=False)
-
-    np.testing.assert_allclose(total, np.zeros((2, 2), dtype=np.float64))
+    assert drain_uncertainty(pool, 2, ()) == {}
     assert pool.workers[0].join_calls == 1
+
+
+def test_drain_uncertainty_keeps_each_hessian_apart_and_counts_progress() -> None:
+    gauss_newton = UncertaintyPart(np.eye(2), np.array([7]), np.ones((1, 2)), np.array([0.1]))
+    true = UncertaintyPart(3.0 * np.eye(2), np.array([7]), 2 * np.ones((1, 2)), np.array([0.1]))
+    after_stop = [
+        UncertaintyProgress(0),
+        UncertaintyProgress(0),
+        {"gauss_newton": gauss_newton, "true": true},
+    ]
+    pool = _uncertainty_pool([0], [[Ack(0), after_stop]])
+    updates: list[tuple[int, int]] = []
+    progress = StageProgress(2, lambda done, total, *_: updates.append((done, total)))
+
+    matrices = drain_uncertainty(pool, 2, ("gauss_newton", "true"), 2, progress)
+
+    np.testing.assert_allclose(matrices["gauss_newton"][0], np.eye(2))
+    np.testing.assert_allclose(matrices["true"][0], 3.0 * np.eye(2))
+    np.testing.assert_allclose(matrices["true"][1], 0.1 * 4.0 * np.ones((2, 2)))
+    assert progress.done == 2
+    assert updates[-1] == (2, 2)
+
+
+def test_default_true_hessian_falls_back_to_gauss_newton_on_the_xtrack_backend(
+    tmp_path: Path,
+) -> None:
+    seq_file = tmp_path / "psb.seq"
+    seq_file.write_text("! placeholder sequence\n")
+    parameters = TrackingParameters()
+    assert parameters.uncertainty_hessian == "true"
+    session = TrackingSession(
+        PSB(ring=3, sequence_file=seq_file, backend="xtrack"),
+        WorkerRuntime(1),
+        TrackingDataConfig(1),
+        parameters,
+        turn_batches=[[1]],
+        validation_turn_batches=[],
+        file_turn_map={1: 0},
+        worker_plans={},
+        machine_deltaps=[0.0],
+    )
+    part = UncertaintyPart(np.eye(2), np.array([7]), np.ones((1, 2)), np.array([0.1]))
+    session.training = _uncertainty_pool([0], [[Ack(0), {"gauss_newton": part}]])
+
+    collection = session.stop_and_collect_uncertainty(2)
+
+    assert collection.skipped == {"true": "the xtrack backend has no second derivatives"}
+    assert list(collection.matrices) == ["gauss_newton"]
+    np.testing.assert_allclose(collection.matrices["gauss_newton"][0], np.eye(2))
+
+
+def test_fitted_start_elimination_is_the_schur_complement_of_the_full_hessian() -> None:
+    rng = np.random.default_rng(1)
+    n_particles, n_knobs, n_points = 3, 4, 12
+    jacobian = rng.normal(size=(n_particles, n_knobs, n_points))
+    d_dc0 = rng.normal(size=(n_particles, 4, n_points))
+    weight = rng.uniform(0.5, 2.0, size=(n_particles, n_points))
+    residual_kk = rng.normal(size=(n_knobs, n_knobs))
+    residual_kk += residual_kk.T
+    residual_ss = rng.normal(size=(n_particles, 4, 4))
+    residual_ss += residual_ss.swapaxes(1, 2) + 10 * np.eye(4)
+    residual_sk = rng.normal(size=(n_particles, 4, n_knobs))
+    # A = Σ w J Jᵀ (Gauss-Newton) plus the residual term, as the true Hessian has it
+    a_kk = np.einsum("pkn,pjn,pn->kj", jacobian, jacobian, weight) + residual_kk
+    a_sk = np.einsum("pkn,pcn,pn->pck", jacobian, d_dc0, weight) + residual_sk
+    a_ss = np.einsum("pcn,pdn,pn->pcd", d_dc0, d_dc0, weight) + residual_ss
+
+    reduced, projection = eliminate_fitted_starts(a_kk, a_sk, a_ss)
+
+    expected = a_kk - sum(a_sk[p].T @ np.linalg.solve(a_ss[p], a_sk[p]) for p in range(n_particles))
+    np.testing.assert_allclose(reduced, expected, rtol=1e-12)
+    np.testing.assert_allclose(projection, np.linalg.solve(a_ss, a_sk).transpose(0, 2, 1))
+
+
+def _session_with_pool(tmp_path: Path, backend: str = "madng") -> TrackingSession:
+    seq_file = tmp_path / "psb.seq"
+    seq_file.write_text("! placeholder sequence\n")
+    session = TrackingSession(
+        PSB(ring=3, sequence_file=seq_file, backend=backend),
+        WorkerRuntime(1),
+        TrackingDataConfig(1),
+        TrackingParameters(),
+        turn_batches=[[1]],
+        validation_turn_batches=[],
+        file_turn_map={1: 0},
+        worker_plans={},
+        machine_deltaps=[0.0],
+    )
+    session.training = _uncertainty_pool([0], [[Ack(0), {}]])
+    return session
+
+
+def test_unknown_hessian_names_are_rejected_before_any_worker_is_touched(tmp_path: Path) -> None:
+    session = _session_with_pool(tmp_path)
+
+    with pytest.raises(ValueError, match="exact"):
+        session.stop_and_collect_uncertainty(2, ("exact",))
+
+    assert session.training.workers[0].join_calls == 0
+
+
+def test_second_order_preflight_counts_magnet_knobs_not_gains(tmp_path: Path) -> None:
+    from accelmo.fitting.bpm_gains import bpm_gain_names
+
+    session = _session_with_pool(tmp_path)
+    gains = dict.fromkeys(bpm_gain_names([f"BPM{i}" for i in range(50000)]), 0.0)
+    session.n_mad_knobs = 2
+
+    # 100000 gains and two magnet knobs: the maps of two knobs fit in memory
+    assert second_order_blocker(session.training, len(gains) + 2, 1) is not None
+    assert session._true_hessian_blocker() is None

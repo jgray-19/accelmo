@@ -15,12 +15,15 @@ from __future__ import annotations
 import dataclasses
 import gc
 import logging
+import time
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 import numpy as np
 
 from accelmo.config import TrackingParameters
+from accelmo.dashboard import FitDashboard
 from accelmo.fitting.bpm_gains import (
     bpm_gain_names,
     only_bpm_gains,
@@ -30,10 +33,11 @@ from accelmo.fitting.config import OutputConfig
 from accelmo.fitting.lifecycle import run_with_workers
 from accelmo.fitting.lm_loop import run_levenberg_marquardt
 from accelmo.fitting.priors import knob_sigma_array
-from accelmo.fitting.results import FitDiagnostics, FitResult
+from accelmo.fitting.results import FitDiagnostics, FitResult, UncertaintyInfo
 from accelmo.fitting.setup import MachineSetup
 from accelmo.fitting.uncertainty import sandwich_uncertainties
 from accelmo.fitting.worker import WorkerConfig
+from accelmo.fitting.worker_logging import WORKER_LOG_PATH
 from accelmo.optimisers.levenberg_marquardt import LevenbergMarquardtConfig
 from accelmo.tracking.config.tracking import (
     ACDArcByArcTrackingPlan,
@@ -48,6 +52,7 @@ from accelmo.tracking.lm_problem import StartGainMap, TrackingLMProblem
 from accelmo.tracking.ranges import resolve_bpm_ranges
 from accelmo.tracking.session import TrackingSession
 from accelmo.tracking.sgd.loop import SGDLoop
+from accelmo.tracking.uncertainty import UncertaintyCollection
 
 #: LM stops after this many accepted steps in a row that each lower the chi² by less than this fraction.
 LM_STALL_TOLERANCE = 1e-6
@@ -163,10 +168,8 @@ class TrackingFitter:
             raise ValueError(f"{lm_only} need the LM solver")
         tracking_data = plan.configure(tracking_data)
         accelerator.log_optimisation_targets()
-        if tracking_data.optimise_momenta:
-            logger.info("Including momenta (px, py) in loss function")
-        else:
-            logger.info("Using position-only optimisation (x, y only)")
+        self.dashboard = FitDashboard("tracking fit")
+        self.dashboard.fact("observables", "x y px py" if tracking_data.optimise_momenta else "x y")
 
         self.tracking_plan = plan
         self.options = options
@@ -181,32 +184,32 @@ class TrackingFitter:
         # fall back to the marker when a file does not set its own.
         self.first_bpms = [d.first_bpm or plan.first_bpm_fallback for d in details]
 
-        self.machine = MachineSetup(
-            accelerator,
-            sequence_config,
-            output_config=options.output_config,
-            cycle_marker=plan.cycle_marker,
-            anchor_mode=plan.tracking_anchor_mode,
-            anchor_markers=plan.tracking_anchor_sources,
-            initial_knob_strengths=options.initial_knob_strengths,
-            true_strengths=options.true_strengths,
-            debug=options.debug,
-            # The fitter's own model matches the workers': the first file that sets each.
-            machine_state=next((d.machine_state for d in details if d.machine_state), None),
-            b2_errors=next((d.b2_errors for d in details if d.b2_errors), None),
-        )
-        self.ranges = resolve_bpm_ranges(
-            self.machine,
-            plan,
-            list(plan.start_points) or list(bpm_start_points or []),
-            list(bpm_end_points or []),
-            use_fixed_bpm,
-        )
+        with self.dashboard.phase("model"):
+            self.machine = MachineSetup(
+                accelerator,
+                sequence_config,
+                output_config=options.output_config,
+                cycle_marker=plan.cycle_marker,
+                anchor_mode=plan.tracking_anchor_mode,
+                anchor_markers=plan.tracking_anchor_sources,
+                initial_knob_strengths=options.initial_knob_strengths,
+                true_strengths=options.true_strengths,
+                debug=options.debug,
+                # The fitter's own model matches the workers': the first file that sets each.
+                machine_state=next((d.machine_state for d in details if d.machine_state), None),
+                b2_errors=next((d.b2_errors for d in details if d.b2_errors), None),
+            )
+            self.ranges = resolve_bpm_ranges(
+                self.machine,
+                plan,
+                list(plan.start_points) or list(bpm_start_points or []),
+                list(bpm_end_points or []),
+                use_fixed_bpm,
+            )
         #: Per file, the workers one of its turn batches fans out to.
         self.worker_plans: dict[int, list[TrackingWorkerConfig]]
-        self.data_manager: DataManager | None = self._load_data()
-        for worker_module in ("accelmo.fitting.worker", "accelmo.tracking.worker"):
-            logging.getLogger(worker_module).setLevel(runtime.logging_level)
+        with self.dashboard.phase("data"):
+            self.data_manager: DataManager | None = self._load_data()
         # Every BPM the fit reads gets an x and a y gain; markers are not BPMs.
         self.gain_bpms: tuple[str, ...] = (
             tuple(b for b in self.machine.all_bpms if b not in self.tracking_plan.extra_markers)
@@ -250,11 +253,18 @@ class TrackingFitter:
         )
         include_uncertainty = self.machine.output_config.include_uncertainty
         start_knobs = self._with_gains(self.machine.worker_start_knobs)
+        if run_log is not None:
+            self.dashboard.run_log_path = run_log.directory
+            self._log_workers_in(run_log.directory / WORKER_LOG_PATH)
+        if not include_uncertainty:
+            self.dashboard.skip("uncertainty")
 
-        def body() -> tuple[dict[str, float], tuple[np.ndarray, np.ndarray] | None]:
-            session = self.start_session(start_knobs)
-            if self.options.initial_starts is not None:
-                session.send_init_condition_updates(self.options.initial_starts)
+        def body() -> tuple[dict[str, float], UncertaintyCollection | None]:
+            with self.dashboard.phase("workers"):
+                session = self.start_session(start_knobs)
+                if self.options.initial_starts is not None:
+                    session.send_init_condition_updates(self.options.initial_starts)
+            self._show_run_facts(session)
             # The workers hold their own copies of the data now.
             self.data_manager = None
             gc.collect()
@@ -263,11 +273,22 @@ class TrackingFitter:
                 final_knobs = self._solve_lm(session, run_log, self.lm_config)
             else:
                 assert self.loop is not None
+                initial_knobs = self._with_gains(self.machine.initial_knobs)
+                self.dashboard.begin_fit(
+                    max_epochs=self.loop.config.max_epochs,
+                    n_points=session.n_training_points,
+                    n_params=len(self.knob_names),
+                    start_knobs=initial_knobs,
+                    knob_sigmas=dict(zip(self.knob_names, self.knob_sigma, strict=True)),
+                    gain_names=self.gain_names,
+                    stage_epochs=self.loop.config.stage_epochs,
+                )
                 final_knobs = self.loop.run(
-                    self._with_gains(self.machine.initial_knobs),
+                    initial_knobs,
                     session.training.channels,
                     n_points=session.n_training_points,
                     run_log=run_log,
+                    dashboard=self.dashboard,
                     checkpoint_config=self.options.checkpoint_config,
                     validation_loss_fn=session.validation_loss,
                     loss_callback=self.options.loss_callback,
@@ -280,29 +301,167 @@ class TrackingFitter:
             # propagated at the knobs we return.
             if include_uncertainty:
                 session.set_training_knobs(final_knobs)
-            normal_and_noise = session.stop_and_collect_uncertainty(
-                len(final_knobs), propagate_uncertainty=include_uncertainty
-            )
-            return final_knobs, normal_and_noise
+            with self.dashboard.phase("uncertainty") if include_uncertainty else nullcontext():
+                return final_knobs, self._collect_uncertainty(
+                    session, final_knobs, run_log, include_uncertainty
+                )
 
-        final_knobs, normal_and_noise = run_with_workers(
-            body,
-            fallback=lambda: (
-                self._lm_best if self.loop is None else self.loop.best.value,
-                None,
-            ),
-            stop_workers=self._terminate_session,
-            run_log=run_log,
-        )
-        uncertainties = self._uncertainties(final_knobs, normal_and_noise)
-        logger.info("Optimisation complete.")
+        try:
+            final_knobs, collection = run_with_workers(
+                body,
+                fallback=lambda: (
+                    self._lm_best if self.loop is None else self.loop.best.value,
+                    None,
+                ),
+                stop_workers=self._terminate_session,
+                run_log=run_log,
+            )
+        finally:
+            self.dashboard.close()
+        uncertainties = self._uncertainties(final_knobs, collection)
         return FitResult(
             knobs=without_bpm_gains(final_knobs),
             uncertainties=without_bpm_gains(uncertainties),
             diagnostics=self.diagnostics if self.loop is None else self.loop.diagnostics,
             extra=only_bpm_gains(final_knobs),
             extra_uncertainties=only_bpm_gains(uncertainties),
+            uncertainty=self._uncertainty_info(collection),
         )
+
+    def _log_workers_in(self, logfile: Path) -> None:
+        """Give workers that have no ``python_logfile`` of their own ``logfile`` (per worker)."""
+        for idx, plans in self.worker_plans.items():
+            self.worker_plans[idx] = [
+                plan
+                if plan.python_logfile is not None
+                else dataclasses.replace(plan, python_logfile=logfile)
+                for plan in plans
+            ]
+
+    def _show_run_facts(self, session: TrackingSession) -> None:
+        """Put what the run is made of on the dashboard."""
+        validation = (
+            f" (val {session.n_validation_points:,})" if session.n_validation_points else ""
+        )
+        self.dashboard.fact("points", f"{session.n_training_points:,}{validation}")
+        self.dashboard.fact(
+            "knobs", f"{len(self.machine.knob_names)}  gains {len(self.gain_names)}"
+        )
+        self.dashboard.fact("batches", self.tracking_data.num_batches)
+        self.dashboard.fact(
+            "workers",
+            f"{len(session.training.metadata)} train + {len(session.validation.metadata)} val",
+        )
+
+    def _collect_uncertainty(
+        self,
+        session: TrackingSession,
+        final_knobs: dict[str, float],
+        run_log,
+        include_uncertainty: bool,
+    ) -> UncertaintyCollection | None:
+        """Run the uncertainty stage, logging its progress; ``None`` if it fails, so the fit survives.
+
+        The fitted knobs are recorded in the run log before the stage starts.
+        """
+        hessians = (self.parameters.uncertainty_hessian,) if include_uncertainty else ()
+        if run_log is not None:
+            run_log.record_uncertainty(
+                state="running", hessian=hessians[0] if hessians else None, knobs=final_knobs
+            )
+
+        def on_progress(done: int, total: int, elapsed: float, eta: float | None) -> None:
+            self.dashboard.uncertainty_progress(done, total, eta)
+            if run_log is not None:
+                run_log.record_uncertainty(
+                    state="running",
+                    hessian="true",
+                    knobs=final_knobs,
+                    done=done,
+                    total=total,
+                    elapsed=elapsed,
+                    eta=eta,
+                )
+
+        start = time.monotonic()
+        try:
+            collection = session.stop_and_collect_uncertainty(
+                len(final_knobs), hessians, on_progress
+            )
+        except Exception as exc:
+            seconds = time.monotonic() - start
+            logger.exception(
+                "Uncertainty stage failed after %.1f s; the fit result is kept", seconds
+            )
+            if run_log is not None:
+                run_log.record_uncertainty(
+                    state="failed",
+                    knobs=final_knobs,
+                    seconds=seconds,
+                    error=f"{type(exc).__name__}: {exc}"[:500],
+                )
+            return None
+        if run_log is not None and hessians:
+            run_log.record_uncertainty(
+                state="done",
+                knobs=final_knobs,
+                hessian=next(iter(collection.matrices)),
+                seconds=collection.seconds,
+                note="; ".join(f"{k} skipped: {v}" for k, v in collection.skipped.items()),
+            )
+        return collection
+
+    @staticmethod
+    def _uncertainty_info(collection: UncertaintyCollection | None) -> UncertaintyInfo | None:
+        if collection is None or not collection.matrices:
+            return None
+        return UncertaintyInfo(
+            hessian=next(iter(collection.matrices)),
+            seconds=collection.seconds,
+            note="; ".join(f"{k} skipped: {v}" for k, v in collection.skipped.items()),
+        )
+
+    def recompute_uncertainties(
+        self,
+        knobs: dict[str, float],
+        hessians: tuple[str, ...] = ("gauss_newton", "true"),
+    ) -> dict[str, dict[str, float]]:
+        """Recompute the uncertainties at fixed ``knobs`` with each Hessian, in one worker session.
+
+        ``knobs`` is every optimisation parameter: the fit's ``knobs`` and its gains (``extra``),
+        or a run log's knobs at a step. Returns the 1-sigma uncertainties by knob name for each
+        Hessian that ran (a requested true Hessian that cannot run is replaced, see
+        :meth:`TrackingSession.stop_and_collect_uncertainty`) and logs their ratio.
+        """
+        start_knobs = self._with_gains(knobs)
+        session = self.start_session(start_knobs)
+        try:
+            starts = self.fitted_starts if self.fitted_starts.size else self.options.initial_starts
+            if starts is not None:
+                session.send_init_condition_updates(starts)
+            collection = session.stop_and_collect_uncertainty(len(start_knobs), hessians)
+        except BaseException:
+            self._terminate_session()
+            raise
+        sigmas = {
+            hessian: self._uncertainties(start_knobs, UncertaintyCollection({hessian: matrices}))
+            for hessian, matrices in collection.matrices.items()
+        }
+        logger.info("Uncertainties by Hessian (%s), %.1f s", ", ".join(sigmas), collection.seconds)
+        if len(sigmas) == 2:
+            (name_a, sig_a), (name_b, sig_b) = sigmas.items()
+            ratios = np.array([sig_b[k] / sig_a[k] for k in sig_a if sig_a[k] > 0.0])
+            if ratios.size:
+                logger.info(
+                    "%s / %s sigma ratio: min %.4g, median %.4g, max %.4g over %d knobs",
+                    name_b,
+                    name_a,
+                    ratios.min(),
+                    np.median(ratios),
+                    ratios.max(),
+                    ratios.size,
+                )
+        return sigmas
 
     def _solve_lm(
         self, session: TrackingSession, run_log, lm_config: LevenbergMarquardtConfig
@@ -328,8 +487,25 @@ class TrackingFitter:
 
         initial = problem.initial_params(self._with_gains(self.machine.initial_knobs))
         self._lm_best = problem.knobs(initial)
+        names = problem.param_names()
+        self.dashboard.begin_fit(
+            max_epochs=lm_config.max_iterations,
+            n_points=session.n_training_points,
+            n_params=len(names),
+            start_knobs=dict(zip(names, initial.tolist(), strict=True)),
+            knob_sigmas=dict(zip(self.knob_names, self.knob_sigma, strict=True)),
+            gain_names=self.gain_names,
+            loss_is_total=True,
+            unit="iter",
+            rate_name="λ",
+        )
         optimiser, self.diagnostics = run_levenberg_marquardt(
-            initial, problem, lm_config, run_log=run_log, param_names=problem.param_names()
+            initial,
+            problem,
+            lm_config,
+            run_log=run_log,
+            param_names=names,
+            dashboard=self.dashboard,
         )
         best = optimiser.best.value
         self._lm_best = problem.knobs(best)
@@ -405,8 +581,8 @@ class TrackingFitter:
         try:
             session = self.start_session(start_knobs)
             normal, _ = session.stop_and_collect_uncertainty(
-                len(self.knob_names), propagate_uncertainty=True
-            )
+                len(self.knob_names), ("gauss_newton",)
+            ).primary
         except BaseException:
             self._terminate_session()
             raise
@@ -442,7 +618,7 @@ class TrackingFitter:
     def _uncertainties(
         self,
         final_knobs: dict[str, float],
-        normal_and_noise: tuple[np.ndarray, np.ndarray] | None,
+        collection: UncertaintyCollection | None,
     ) -> dict[str, float]:
         """1-sigma uncertainty of each optimisation knob; zero when not computed.
 
@@ -452,15 +628,16 @@ class TrackingFitter:
         LM's chained Hessian (priors included) replaces it.
         """
         follow = self.parameters.starts_follow_gains and self.lm_hessian.size
-        if not self.machine.output_config.include_uncertainty or normal_and_noise is None:
+        if collection is None or not collection.matrices:
             uncertainties = np.zeros(len(final_knobs), dtype=np.float64)
-        elif follow:
-            uncertainties = sandwich_uncertainties(0.5 * self.lm_hessian, normal_and_noise[1])
-        elif self._prior.any():  # a prior is one more measurement of the knobs
-            normal, noise = normal_and_noise
-            uncertainties = sandwich_uncertainties(normal + self._prior, noise + self._prior)
         else:
-            uncertainties = sandwich_uncertainties(*normal_and_noise)
+            normal, noise = collection.primary
+            if follow:
+                uncertainties = sandwich_uncertainties(0.5 * self.lm_hessian, noise)
+            elif self._prior.any():  # a prior is one more measurement of the knobs
+                uncertainties = sandwich_uncertainties(normal + self._prior, noise + self._prior)
+            else:
+                uncertainties = sandwich_uncertainties(normal, noise)
         return dict(zip(self.knob_names, uncertainties.tolist(), strict=True))
 
     def _load_data(self) -> DataManager:

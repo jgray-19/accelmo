@@ -19,6 +19,7 @@ from threadpoolctl import threadpool_limits
 
 from accelmo.backend import get_backend
 from accelmo.fitting.protocol import Command, ErrorReply, Evaluate, Stop
+from accelmo.fitting.worker_logging import attach_in_worker
 
 if TYPE_CHECKING:
     from multiprocessing.connection import Connection
@@ -214,37 +215,8 @@ class AbstractWorker(Process, ABC, Generic[WorkerDataType, ConfigType]):
             threadpool_limits(limits=self.runtime.blas_threads)
 
     def configure_python_worker_logging(self) -> None:
-        """Attach a file handler so worker Python logs land in the worker logfile."""
-        worker_logfile = self._resolve_per_worker_logfile(
-            self.config.python_logfile or self.config.mad_logfile
-        )
-        if worker_logfile is None:
-            return
-
-        worker_logfile.parent.mkdir(parents=True, exist_ok=True)
-        root_logger = logging.getLogger()
-        level = self.runtime.logging_level
-        root_logger.setLevel(level)
-
-        if any(
-            isinstance(handler, logging.FileHandler)
-            and getattr(handler, "baseFilename", None) == str(worker_logfile)
-            for handler in root_logger.handlers
-        ):
-            return
-
-        file_handler = logging.FileHandler(worker_logfile, mode="a")
-        file_handler.setLevel(level)
-        file_handler.setFormatter(
-            logging.Formatter(
-                "PYTHON: %(asctime)s %(levelname)s %(name)s: %(message)s",
-                datefmt="%Y-%m-%d %H:%M:%S",
-            )
-        )
-        root_logger.addHandler(file_handler)
-
-        LOGGER.debug(
-            "Worker %s Python logging attached to %s",
-            self.worker_id,
-            worker_logfile,
+        """Log this worker to its own file; WARNING and above also reach the parent."""
+        attach_in_worker(
+            self._resolve_per_worker_logfile(self.config.python_logfile),
+            self.runtime.logging_level,
         )

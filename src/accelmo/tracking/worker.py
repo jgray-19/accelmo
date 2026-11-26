@@ -23,16 +23,17 @@ from accelmo.fitting.protocol import (
     SetKnobs,
     SetUncertaintyMode,
     TotalChi2,
+    UncertaintyProgress,
     UpdateInitCoords,
 )
 from accelmo.fitting.worker import AbstractWorker
 from accelmo.tracking.dispatch.setup import TrackingWorkerConfig
-from accelmo.tracking.uncertainty import UncertaintyPart
+from accelmo.tracking.uncertainty import UncertaintyPart, eliminate_fitted_starts
 
 if TYPE_CHECKING:
     from multiprocessing.connection import Connection
 
-    from accelmo.backend.protocol import TrackingEngine, TrackResult
+    from accelmo.backend.protocol import SecondOrderBlocks, TrackingEngine, TrackResult
     from accelmo.config import TrackingDataConfig, TrackingParameters, WorkerRuntime
     from accelmo.fitting.protocol import Command, Evaluate
 
@@ -190,7 +191,7 @@ class TrackingWorker(AbstractWorker[TrackingData, TrackingWorkerConfig]):
         # Reading ids carry the file index in their high 32 bits; a worker holds one file.
         self.file_index = int(data.init_reading_ids[0] >> 32)
 
-        self.propagate_uncertainty_on_exit = True
+        self.uncertainty_hessians = (self.parameters.uncertainty_hessian,)
 
         if not self.validation:
             self._prepare_uncertainty_batches(data, n_init, num_batches)
@@ -217,6 +218,12 @@ class TrackingWorker(AbstractWorker[TrackingData, TrackingWorkerConfig]):
             1.0, np.where(self.has_gain, gains[np.maximum(self.point_gain_index, 0)], 0.0)
         )
 
+    def _reading_factor(self, observable: str) -> np.ndarray | float:
+        """``1 + g`` of each observation point of ``observable``; momenta carry no gain."""
+        if not self.fit_gains or observable not in PLANES:
+            return 1.0
+        return self._gain_factor(PLANES.index(observable))
+
     def _apply_gains(
         self, results: dict[str, np.ndarray], *, gain_columns: bool = False
     ) -> dict[str, np.ndarray]:
@@ -232,7 +239,7 @@ class TrackingWorker(AbstractWorker[TrackingData, TrackingWorkerConfig]):
         for observable in self.observables:
             plane_idx = PLANES.index(observable) if observable in PLANES else None
             tracked = results[observable]
-            factor = 1.0 if plane_idx is None else self._gain_factor(plane_idx)
+            factor = self._reading_factor(observable)
             results[observable] = tracked * factor
             results[f"{observable}_tracked"] = tracked
             key = self._gradient_key(observable)
@@ -550,8 +557,8 @@ class TrackingWorker(AbstractWorker[TrackingData, TrackingWorkerConfig]):
                 self._send_init_condition_update(
                     *(np.asarray(coords[:, [i]], dtype=np.float64) for i in range(4))
                 )
-            case SetUncertaintyMode(enabled):
-                self.propagate_uncertainty_on_exit = enabled
+            case SetUncertaintyMode(hessians):
+                self.uncertainty_hessians = hessians
             case _:
                 return super().handle_command(command)
         return Ack(self.worker_id)
@@ -588,22 +595,89 @@ class TrackingWorker(AbstractWorker[TrackingData, TrackingWorkerConfig]):
         """
         if self.validation or failed:
             return
-        if self.propagate_uncertainty_on_exit:
-            LOGGER.debug(f"Worker {self.worker_id}: Propagating uncertainty")
-            try:
-                self.send_reply(self._compute_uncertainty_part(self.n_uncertainty_params))
-            except Exception as exc:  # noqa: BLE001
-                self.send_error_payload(exc, phase="uncertainty")
-        else:
-            self.send_reply(UncertaintyPart.empty(self.n_uncertainty_params))
+        LOGGER.debug(
+            f"Worker {self.worker_id}: Propagating uncertainty {self.uncertainty_hessians}"
+        )
+        try:
+            self.send_reply(self._compute_uncertainty_parts(self.n_uncertainty_params))
+        except Exception as exc:  # noqa: BLE001
+            self.send_error_payload(exc, phase="uncertainty")
 
     @property
     def n_uncertainty_params(self) -> int:
         """The magnet knobs, then every gain: the uncertainty covers both."""
         return self.n_reply_knobs + len(self.gain_names)
 
-    def _compute_uncertainty_part(self, n_knobs: int) -> UncertaintyPart:
+    def _second_order_blocks(self) -> list[SecondOrderBlocks]:
+        """Per batch ``Σ w r ∂²m`` at the loaded knobs, from MAD-NG's second-order TPSA.
+
+        ``r`` comes from a first-order track; the engine then switches to second order for good,
+        and its ``track`` keeps returning the first derivatives.
+        """
+        weighted = []
+        for batch in range(self.num_batches):
+            results = self._results(self.engine.track(batch, start_derivatives=False))
+            weights, residuals = self._batch_weights(batch), self._residuals(results, batch)
+            weighted.append(
+                {o: weights[o] * residuals[o] * self._reading_factor(o) for o in self.observables}
+            )
+        self.engine.begin_second_order()
+        blocks = []
+        for batch in range(self.num_batches):
+            blocks.append(self.engine.second_order(batch, weighted[batch]))
+            self.send_reply(UncertaintyProgress(self.worker_id))
+        return blocks
+
+    def _residual_blocks(
+        self, blocks: SecondOrderBlocks, terms: list[tuple], n_knobs: int
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """``Σ w r ∂²m_obs`` of one batch over (knobs, gains): ``(kk, start, start_start)``.
+
+        ``m_obs = (1 + g) m``: the knob and start blocks are MAD-NG's (it was sent ``w r (1 + g)``);
+        a gain only multiplies, so its mixed derivatives are ``∂m/∂k`` and ``∂m/∂c0`` of the tracked
+        position, and the gain-gain block is zero.
+        """
+        k = self.n_reply_knobs
+        kk = np.zeros((n_knobs, n_knobs))
+        kk[:k, :k] = blocks.knob_knob
+        start = np.zeros((len(blocks.start_start), 4, n_knobs))
+        start[:, :, :k] = blocks.knob_start.transpose(0, 2, 1)
+        if self.fit_gains:
+            points = np.flatnonzero(self.has_gain)
+            for observable, jacobian, d_dc0, weight, residual in terms:
+                if observable not in PLANES:
+                    continue
+                plane_idx = PLANES.index(observable)
+                columns = k + plane_idx * self.n_gain_bpms + self.point_gain_index[points]
+                tracked_wr = (weight * residual)[:, points] / self._gain_factor(plane_idx)[points]
+                cross = np.einsum("pkn,pn->kn", jacobian[:, :k][:, :, points], tracked_wr)
+                knobs = np.arange(k)
+                np.add.at(kk, (knobs[:, None], columns[None, :]), cross)
+                np.add.at(kk, (columns[:, None], knobs[None, :]), cross.T)
+                np.add.at(
+                    start,
+                    (slice(None), slice(None), columns),
+                    d_dc0[:, :, points] * tracked_wr[:, None, :],
+                )
+        return kk, start, blocks.start_start
+
+    def _compute_uncertainty_parts(self, n_knobs: int) -> dict[str, UncertaintyPart]:
+        """This worker's uncertainty part for each requested Hessian; one second-order pass serves all."""
+        hessians = self.uncertainty_hessians
+        second_order = self._second_order_blocks() if "true" in hessians else None
+        return {
+            hessian: self._compute_uncertainty_part(
+                n_knobs, second_order if hessian == "true" else None
+            )
+            for hessian in hessians
+        }
+
+    def _compute_uncertainty_part(
+        self, n_knobs: int, second_order: list[SecondOrderBlocks] | None
+    ) -> UncertaintyPart:
         """Track every batch at the loaded knobs and return this worker's uncertainty part.
+
+        ``second_order`` (the true Hessian's residual term) is ``None`` for Gauss-Newton.
 
         With ``r = m − y`` and loss weights ``w = 1/σ²`` (masked):
         ``A = Σ w J Jᵀ``; an observed reading moves the gradient by ``−w J``; a start
@@ -623,6 +697,7 @@ class TrackingWorker(AbstractWorker[TrackingData, TrackingWorkerConfig]):
                 self.engine.track(batch, start_derivatives=True), gain_columns=True
             )
             weights = self._batch_weights(batch)
+            residuals = self._residuals(results, batch)
             n_particles = len(self.init_reading_ids[batch])
             start = np.zeros((n_particles, 4, n_knobs))
             start_start = np.zeros((n_particles, 4, 4))
@@ -633,15 +708,22 @@ class TrackingWorker(AbstractWorker[TrackingData, TrackingWorkerConfig]):
                 weight = weights[observable]  # (particles, points)
                 start += np.einsum("pkn,pcn->pck", jacobian * weight[:, None, :], d_dc0)
                 start_start += np.einsum("pcn,pdn->pcd", d_dc0 * weight[:, None, :], d_dc0)
-                terms.append((observable, jacobian, d_dc0, weight))
+                terms.append((observable, jacobian, d_dc0, weight, residuals[observable]))
+            if second_order is not None:
+                extra_knobs, extra_start, extra_start_start = self._residual_blocks(
+                    second_order[batch], terms, n_knobs
+                )
+                normal += extra_knobs
+                start += extra_start
+                start_start += extra_start_start
+            for _, jacobian, _, weight, _ in terms:
+                normal += np.einsum("pkn,pjn->kj", jacobian * weight[:, None, :], jacobian)
             if fit_starts:
-                # (particles, knobs, 4): A_ks A_ss⁻¹ of each particle
-                projection = np.linalg.solve(start_start, start).transpose(0, 2, 1)
-            for observable, jacobian, d_dc0, weight in terms:
+                normal, projection = eliminate_fitted_starts(normal, start, start_start)
+            for observable, jacobian, d_dc0, weight, _ in terms:
                 if fit_starts:
                     jacobian = jacobian - np.einsum("pkc,pcn->pkn", projection, d_dc0)
                 weighted = jacobian * weight[:, None, :]
-                normal += np.einsum("pkn,pjn->kj", weighted, jacobian)
                 noisy = weight != 0.0
                 ids.append(self.reading_ids[batch][noisy] * 4 + READING_CODES[observable])
                 sensitivities.append(-weighted.transpose(0, 2, 1)[noisy])

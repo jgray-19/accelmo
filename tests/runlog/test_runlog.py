@@ -107,3 +107,22 @@ def test_resume_refuses_a_run_with_other_knobs(tmp_path) -> None:
     with pytest.raises(ValueError, match="knobs differ"):
         resumed.begin({"a": 0.0, "c": 1.0}, resume_step=1)
     resumed.close()
+
+
+def test_uncertainty_state_is_replaced_atomically_and_read_back(tmp_path) -> None:
+    run_log = RunLog(tmp_path / "stage", name="fit")
+    run_log.begin({"a": 0.0})
+    stage = find_stages(tmp_path)[0]
+    assert stage.uncertainty is None
+
+    run_log.record_uncertainty(state="running", knobs={"a": 1.5}, done=1, total=4)
+    run_log.record_uncertainty(state="done", knobs={"a": 1.5}, hessian="true", seconds=7.5)
+    run_log.close()
+
+    info = stage.uncertainty
+    assert (info["state"], info["hessian"], info["seconds"], info["knobs"]) == (
+        "done",
+        "true",
+        7.5,
+        {"a": 1.5},
+    )

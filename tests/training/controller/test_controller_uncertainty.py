@@ -108,6 +108,8 @@ def _collect_epoch_gradient(ctrl: TrackingFitter, knob_updates: dict[str, float]
 #: (LHC 4.8e-7, PSB 1.7e-9) with a factor of about 10 of margin.
 LHC_HESSIAN_REL_TOL = 5e-6
 PSB_HESSIAN_REL_TOL = 2e-8
+#: Measured miss of the Gauss-Newton Hessian 5% off the truth: 1.06e-5, above the true Hessian's tolerance.
+GAUSS_NEWTON_MISS_REL = 5e-6
 #: Single-direction runs, measured: A vs finite differences 5.3e-9, B vs A 6.9e-16,
 #: sigma vs sqrt(diag(inv(A))) 6.1e-8.
 DIRECTION_HESSIAN_REL_TOL = 5e-8
@@ -141,13 +143,27 @@ def _assert_matrices_close(measured: np.ndarray, predicted: np.ndarray, rel_tol:
     assert np.linalg.norm(measured - predicted) < rel_tol * scale
 
 
-@pytest.mark.slow
-@pytest.mark.serial
-def test_controller_worker_hessian_matches_finite_difference_on_reduced_knob_subset(
+#: Relative offset of the subset knobs from the truth in the off-truth Hessian test.
+OFF_TRUTH_OFFSET = 0.05
+#: Absolute offset of the fitted energy ``pt`` from the truth in the energy Hessian test.
+PT_OFFSET = 1e-4
+
+
+def _lhc_subset_hessians(
     tmp_path,
     seq_b1,
     loaded_interface,
-) -> None:
+    hessian: str,
+    offset: float,
+    *,
+    optimise_energy: bool = False,
+) -> tuple[np.ndarray, np.ndarray]:
+    """``(2 A, finite-difference d(gradient)/d(knob))`` of three knobs, ``offset`` off the truth.
+
+    The three knobs are two central ones, moved by ``offset`` of their value, and with
+    ``optimise_energy`` the energy ``pt``, moved by ``PT_OFFSET``; the residuals are not zero there.
+    """
+    from accelmo.config import TrackingParameters
     from accelmo.fitting.config import SequenceConfig
     from accelmo.machine.accelerators import LHC
     from accelmo.tracking.config.helpers import single_measurement_config
@@ -178,6 +194,7 @@ def test_controller_worker_hessian_matches_finite_difference_on_reduced_knob_sub
             kinetic_energy=6800,
             sequence_file=seq_b1,
             errors={"quad": {"k1"}},
+            optimise_energy=optimise_energy,
         ),
         _make_optimiser_config_quad(),
         WorkerRuntime(num_workers=4),
@@ -194,6 +211,7 @@ def test_controller_worker_hessian_matches_finite_difference_on_reduced_knob_sub
                 write_run_log=False,
             ),
             true_strengths=magnet_strengths.copy(),
+            parameters=TrackingParameters(uncertainty_hessian=hessian),
         ),
     )
 
@@ -201,20 +219,23 @@ def test_controller_worker_hessian_matches_finite_difference_on_reduced_knob_sub
     try:
         ctrl.start_session(ctrl.machine.initial_knobs)
         base_knobs = ctrl.machine.true_strengths.copy()
-        base_vec = np.array(
-            [base_knobs[name] for name in ctrl.machine.knob_names],
-            dtype=np.float64,
-        )
-        n_knobs = len(base_vec)
+        n_knobs = len(ctrl.machine.knob_names)
         centre = n_knobs // 2
-        subset = np.array([centre - 1, centre, centre + 1], dtype=int)
+        if optimise_energy:
+            assert ctrl.machine.knob_names[-1] == "pt"
+            subset = np.array([centre - 1, centre, n_knobs - 1], dtype=int)
+            base_knobs["pt"] = base_knobs.get("pt", 0.0) + PT_OFFSET
+        else:
+            subset = np.array([centre - 1, centre, centre + 1], dtype=int)
+        for knob_idx in subset:
+            name = ctrl.machine.knob_names[knob_idx]
+            if name != "pt":
+                base_knobs[name] += offset * abs(base_knobs[name])
 
         fd_matrix = _finite_difference_hessian(ctrl, base_knobs, subset)
 
         ctrl.session.set_training_knobs(base_knobs)
-        total_hessian, _ = ctrl.session.stop_and_collect_uncertainty(
-            n_knobs, propagate_uncertainty=True
-        )
+        total_hessian, _ = ctrl.session.stop_and_collect_uncertainty(n_knobs).primary
         terminated = True
     finally:
         if not terminated:
@@ -223,9 +244,63 @@ def test_controller_worker_hessian_matches_finite_difference_on_reduced_knob_sub
     assert total_hessian.shape == (n_knobs, n_knobs)
     assert np.all(np.isfinite(total_hessian))
     sym_hessian = 0.5 * (total_hessian + total_hessian.T)
-    predicted = 2.0 * sym_hessian[np.ix_(subset, subset)]
+    return 2.0 * sym_hessian[np.ix_(subset, subset)], fd_matrix
+
+
+@pytest.mark.slow
+@pytest.mark.serial
+def test_controller_worker_hessian_matches_finite_difference_on_reduced_knob_subset(
+    tmp_path,
+    seq_b1,
+    loaded_interface,
+) -> None:
+    predicted, fd_matrix = _lhc_subset_hessians(
+        tmp_path, seq_b1, loaded_interface, "true", offset=0.0
+    )
 
     _assert_matrices_close(fd_matrix, predicted, LHC_HESSIAN_REL_TOL)
+
+
+@pytest.mark.slow
+@pytest.mark.serial
+def test_true_hessian_matches_finite_difference_away_from_the_truth(
+    tmp_path,
+    seq_b1,
+    loaded_interface,
+) -> None:
+    predicted, fd_matrix = _lhc_subset_hessians(
+        tmp_path, seq_b1, loaded_interface, "true", offset=OFF_TRUTH_OFFSET
+    )
+
+    _assert_matrices_close(fd_matrix, predicted, LHC_HESSIAN_REL_TOL)
+
+
+@pytest.mark.slow
+@pytest.mark.serial
+def test_true_hessian_with_the_fitted_energy_matches_finite_difference(
+    tmp_path,
+    seq_b1,
+    loaded_interface,
+) -> None:
+    predicted, fd_matrix = _lhc_subset_hessians(
+        tmp_path, seq_b1, loaded_interface, "true", offset=OFF_TRUTH_OFFSET, optimise_energy=True
+    )
+
+    _assert_matrices_close(fd_matrix, predicted, LHC_HESSIAN_REL_TOL)
+
+
+@pytest.mark.slow
+@pytest.mark.serial
+def test_gauss_newton_hessian_misses_the_residual_term_away_from_the_truth(
+    tmp_path,
+    seq_b1,
+    loaded_interface,
+) -> None:
+    predicted, fd_matrix = _lhc_subset_hessians(
+        tmp_path, seq_b1, loaded_interface, "gauss_newton", offset=OFF_TRUTH_OFFSET
+    )
+
+    assert np.linalg.norm(fd_matrix - predicted) > GAUSS_NEWTON_MISS_REL * np.linalg.norm(fd_matrix)
 
 
 PSB_READING_VARIANCE = (1e-4) ** 2
@@ -256,12 +331,13 @@ def _make_psb_fitter(
     exact_start_columns: tuple[str, ...] = ("x", "y", "px", "py"),
     flattop_turns: int = 256,
     validation_fraction: float = 0.1,
+    hessian: str = "true",
 ):
     """A PSB ring-3 arc-by-arc quadrupole fitter on noise-free data, and its measurement file.
 
     ``exact_start_bpms`` are never observed: their declared variance is infinite.
     """
-    from accelmo.config import OptimiserConfig
+    from accelmo.config import OptimiserConfig, TrackingParameters
     from accelmo.fitting.config import SequenceConfig
     from accelmo.machine.accelerators import PSB
     from accelmo.tracking.config.helpers import single_measurement_config
@@ -315,6 +391,7 @@ def _make_psb_fitter(
                 mad_logfile=tmp_path / "controller_psb_hessian.log", write_run_log=False
             ),
             true_strengths=magnet_strengths.copy(),
+            parameters=TrackingParameters(uncertainty_hessian=hessian),
         ),
     )
     return ctrl, measurement_file
@@ -355,9 +432,7 @@ def test_controller_worker_hessian_matches_finite_difference_for_psb_100um_varia
         fd_matrix = _finite_difference_hessian(ctrl, base_knobs, subset)
 
         ctrl.session.set_training_knobs(base_knobs)
-        total_hessian, _ = ctrl.session.stop_and_collect_uncertainty(
-            n_knobs, propagate_uncertainty=True
-        )
+        total_hessian, _ = ctrl.session.stop_and_collect_uncertainty(n_knobs).primary
         terminated = True
     finally:
         if not terminated:
@@ -392,7 +467,7 @@ def test_controller_worker_hessian_matches_finite_difference_for_psb_100um_varia
 def test_single_direction_sigma_is_the_inverse_finite_difference_normal_matrix(
     tmp_path, seq_psb, loaded_psb_interface, monkeypatch, sdir
 ) -> None:
-    """One direction with an exact start reads every point once: noise ``B`` equals normal ``A``.
+    """One direction with an exact start reads every point once: noise ``B`` equals the Gauss-Newton ``A``.
 
     The reported sigma is then ``sqrt(diag(inv(A)))`` with ``A = JᵀWJ`` from finite differences.
     Forward and backward workers sharing readings are pinned by the merge unit tests above.
@@ -408,6 +483,7 @@ def test_single_direction_sigma_is_the_inverse_finite_difference_normal_matrix(
         num_workers=1,
         num_batches=2,
         exact_start_bpms=(start_bpm if sdir > 0 else end_bpm,),
+        hessian="gauss_newton",
     )
     n_knobs = len(ctrl.machine.knob_names)
     terminated = False
@@ -417,9 +493,7 @@ def test_single_direction_sigma_is_the_inverse_finite_difference_normal_matrix(
         base_knobs = ctrl.machine.true_strengths.copy()
         fd_normal = 0.5 * _finite_difference_hessian(ctrl, base_knobs, np.arange(n_knobs))
         ctrl.session.set_training_knobs(base_knobs)
-        normal, noise = ctrl.session.stop_and_collect_uncertainty(
-            n_knobs, propagate_uncertainty=True
-        )
+        normal, noise = ctrl.session.stop_and_collect_uncertainty(n_knobs).primary
         terminated = True
     finally:
         if not terminated:
@@ -502,7 +576,7 @@ def test_reported_noise_matrix_matches_single_reading_probes(
         ctrl.start_session(ctrl.machine.initial_knobs)
         base_gradient = _collect_epoch_gradient(ctrl, base_knobs)
         ctrl.session.set_training_knobs(base_knobs)
-        _, noise = ctrl.session.stop_and_collect_uncertainty(n_knobs, propagate_uncertainty=True)
+        _, noise = ctrl.session.stop_and_collect_uncertainty(n_knobs).primary
         terminated = True
     finally:
         if not terminated:
@@ -525,3 +599,34 @@ def test_reported_noise_matrix_matches_single_reading_probes(
     _assert_matrices_close(
         noise, expected, PROBE_EXACT_REL_TOL if exact_start else PROBE_NOISY_REL_TOL
     )
+
+
+@pytest.mark.slow
+@pytest.mark.serial
+def test_recomputing_both_hessians_in_one_session_leaves_gauss_newton_unchanged(
+    tmp_path, seq_psb, loaded_psb_interface
+) -> None:
+    """Both Hessians come from one session, and the Gauss-Newton one equals its single-mode run."""
+    ctrl, _ = _make_psb_fitter(
+        tmp_path,
+        seq_psb,
+        loaded_psb_interface,
+        bpm_start_points=["BR3.BPM1L3"],
+        bpm_end_points=["BR3.BPM16L3"],
+        num_workers=1,
+        num_batches=2,
+        exact_start_bpms=("BR3.BPM1L3",),
+    )
+    knobs = ctrl.machine.true_strengths.copy()
+
+    both = ctrl.recompute_uncertainties(knobs)
+    single = ctrl.recompute_uncertainties(knobs, ("gauss_newton",))
+
+    assert list(both) == ["gauss_newton", "true"]
+    assert list(single) == ["gauss_newton"]
+    observed = [name for name, sigma in both["gauss_newton"].items() if np.isfinite(sigma)]
+    assert observed
+    for name in observed:
+        assert both["gauss_newton"][name] == single["gauss_newton"][name]
+        # noise-free data at the truth: the residual term is numerical noise only
+        np.testing.assert_allclose(both["true"][name], both["gauss_newton"][name], rtol=1e-6)
