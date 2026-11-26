@@ -34,4 +34,4 @@ runs:
         uv pip install --upgrade pip setuptools wheel
         uv pip install \
           -e ../xtrack-tools \
-          -e '.[test,tracking]'
+          -e '.[test,tracking,monitor]'
