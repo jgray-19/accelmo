@@ -17,6 +17,8 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from accelmo.config import UNCERTAINTY_HESSIANS
+from accelmo.fitting.bpm_gains import without_bpm_gains
 from accelmo.fitting.pool import WorkerPool
 from accelmo.fitting.protocol import (
     LossReply,
@@ -81,9 +83,12 @@ class TrackingSession:
         self.payload_builder = WorkerPayloadBuilder(accelerator, gain_bpms)
         self.training: WorkerPool[TrackingWorkerConfig] = WorkerPool()
         self.validation: WorkerPool[TrackingWorkerConfig] = WorkerPool()
+        #: Parameters of the MAD-NG maps (magnet knobs): no gains, and not ``pt``.
+        self.n_mad_knobs = 0
 
     def start(self, tracks: dict[int, FileTracks], initial_knobs: dict[str, float]) -> None:
         """Spawn the training and validation workers, each starting from ``initial_knobs``."""
+        self.n_mad_knobs = len([name for name in without_bpm_gains(initial_knobs) if name != "pt"])
         training_payloads, validation_payloads = self.build_payloads(tracks)
         LOGGER.debug(
             "Starting %d trn worker(s) + %d held-out val worker(s)",
@@ -304,9 +309,11 @@ class TrackingSession:
         """
         start = time.monotonic()
         requested = (self.parameters.uncertainty_hessian,) if hessians is None else tuple(hessians)
+        if unknown := set(requested) - set(UNCERTAINTY_HESSIANS):
+            raise ValueError(f"hessians must be from {UNCERTAINTY_HESSIANS}, got {sorted(unknown)}")
         skipped: dict[str, str] = {}
         if "true" in requested:
-            reason = self._true_hessian_blocker(n_knobs)
+            reason = self._true_hessian_blocker()
             if reason is not None:
                 skipped["true"] = reason
                 LOGGER.warning("True Hessian skipped, using Gauss-Newton: %s", reason)
@@ -330,12 +337,12 @@ class TrackingSession:
         LOGGER.debug("Uncertainty stage took %.1f s", seconds)
         return UncertaintyCollection(matrices, skipped, seconds)
 
-    def _true_hessian_blocker(self, n_knobs: int) -> str | None:
+    def _true_hessian_blocker(self) -> str | None:
         """Why the true Hessian cannot run on these workers, or ``None``."""
         backend = self.payload_builder.accelerator.backend
         if backend != "madng":
             return f"the {backend} backend has no second derivatives"
-        return second_order_blocker(self.training, n_knobs, self.tracking_data.num_batches)
+        return second_order_blocker(self.training, self.n_mad_knobs, self.tracking_data.num_batches)
 
     def terminate(self) -> None:
         """Kill every worker without waiting, for aborting after an error or interrupt.

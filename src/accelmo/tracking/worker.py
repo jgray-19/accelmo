@@ -28,7 +28,7 @@ from accelmo.fitting.protocol import (
 )
 from accelmo.fitting.worker import AbstractWorker
 from accelmo.tracking.dispatch.setup import TrackingWorkerConfig
-from accelmo.tracking.uncertainty import UncertaintyPart
+from accelmo.tracking.uncertainty import UncertaintyPart, eliminate_fitted_starts
 
 if TYPE_CHECKING:
     from multiprocessing.connection import Connection
@@ -716,16 +716,14 @@ class TrackingWorker(AbstractWorker[TrackingData, TrackingWorkerConfig]):
                 normal += extra_knobs
                 start += extra_start
                 start_start += extra_start_start
+            for _, jacobian, _, weight, _ in terms:
+                normal += np.einsum("pkn,pjn->kj", jacobian * weight[:, None, :], jacobian)
             if fit_starts:
-                # (particles, knobs, 4): A_ks A_ss⁻¹ of each particle
-                projection = np.linalg.solve(start_start, start).transpose(0, 2, 1)
-            if fit_starts and second_order is not None:
-                normal -= np.einsum("pkc,pcj->kj", projection, extra_start)
+                normal, projection = eliminate_fitted_starts(normal, start, start_start)
             for observable, jacobian, d_dc0, weight, _ in terms:
                 if fit_starts:
                     jacobian = jacobian - np.einsum("pkc,pcn->pkn", projection, d_dc0)
                 weighted = jacobian * weight[:, None, :]
-                normal += np.einsum("pkn,pjn->kj", weighted, jacobian)
                 noisy = weight != 0.0
                 ids.append(self.reading_ids[batch][noisy] * 4 + READING_CODES[observable])
                 sensitivities.append(-weighted.transpose(0, 2, 1)[noisy])

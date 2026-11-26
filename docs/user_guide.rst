@@ -215,6 +215,13 @@ DEBUG) to ``workers/python_worker_<id>.log`` in the run log directory. Only WARN
 and above are relayed to the main process, tagged with the worker name, so they reach the
 dashboard and the main log. A worker with its own ``python_logfile`` keeps it.
 
+.. note::
+
+   Workers are forked processes, and the warning relay reaches them only by fork (Linux, the
+   default start method up to Python 3.13). The ``spawn`` and ``forkserver`` start methods, the
+   default on macOS, Windows and Python 3.14, are not supported: a spawned worker would write its
+   own log file but its warnings would not reach the main process or the dashboard.
+
 Monitoring a fit
 ----------------
 

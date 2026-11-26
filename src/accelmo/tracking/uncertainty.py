@@ -87,6 +87,19 @@ def merge_uncertainty_parts(parts: list[UncertaintyPart], n_knobs: int) -> Uncer
     )
 
 
+def eliminate_fitted_starts(
+    normal: np.ndarray, start: np.ndarray, start_start: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """Schur complement of the fitted starts: ``(A_kk - Σ_p P_p A_sk,p, P)``.
+
+    ``normal`` is the knob block ``A_kk`` summed over particles; ``start`` ``(particles, 4, knobs)``
+    and ``start_start`` ``(particles, 4, 4)`` are each particle's full ``A_sk`` and ``A_ss``. The
+    projection ``P = A_ks A_ss⁻¹`` ``(particles, knobs, 4)`` takes a Jacobian to ``J - P ∂m/∂c0``.
+    """
+    projection = np.linalg.solve(start_start, start).transpose(0, 2, 1)
+    return normal - np.einsum("pkc,pcj->kj", projection, start), projection
+
+
 def noise_matrix(part: UncertaintyPart) -> np.ndarray:
     """``B = Σ_e σ_e² G_e G_eᵀ`` for a merged part; readings without a finite variance add nothing."""
     variances = np.where(np.isfinite(part.variances), part.variances, 0.0)
@@ -116,8 +129,8 @@ def _largest_second_order_bytes(pool: WorkerPool, n_params: int, num_batches: in
 def second_order_blocker(pool: WorkerPool, n_params: int, num_batches: int) -> str | None:
     """Why the true Hessian cannot run, or ``None`` when one worker's second-order maps fit.
 
-    ``n_params`` is an upper bound on the MAD-NG knobs. The check runs with the workers up, so
-    the free memory already excludes their first-order footprint.
+    ``n_params`` is the number of MAD-NG parameters (magnet knobs; gains live in Python). The check
+    runs with the workers up, so the free memory already excludes their first-order footprint.
     """
     largest = _largest_second_order_bytes(pool, n_params, num_batches)
     available = psutil.virtual_memory().available

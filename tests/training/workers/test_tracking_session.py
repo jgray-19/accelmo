@@ -5,6 +5,7 @@ import threading
 from typing import TYPE_CHECKING
 
 import numpy as np
+import pytest
 
 from accelmo.backend.protocol import TrackGeometry
 from accelmo.config import TrackingDataConfig, TrackingParameters, WorkerRuntime
@@ -17,7 +18,13 @@ from accelmo.tracking.data_manager import FileTracks
 from accelmo.tracking.dispatch.setup import KickPlane, TrackingWorkerConfig, plan_workers
 from accelmo.tracking.ranges import BpmRanges
 from accelmo.tracking.session import TrackingSession
-from accelmo.tracking.uncertainty import StageProgress, UncertaintyPart, drain_uncertainty
+from accelmo.tracking.uncertainty import (
+    StageProgress,
+    UncertaintyPart,
+    drain_uncertainty,
+    eliminate_fitted_starts,
+    second_order_blocker,
+)
 from accelmo.tracking.worker import PrecomputedTrackingWeights, TrackingData, TrackingWorker
 
 if TYPE_CHECKING:
@@ -351,3 +358,65 @@ def test_default_true_hessian_falls_back_to_gauss_newton_on_the_xtrack_backend(
     assert collection.skipped == {"true": "the xtrack backend has no second derivatives"}
     assert list(collection.matrices) == ["gauss_newton"]
     np.testing.assert_allclose(collection.matrices["gauss_newton"][0], np.eye(2))
+
+
+def test_fitted_start_elimination_is_the_schur_complement_of_the_full_hessian() -> None:
+    rng = np.random.default_rng(1)
+    n_particles, n_knobs, n_points = 3, 4, 12
+    jacobian = rng.normal(size=(n_particles, n_knobs, n_points))
+    d_dc0 = rng.normal(size=(n_particles, 4, n_points))
+    weight = rng.uniform(0.5, 2.0, size=(n_particles, n_points))
+    residual_kk = rng.normal(size=(n_knobs, n_knobs))
+    residual_kk += residual_kk.T
+    residual_ss = rng.normal(size=(n_particles, 4, 4))
+    residual_ss += residual_ss.swapaxes(1, 2) + 10 * np.eye(4)
+    residual_sk = rng.normal(size=(n_particles, 4, n_knobs))
+    # A = Σ w J Jᵀ (Gauss-Newton) plus the residual term, as the true Hessian has it
+    a_kk = np.einsum("pkn,pjn,pn->kj", jacobian, jacobian, weight) + residual_kk
+    a_sk = np.einsum("pkn,pcn,pn->pck", jacobian, d_dc0, weight) + residual_sk
+    a_ss = np.einsum("pcn,pdn,pn->pcd", d_dc0, d_dc0, weight) + residual_ss
+
+    reduced, projection = eliminate_fitted_starts(a_kk, a_sk, a_ss)
+
+    expected = a_kk - sum(a_sk[p].T @ np.linalg.solve(a_ss[p], a_sk[p]) for p in range(n_particles))
+    np.testing.assert_allclose(reduced, expected, rtol=1e-12)
+    np.testing.assert_allclose(projection, np.linalg.solve(a_ss, a_sk).transpose(0, 2, 1))
+
+
+def _session_with_pool(tmp_path: Path, backend: str = "madng") -> TrackingSession:
+    seq_file = tmp_path / "psb.seq"
+    seq_file.write_text("! placeholder sequence\n")
+    session = TrackingSession(
+        PSB(ring=3, sequence_file=seq_file, backend=backend),
+        WorkerRuntime(1),
+        TrackingDataConfig(1),
+        TrackingParameters(),
+        turn_batches=[[1]],
+        validation_turn_batches=[],
+        file_turn_map={1: 0},
+        worker_plans={},
+        machine_deltaps=[0.0],
+    )
+    session.training = _uncertainty_pool([0], [[Ack(0), {}]])
+    return session
+
+
+def test_unknown_hessian_names_are_rejected_before_any_worker_is_touched(tmp_path: Path) -> None:
+    session = _session_with_pool(tmp_path)
+
+    with pytest.raises(ValueError, match="exact"):
+        session.stop_and_collect_uncertainty(2, ("exact",))
+
+    assert session.training.workers[0].join_calls == 0
+
+
+def test_second_order_preflight_counts_magnet_knobs_not_gains(tmp_path: Path) -> None:
+    from accelmo.fitting.bpm_gains import bpm_gain_names
+
+    session = _session_with_pool(tmp_path)
+    gains = dict.fromkeys(bpm_gain_names([f"BPM{i}" for i in range(50000)]), 0.0)
+    session.n_mad_knobs = 2
+
+    # 100000 gains and two magnet knobs: the maps of two knobs fit in memory
+    assert second_order_blocker(session.training, len(gains) + 2, 1) is not None
+    assert session._true_hessian_blocker() is None

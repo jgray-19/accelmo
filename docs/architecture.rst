@@ -61,7 +61,9 @@ Every fit writes a run log (:mod:`accelmo.runlog`) under
 
 Workers log to ``workers/python_worker_<id>.log`` in the same directory
 (:mod:`accelmo.fitting.worker_logging`); their warnings are relayed to the main process.
-The fitters feed a live terminal view, :class:`~accelmo.dashboard.FitDashboard`.
+The fitters feed a live terminal view, :class:`~accelmo.dashboard.FitDashboard`. The worker pool
+assumes the ``fork`` start method; the warning relay is handed to workers through the forked
+process state (:func:`~accelmo.fitting.worker_logging.start_relay` runs before the fork).
 
 Optics are not stored. :mod:`accelmo.monitor` recomputes them from the knobs on demand,
 caches them, and serves live plots of a running or finished fit
