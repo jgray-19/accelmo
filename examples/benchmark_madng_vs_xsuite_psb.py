@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["accelmo[tracking]", "xtrack>=0.118.6", "xtrack-tools"]
+# dependencies = ["accelmo[tracking]>=0.0.2", "xtrack>=0.118.6", "xtrack-tools"]
 # [tool.uv.sources]
 # xtrack-tools = { git = "https://github.com/jgray-19/xtrack_tools", rev = "0e6779d35546db12182a99d25c1cba60d395c90e" }
 # ///

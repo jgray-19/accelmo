@@ -9,10 +9,12 @@ from __future__ import annotations
 
 import logging
 import re
+import warnings
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
+import xtrack as xt
 from xtrack_tools.env import create_xsuite_environment
 
 from accelmo.machine.machine_state import MachineState, resolve_machine_state
@@ -21,11 +23,17 @@ from accelmo.machine.patterns import lua_to_regex
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
-    import xtrack as xt
-
     from accelmo.machine.accelerators import Accelerator
 
 LOGGER = logging.getLogger(__name__)
+
+# Worker output (progress bars, xtrack's own deprecated names) would print over the dashboard.
+xt.settings.progress_indicator = "suppress"
+warnings.filterwarnings(
+    "ignore",
+    message=r"(SRotation|XRotation|YRotation|XYShift) is deprecated",
+    category=FutureWarning,
+)
 
 QUAD_MODEL = "mat-kick-mat-exact"
 QUAD_INTEGRATOR = "yoshida-6"

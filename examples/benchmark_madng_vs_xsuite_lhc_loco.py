@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["accelmo[tracking]", "xtrack>=0.118.6", "xtrack-tools"]
+# dependencies = ["accelmo[tracking]>=0.0.2", "xtrack>=0.118.6", "xtrack-tools"]
 # [tool.uv.sources]
 # xtrack-tools = { git = "https://github.com/jgray-19/xtrack_tools", rev = "0e6779d35546db12182a99d25c1cba60d395c90e" }
 # ///
@@ -43,7 +43,6 @@ os.environ.setdefault("OMP_NUM_THREADS", "1")
 
 import argparse
 import json
-import logging
 import time
 from pathlib import Path
 
@@ -55,6 +54,7 @@ from accelmo.backend.madng import MadInterface
 from accelmo.backend.xtrack.model import XtrackModel
 from accelmo.config import WorkerRuntime
 from accelmo.fitting.config import OutputConfig, SequenceConfig
+from accelmo.logs import configure_logging
 from accelmo.machine.accelerators import LHC
 from accelmo.poco import ClosedOrbitFitter, ClosedOrbitMeasurement, ClosedOrbitSeries
 from accelmo.poco.fitter import LevenbergMarquardtConfig
@@ -73,8 +73,6 @@ NUM_WORKERS = 16
 SEED = 1
 TRUTH_QUAD_KICKS, TRUTH_BEND_KICKS, TRUTH_SEXTUPOLE_KICKS = 112, 1, 128
 MIN_BETA_QUANTILE = 0.25
-
-LOGGER = logging.getLogger(__name__)
 
 
 def accelerator(backend: str) -> LHC:
@@ -279,8 +277,8 @@ def main() -> None:
     parser.add_argument("--workers", type=int, default=NUM_WORKERS)
     parser.add_argument("--max-iterations", type=int, default=MAX_ITERATIONS)
     args = parser.parse_args()
-    logging.basicConfig(level=logging.WARNING)
     args.output_dir.mkdir(parents=True, exist_ok=True)
+    configure_logging(args.output_dir / "logs" / "run.log")
 
     table, tunes = nominal_correctors()
     selected = {
@@ -301,11 +299,9 @@ def main() -> None:
 
     results = {}
     for backend in args.backends:
-        print(f"phase {backend} fit_start {time.time():.0f}", flush=True)
         fitted, timing = fit(
             backend, orbits, correctors, sigmas, tune_state, args.workers, args.max_iterations
         )
-        print(f"phase {backend} fit_end {time.time():.0f}", flush=True)
         error = np.array([fitted[name] for name in knob_names]) - truth_vector
         results[backend] = {
             **timing,

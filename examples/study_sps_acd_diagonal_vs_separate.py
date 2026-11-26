@@ -1,3 +1,9 @@
+# /// script
+# requires-python = ">=3.12"
+# dependencies = ["accelmo[tracking]>=0.0.2", "matplotlib", "xtrack>=0.118.6", "xtrack-tools"]
+# [tool.uv.sources]
+# xtrack-tools = { git = "https://github.com/jgray-19/xtrack_tools", rev = "0e6779d35546db12182a99d25c1cba60d395c90e" }
+# ///
 """SPS AC-dipole study: both planes driven together vs each plane separately.
 
 The SPS BPMs measure one plane each (BPH horizontal, BPV vertical). This study
@@ -16,7 +22,7 @@ per case), ``beta_beating.png`` and ``quadrupole_errors.png``.
 Example:
 
 ```bash
-../accpy/bin/python examples/study_sps_acd_diagonal_vs_separate.py \\
+uv run examples/study_sps_acd_diagonal_vs_separate.py \\
   --output-dir analysis/sps_acd_diagonal_vs_separate
 ```
 """
@@ -25,7 +31,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import logging
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -45,11 +50,10 @@ from xtrack_tools.monitors import process_tracking_data
 from accelmo.backend.madng.interface import MadInterface
 from accelmo.config import OptimiserConfig, TrackingDataConfig, WorkerRuntime
 from accelmo.fitting.config import OutputConfig, SequenceConfig
+from accelmo.logs import configure_logging
 from accelmo.machine.accelerators import SPS
 from accelmo.tracking.config.models import MeasurementConfig, MeasurementDetails
 from accelmo.tracking.fitter import ACDMarkerFitter, FitterOptions
-
-LOGGER = logging.getLogger(__name__)
 
 SEQUENCE_FILE = Path(__file__).resolve().parents[1] / "tests" / "data" / "sequences" / "sps.seq"
 KINETIC_ENERGY = 450.0
@@ -326,7 +330,8 @@ def main() -> None:
     parser.add_argument("--epochs", type=int, default=300, help="Optimiser epochs per fit.")
     parser.add_argument("--seed", type=int, default=42, help="Quadrupole error seed.")
     args = parser.parse_args()
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+    configure_logging(args.output_dir / "logs" / "run.log")
 
     summary = run_study(
         args.output_dir.resolve(),
@@ -334,7 +339,7 @@ def main() -> None:
         max_epochs=args.epochs,
         seed=args.seed,
     )
-    LOGGER.info("SPS ACD study summary:\n%s", summary.to_string(index=False))
+    print(f"SPS ACD study summary:\n{summary.to_string(index=False)}")
 
 
 if __name__ == "__main__":

@@ -242,3 +242,6 @@ tests/data/sequences/*.mad
 /test_run_*.txt
 scratch_tmp
 logs/
+
+# Local reports
+/docs/reports/
