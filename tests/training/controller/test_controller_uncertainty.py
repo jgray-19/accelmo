@@ -145,14 +145,23 @@ def _assert_matrices_close(measured: np.ndarray, predicted: np.ndarray, rel_tol:
 
 #: Relative offset of the subset knobs from the truth in the off-truth Hessian test.
 OFF_TRUTH_OFFSET = 0.05
+#: Absolute offset of the fitted energy ``pt`` from the truth in the energy Hessian test.
+PT_OFFSET = 1e-4
 
 
 def _lhc_subset_hessians(
-    tmp_path, seq_b1, loaded_interface, hessian: str, offset: float
+    tmp_path,
+    seq_b1,
+    loaded_interface,
+    hessian: str,
+    offset: float,
+    *,
+    optimise_energy: bool = False,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """``(2 A, finite-difference d(gradient)/d(knob))`` of three central knobs, ``offset`` off the truth.
+    """``(2 A, finite-difference d(gradient)/d(knob))`` of three knobs, ``offset`` off the truth.
 
-    The three knobs are moved by ``offset`` of their value, so the residuals are not zero there.
+    The three knobs are two central ones, moved by ``offset`` of their value, and with
+    ``optimise_energy`` the energy ``pt``, moved by ``PT_OFFSET``; the residuals are not zero there.
     """
     from accelmo.config import TrackingParameters
     from accelmo.fitting.config import SequenceConfig
@@ -185,6 +194,7 @@ def _lhc_subset_hessians(
             kinetic_energy=6800,
             sequence_file=seq_b1,
             errors={"quad": {"k1"}},
+            optimise_energy=optimise_energy,
         ),
         _make_optimiser_config_quad(),
         WorkerRuntime(num_workers=4),
@@ -211,10 +221,16 @@ def _lhc_subset_hessians(
         base_knobs = ctrl.machine.true_strengths.copy()
         n_knobs = len(ctrl.machine.knob_names)
         centre = n_knobs // 2
-        subset = np.array([centre - 1, centre, centre + 1], dtype=int)
+        if optimise_energy:
+            assert ctrl.machine.knob_names[-1] == "pt"
+            subset = np.array([centre - 1, centre, n_knobs - 1], dtype=int)
+            base_knobs["pt"] = base_knobs.get("pt", 0.0) + PT_OFFSET
+        else:
+            subset = np.array([centre - 1, centre, centre + 1], dtype=int)
         for knob_idx in subset:
             name = ctrl.machine.knob_names[knob_idx]
-            base_knobs[name] += offset * abs(base_knobs[name])
+            if name != "pt":
+                base_knobs[name] += offset * abs(base_knobs[name])
 
         fd_matrix = _finite_difference_hessian(ctrl, base_knobs, subset)
 
@@ -254,6 +270,20 @@ def test_true_hessian_matches_finite_difference_away_from_the_truth(
 ) -> None:
     predicted, fd_matrix = _lhc_subset_hessians(
         tmp_path, seq_b1, loaded_interface, "true", offset=OFF_TRUTH_OFFSET
+    )
+
+    _assert_matrices_close(fd_matrix, predicted, LHC_HESSIAN_REL_TOL)
+
+
+@pytest.mark.slow
+@pytest.mark.serial
+def test_true_hessian_with_the_fitted_energy_matches_finite_difference(
+    tmp_path,
+    seq_b1,
+    loaded_interface,
+) -> None:
+    predicted, fd_matrix = _lhc_subset_hessians(
+        tmp_path, seq_b1, loaded_interface, "true", offset=OFF_TRUTH_OFFSET, optimise_energy=True
     )
 
     _assert_matrices_close(fd_matrix, predicted, LHC_HESSIAN_REL_TOL)

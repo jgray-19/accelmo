@@ -323,3 +323,31 @@ def test_drain_uncertainty_keeps_each_hessian_apart_and_counts_progress() -> Non
     np.testing.assert_allclose(matrices["true"][1], 0.1 * 4.0 * np.ones((2, 2)))
     assert progress.done == 2
     assert updates[-1] == (2, 2)
+
+
+def test_default_true_hessian_falls_back_to_gauss_newton_on_the_xtrack_backend(
+    tmp_path: Path,
+) -> None:
+    seq_file = tmp_path / "psb.seq"
+    seq_file.write_text("! placeholder sequence\n")
+    parameters = TrackingParameters()
+    assert parameters.uncertainty_hessian == "true"
+    session = TrackingSession(
+        PSB(ring=3, sequence_file=seq_file, backend="xtrack"),
+        WorkerRuntime(1),
+        TrackingDataConfig(1),
+        parameters,
+        turn_batches=[[1]],
+        validation_turn_batches=[],
+        file_turn_map={1: 0},
+        worker_plans={},
+        machine_deltaps=[0.0],
+    )
+    part = UncertaintyPart(np.eye(2), np.array([7]), np.ones((1, 2)), np.array([0.1]))
+    session.training = _uncertainty_pool([0], [[Ack(0), {"gauss_newton": part}]])
+
+    collection = session.stop_and_collect_uncertainty(2)
+
+    assert collection.skipped == {"true": "the xtrack backend has no second derivatives"}
+    assert list(collection.matrices) == ["gauss_newton"]
+    np.testing.assert_allclose(collection.matrices["gauss_newton"][0], np.eye(2))
