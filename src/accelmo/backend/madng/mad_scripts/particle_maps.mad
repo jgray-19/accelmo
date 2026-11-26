@@ -1,0 +1,12 @@
+-- One DA map per particle of every batch, at the starts in init_coords and init_pts.
+function make_particle_maps()
+    da_x0_c = table.new(num_batches, 0)
+    for i=1,num_batches do
+        da_x0_c[i] = table.new(batch_size, 0)
+        for j=1,batch_size do
+            da_x0_c[i][j] = da_x0_base:copy()
+            da_x0_c[i][j]:set0(init_coords[i][j])
+        end
+    end
+end
+make_particle_maps()
