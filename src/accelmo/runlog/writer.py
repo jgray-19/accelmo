@@ -16,6 +16,7 @@ STAGE_FILE = "stage.json"
 HISTORY_FILE = "history.jsonl"
 KNOBS_FILE = "knobs.f64"
 RESULT_FILE = "result.json"
+UNCERTAINTY_FILE = "uncertainty.json"
 
 #: The step under which :meth:`RunLog.begin` records the starting knobs.
 START_STEP = -1
@@ -143,6 +144,10 @@ class RunLog:
     def finish(self, **summary: Any) -> None:
         """Record how the fit ended (stop reason, best loss, ...)."""
         write_json(self.directory / RESULT_FILE, {"finished": time.time(), **summary})
+
+    def record_uncertainty(self, **state: Any) -> None:
+        """Replace the uncertainty stage's state: the fitted knobs, progress, timing, the Hessian used."""
+        write_json(self.directory / UNCERTAINTY_FILE, {"updated": time.time(), **state})
 
     def close(self) -> None:
         """Close the history and knob files."""

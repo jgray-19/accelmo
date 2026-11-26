@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Generic, TypeVar
 
 from accelmo.fitting.protocol import STOP, WorkerChannels
+from accelmo.fitting.worker_logging import start_relay
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -40,6 +41,7 @@ class WorkerPool(Generic[MetadataT]):
         self, worker_class: Callable[..., mp.Process], worker_id: int, *args: object
     ) -> Connection:
         """Start ``worker_class(child_conn, worker_id, *args)`` and return the parent pipe end."""
+        start_relay()
         parent, child = mp.Pipe()
         worker = worker_class(child, worker_id, *args)
         worker.start()

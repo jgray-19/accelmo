@@ -135,12 +135,9 @@ class DegeneracyReport:
             lines.append("  unconstrained knob combinations (weakest first):")
             for i, direction in enumerate(self.degenerate_directions[:max_directions]):
                 terms = ", ".join(
-                    f"{coeff:+.2f}*{name}"
-                    for name, coeff in direction.contributions[:max_knobs]
+                    f"{coeff:+.2f}*{name}" for name, coeff in direction.contributions[:max_knobs]
                 )
-                lines.append(
-                    f"    [{i}] rel_eig={direction.relative_eigenvalue:.2e}: {terms}"
-                )
+                lines.append(f"    [{i}] rel_eig={direction.relative_eigenvalue:.2e}: {terms}")
             hidden = len(self.degenerate_directions) - max_directions
             if hidden > 0:
                 lines.append(f"    ... (+{hidden} more directions)")
@@ -165,11 +162,7 @@ def _extract_contributions(
         return []
     cutoff = contribution_threshold * peak
     order = np.argsort(magnitudes)[::-1]
-    return [
-        (knob_names[i], float(components[i]))
-        for i in order
-        if magnitudes[i] >= cutoff
-    ]
+    return [(knob_names[i], float(components[i])) for i in order if magnitudes[i] >= cutoff]
 
 
 def analyse_degeneracy(
@@ -210,9 +203,7 @@ def analyse_degeneracy(
         raise ValueError(f"normal_matrix must be square, got shape {matrix.shape}")
     n = matrix.shape[0]
     if len(knob_names) != n:
-        raise ValueError(
-            f"knob_names has {len(knob_names)} entries but normal_matrix is {n}x{n}"
-        )
+        raise ValueError(f"knob_names has {len(knob_names)} entries but normal_matrix is {n}x{n}")
     if not np.all(np.isfinite(matrix)):
         raise ValueError("normal_matrix contains non-finite entries (NaN or inf)")
     knob_names = list(knob_names)
@@ -275,9 +266,7 @@ def analyse_degeneracy(
         degenerate_directions.append(
             DegenerateDirection(
                 eigenvalue=float(eigenvalues[idx]),
-                relative_eigenvalue=(
-                    float(clamped[idx] / lambda_max) if lambda_max > 0.0 else 0.0
-                ),
+                relative_eigenvalue=(float(clamped[idx] / lambda_max) if lambda_max > 0.0 else 0.0),
                 components=components.copy(),
                 contributions=contributions,
             )

@@ -9,7 +9,7 @@ import numpy as np
 from accelmo.backend.protocol import TrackGeometry
 from accelmo.config import TrackingDataConfig, TrackingParameters, WorkerRuntime
 from accelmo.fitting.pool import WorkerPool
-from accelmo.fitting.protocol import STOP, Ack
+from accelmo.fitting.protocol import STOP, Ack, UncertaintyProgress
 from accelmo.fitting.worker import WorkerConfig
 from accelmo.machine.accelerators import PSB
 from accelmo.tracking.config.tracking import TrackingPlan
@@ -17,7 +17,7 @@ from accelmo.tracking.data_manager import FileTracks
 from accelmo.tracking.dispatch.setup import KickPlane, TrackingWorkerConfig, plan_workers
 from accelmo.tracking.ranges import BpmRanges
 from accelmo.tracking.session import TrackingSession
-from accelmo.tracking.uncertainty import UncertaintyPart, drain_uncertainty
+from accelmo.tracking.uncertainty import StageProgress, UncertaintyPart, drain_uncertainty
 from accelmo.tracking.worker import PrecomputedTrackingWeights, TrackingData, TrackingWorker
 
 if TYPE_CHECKING:
@@ -72,15 +72,17 @@ def _start_pipe_worker(
 ) -> threading.Thread:
     """Start a daemon thread that acts as a fake worker over a real pipe.
 
-    The thread receives one binary message per response (via recv_bytes), then sends
-    the corresponding response back via send(). This matches the WorkerChannels
-    protocol where the parent sends via send_bytes and receives via recv.
+    The thread receives one binary message per entry of ``responses`` (via recv_bytes), then
+    sends the reply back via send(); an entry that is a list is several replies to that one
+    message (a worker's progress messages and final payload follow the ``STOP``). This matches
+    the WorkerChannels protocol where the parent sends via send_bytes and receives via recv.
     """
 
     def _run() -> None:
         for response in responses:
             child_conn.recv_bytes()
-            child_conn.send(response)
+            for reply in response if isinstance(response, list) else [response]:
+                child_conn.send(reply)
 
     thread = threading.Thread(target=_run, daemon=True)
     thread.start()
@@ -249,9 +251,9 @@ def test_drain_uncertainty_merges_shared_readings_per_file() -> None:
         UncertaintyPart(2.0 * np.eye(2), np.array([8]), g_c[None, :], np.array([0.2])),
         UncertaintyPart(3.0 * np.eye(2), np.array([7]), g_b[None, :], np.array([0.1])),
     ]
-    pool = _uncertainty_pool([0, 1, 0], [[part] for part in parts])
+    pool = _uncertainty_pool([0, 1, 0], [[Ack(0), {"gauss_newton": part}] for part in parts])
 
-    normal, noise = drain_uncertainty(pool, 2, propagate_uncertainty=True)
+    normal, noise = drain_uncertainty(pool, 2, ("gauss_newton",))["gauss_newton"]
 
     shared = g_a + g_b
     np.testing.assert_allclose(normal, 6.0 * np.eye(2))
@@ -295,10 +297,29 @@ def test_pool_stop_does_not_wait_for_final_payload() -> None:
 
 
 def test_drain_uncertainty_disables_the_hessian_before_shutdown() -> None:
-    # Two messages: ack for set_uncertainty_mode, then the empty part on termination
-    pool = _uncertainty_pool([0], [[Ack(0), UncertaintyPart.empty(2)]])
+    # Two messages: ack for the mode, then the empty reply on termination
+    pool = _uncertainty_pool([0], [[Ack(0), {}]])
 
-    total, _ = drain_uncertainty(pool, 2, propagate_uncertainty=False)
-
-    np.testing.assert_allclose(total, np.zeros((2, 2), dtype=np.float64))
+    assert drain_uncertainty(pool, 2, ()) == {}
     assert pool.workers[0].join_calls == 1
+
+
+def test_drain_uncertainty_keeps_each_hessian_apart_and_counts_progress() -> None:
+    gauss_newton = UncertaintyPart(np.eye(2), np.array([7]), np.ones((1, 2)), np.array([0.1]))
+    true = UncertaintyPart(3.0 * np.eye(2), np.array([7]), 2 * np.ones((1, 2)), np.array([0.1]))
+    after_stop = [
+        UncertaintyProgress(0),
+        UncertaintyProgress(0),
+        {"gauss_newton": gauss_newton, "true": true},
+    ]
+    pool = _uncertainty_pool([0], [[Ack(0), after_stop]])
+    updates: list[tuple[int, int]] = []
+    progress = StageProgress(2, lambda done, total, *_: updates.append((done, total)))
+
+    matrices = drain_uncertainty(pool, 2, ("gauss_newton", "true"), 2, progress)
+
+    np.testing.assert_allclose(matrices["gauss_newton"][0], np.eye(2))
+    np.testing.assert_allclose(matrices["true"][0], 3.0 * np.eye(2))
+    np.testing.assert_allclose(matrices["true"][1], 0.1 * 4.0 * np.ones((2, 2)))
+    assert progress.done == 2
+    assert updates[-1] == (2, 2)

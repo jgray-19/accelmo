@@ -72,7 +72,7 @@ correct_elm = nil
     """)
     if iface.mad.recv() != 1:
         raise ValueError(f"Failed to replace start element {start_bpm} with a marker")
-    LOGGER.info("Replaced non-BPM start element with cycle marker: %s", start_bpm)
+    LOGGER.debug("Replaced non-BPM start element with cycle marker: %s", start_bpm)
 
 
 def _unique_names(names: Iterable[str]) -> list[str]:
@@ -176,7 +176,7 @@ end
             f"sequence: {preview}"
         )
 
-    LOGGER.info("Applied %d b2 dipole error entries from %s", len(applied), b2_errors)
+    LOGGER.debug("Applied %d b2 dipole error entries from %s", len(applied), b2_errors)
 
 
 class MadInterface(KnobMadInterface):
@@ -246,7 +246,7 @@ class MadInterface(KnobMadInterface):
         if machine_state is not None:
             self._set_machine_state(machine_state)
         else:
-            LOGGER.info("Skipping machine state (not provided)")
+            LOGGER.debug("Skipping machine state (not provided)")
 
         if create_knobs:
             if accelerator.has_any_optimisation():
@@ -308,7 +308,7 @@ class MadInterface(KnobMadInterface):
         anchor_markers = _unique_names(marker_names or [])
         if mode == "acd":
             acd_before, acd_after = self.insert_acd_markers()
-            LOGGER.info("Installed ACD markers: before=%s, after=%s", acd_before, acd_after)
+            LOGGER.debug("Installed ACD markers: before=%s, after=%s", acd_before, acd_after)
             anchor_markers = _unique_names([*anchor_markers, acd_before, acd_after])
         elif mode == "kicker":
             if not anchor_markers:
@@ -334,7 +334,7 @@ class MadInterface(KnobMadInterface):
         """
         _ensure_cycleable_start_element(self, start_marker, self.all_bpms)
         self.cycle_sequence(marker_name=start_marker)
-        LOGGER.info("Cycled sequence to start at: %s", start_marker)
+        LOGGER.debug("Cycled sequence to start at: %s", start_marker)
 
     @staticmethod
     def _resolve_mad_stdout(
@@ -346,7 +346,7 @@ class MadInterface(KnobMadInterface):
                 LOGGER.warning(
                     "MAD logfile specified, but discard_mad_output is True. MAD output will be logged."
                 )
-            LOGGER.info(f"MAD logfile set to: {mad_logfile.absolute()}")
+            LOGGER.debug("MAD logfile set to: %s", mad_logfile.absolute())
             return mad_logfile, True
         if discard_mad_output:
             return "/dev/null", True
@@ -366,18 +366,18 @@ class MadInterface(KnobMadInterface):
     def recount_bpms(self) -> None:
         """Refresh ``all_bpms`` and ``bpms_in_range`` (after a cycle)."""
         self.all_bpms, self.bpms_in_range = self.get_bpm_list(self.bpm_range)
-        LOGGER.info("Counted %d BPMs in range %s", len(self.bpms_in_range), self.bpm_range)
+        LOGGER.debug("Counted %d BPMs in range %s", len(self.bpms_in_range), self.bpm_range)
 
     def make_all_monitors_thin(self, monitors: list[str], observe_after: bool = True) -> None:
         """Replace monitor elements with thin observation markers."""
         self.make_elements_thin(monitors, observe_after=observe_after, require_kind="monitor")
-        LOGGER.info("Replaced %d monitor BPMs with thin observation markers", len(monitors))
+        LOGGER.debug("Replaced %d monitor BPMs with thin observation markers", len(monitors))
 
     def _set_machine_state(self, machine_state: MachineState) -> None:
         """Put the model in *machine_state* (see :mod:`accelmo.machine.machine_state`)."""
         state = resolve_machine_state(machine_state)
         set_vars(self.mad, state)
-        LOGGER.info("Set %d machine-state entries", len(state))
+        LOGGER.debug("Set %d machine-state entries", len(state))
 
     def apply_initial_model_values(self, values: dict[str, float] | None) -> None:
         """Apply a full initial machine-state map without changing the trainable set."""
@@ -537,7 +537,7 @@ local counts = {{}}
             keep = set(self.accelerator.custom_knobs_to_optimise)
             pairs = [(k, s) for k, s in zip(knob_names_all, elem_spos_all) if k in keep]
             knob_names_all, elem_spos_all = (list(x) for x in zip(*pairs)) if pairs else ([], [])
-            LOGGER.info(
+            LOGGER.debug(
                 f"Filtered to {len(knob_names_all)} knobs based on custom_knobs_to_optimise"
             )
 
@@ -547,12 +547,12 @@ local counts = {{}}
         self.mad["knob_names"] = self.knob_names
 
         if self.elem_spos:
-            LOGGER.info(
+            LOGGER.debug(
                 f"Created {len(self.knob_names)} knobs from {self.elem_spos[0]} to {self.elem_spos[-1]}"
             )
-            LOGGER.debug(f"Knob names: {self.knob_names}")
+            LOGGER.debug("Knob names: %s", self.knob_names)
         else:
-            LOGGER.info("No knobs created")
+            LOGGER.debug("No knobs created")
 
     def _set_multipole_perturbation(
         self,
@@ -597,4 +597,4 @@ local counts = {{}}
         commands = [f"loaded_sequence['{n}'] = {v}" for n, v in knob_values.items()]
         if commands:
             self.mad.send("\n".join(commands))
-        LOGGER.info(f"Updated {len(commands)} knobs from {len(knob_values)} provided")
+        LOGGER.debug("Updated %d knobs from %d provided", len(commands), len(knob_values))

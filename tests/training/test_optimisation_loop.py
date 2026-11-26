@@ -243,57 +243,54 @@ def test_epoch_end_hook_receives_updated_knobs() -> None:
     assert seen_knobs[0] != 0.0
 
 
-def test_epoch_end_hook_note_is_appended_to_the_epoch_log_line(caplog) -> None:
-    """What the hook returns lands on that epoch's own log line.
+def _dashboard_run(hook, n_epochs: int) -> str:
+    """Everything the dashboard drew while a loop of ``n_epochs`` ran with ``hook``."""
+    import io
+
+    from rich.console import Console
+
+    from accelmo.dashboard import FitDashboard
+
+    stream = io.StringIO()
+    dashboard = FitDashboard(
+        "test fit", console=Console(file=stream, force_terminal=True, width=120)
+    )
+    dashboard.begin_fit(
+        max_epochs=n_epochs, n_points=1, n_params=0, start_knobs={"k1": 0.0}, knob_sigmas={}
+    )
+    loop = _make_loop(["k1"], max_epochs=n_epochs)
+    with dashboard:
+        loop.run(
+            {"k1": 0.0},
+            _make_channels(1, n_epochs),
+            n_points=1,
+            dashboard=dashboard,
+            epoch_end_hook=hook,
+        )
+    return stream.getvalue()
+
+
+def test_epoch_end_hook_note_is_shown_on_that_epochs_status_row() -> None:
+    """What the hook returns appears on the dashboard row of the epoch that produced it.
 
     A hook that changes the run -- refreshing the workers' initial conditions --
     otherwise reports into a second stream the reader has to interleave with the
     losses by hand, which is exactly the comparison being made.
     """
-    import logging
-
-    n_epochs, n_batches = 2, 1
-    loop = _make_loop(["k1"], max_epochs=n_epochs)
-
     notes = iter(["dic=1.00e-09", "dic=2.00e-09"])
 
-    def hook(_knobs: dict[str, float], _best: dict[str, float]) -> str:
-        return next(notes)
+    text = _dashboard_run(lambda _knobs, _best: next(notes), 2)
 
-    with caplog.at_level(logging.INFO, logger="accelmo.tracking.sgd.loop"):
-        loop.run(
-            {"k1": 0.0},
-            _make_channels(1, n_epochs * n_batches),
-            n_points=1,
-            epoch_end_hook=hook,
-        )
-
-    epoch_lines = [record.getMessage() for record in caplog.records if "Ep " in record.getMessage()]
-    assert len(epoch_lines) == n_epochs
-    assert "dic=1.00e-09" in epoch_lines[0]
-    assert "dic=2.00e-09" in epoch_lines[1]
-    # Placed between the existing fields, not tacked past the [b]/[s] markers.
-    assert epoch_lines[0].index("dic=") < epoch_lines[0].index("lr=")
+    assert text.index("dic=1.00e-09") < text.index("dic=2.00e-09")
 
 
-def test_epoch_line_omits_the_note_when_the_hook_returns_none(caplog) -> None:
+def test_status_row_omits_the_note_when_the_hook_returns_none() -> None:
     """A hook that did nothing this epoch must not leave an empty field behind."""
-    import logging
+    text = _dashboard_run(lambda _knobs, _best: None, 1)
 
-    loop = _make_loop(["k1"], max_epochs=1)
-
-    with caplog.at_level(logging.INFO, logger="accelmo.tracking.sgd.loop"):
-        loop.run(
-            {"k1": 0.0},
-            _make_channels(1, 1),
-            n_points=1,
-            epoch_end_hook=lambda _knobs, _best: None,
-        )
-
-    epoch_lines = [record.getMessage() for record in caplog.records if "Ep " in record.getMessage()]
-    assert epoch_lines
-    assert ", ," not in epoch_lines[0]
-    assert "dic=" not in epoch_lines[0]
+    assert "dic=" not in text
+    assert "None" not in text
+    assert "grad" in text
 
 
 def test_epoch_end_hook_none_does_not_raise() -> None:

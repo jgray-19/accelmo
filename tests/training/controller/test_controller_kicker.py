@@ -152,7 +152,8 @@ def test_fitted_start_uncertainty_is_the_marginal_of_the_joint_fit(
 
     One noise-free kicker track: every reading is used once, so the knob covariance is the knob
     block of the inverse joint (knobs + start) normal matrix. The measured start variances
-    must not enter.
+    must not enter. Gauss-Newton is pinned: ``lm_hessian`` is the Gauss-Newton Hessian, which
+    the true Hessian differs from by the residual term.
     """
     ctrl, _truth = _build_kicker_controller(
         tmp_path=tmp_path,
@@ -160,6 +161,7 @@ def test_fitted_start_uncertainty_is_the_marginal_of_the_joint_fit(
         loaded_psb_interface=loaded_psb_interface,
         flattop_turns=4,
         fit_start_coords=True,
+        uncertainty_hessian="gauss_newton",
     )
     result = ctrl.run()
     assert result.diagnostics.converged
@@ -188,7 +190,7 @@ def test_knob_prior_bounds_the_reported_uncertainty(
     """A Gaussian knob prior is information: the posterior sigma cannot exceed its width.
 
     Fitted starts: every reading is used once and none carries start noise, so the
-    covariance is ``(A + P)⁻¹`` with ``P = 1/width²``.
+    covariance is ``(A + P)⁻¹`` with ``P = 1/width²``, ``A`` the Gauss-Newton normal matrix.
     """
     free, _ = _build_kicker_controller(
         tmp_path=tmp_path,
@@ -196,6 +198,7 @@ def test_knob_prior_bounds_the_reported_uncertainty(
         loaded_psb_interface=loaded_psb_interface,
         flattop_turns=4,
         fit_start_coords=True,
+        uncertainty_hessian="gauss_newton",
     )
     free_result = free.run()
     data_sigma = np.array([free_result.uncertainties[name] for name in free.knob_names])
@@ -209,6 +212,7 @@ def test_knob_prior_bounds_the_reported_uncertainty(
         loaded_psb_interface=loaded_psb_interface,
         flattop_turns=4,
         fit_start_coords=True,
+        uncertainty_hessian="gauss_newton",
         knob_sigmas={"dk1l": width},
     )
     result = ctrl.run()

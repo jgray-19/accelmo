@@ -298,7 +298,7 @@ class DataManager:
         Bunch structure comes from the ``bunch_number`` column.
         """
         sources = list(self.measurement_files)
-        LOGGER.info("Loading %d measurement file(s)...", len(sources))
+        LOGGER.debug("Loading %d measurement file(s)...", len(sources))
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=len(sources)) as pool:
             frames = list(pool.map(lambda s: _read_parquet(s, self.observed_markers), sources))
@@ -331,7 +331,7 @@ class DataManager:
             self.file_map.update(dict.fromkeys((int(t) for t in turns), file_idx))
 
         self.available_turns = sorted(self.file_map)
-        LOGGER.info(
+        LOGGER.debug(
             "Loaded track data: %s",
             ", ".join(
                 f"file_{idx}={len(t.turns)} turns, {len(t.markers)} markers ({t.kick_plane})"
@@ -359,7 +359,7 @@ class DataManager:
     def prepare_turn_batches(self, workers_per_batch: int) -> None:
         """Split the turns into training and validation batches; one training batch fans out to
         at most ``workers_per_batch`` workers."""
-        LOGGER.info("Preparing turn batches for worker distribution")
+        LOGGER.debug("Preparing turn batches for worker distribution")
 
         self.boundary_turns_by_file, self.available_turns = (
             self.tracking_plan.select_available_turns(
@@ -372,7 +372,7 @@ class DataManager:
                 "No turns available after removing boundary turns. Check that each "
                 "bunch in the measurement data has more than one turn."
             )
-        LOGGER.info(
+        LOGGER.debug(
             "Removed %d boundary turns (turns_per_track=%d), %d available",
             sum(len(turns) for turns in self.boundary_turns_by_file.values()),
             self.tracking_plan.turns_per_track,
@@ -407,13 +407,13 @@ class DataManager:
         self.num_workers = len(self.turn_batches)
         training_turns = sum(len(batch) for batch in self.turn_batches)
         validation_used = sum(len(batch) for batch in self.validation_turn_batches)
-        LOGGER.info(
+        LOGGER.debug(
             "Created %d batches from %d files; up to %d workers each",
             self.num_workers,
             len(self.tracks),
             workers_per_batch,
         )
-        LOGGER.info(
+        LOGGER.debug(
             "Turn usage: %d training, %d held-out validation, %d unused of %d available",
             training_turns,
             validation_used,

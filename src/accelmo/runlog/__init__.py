@@ -8,6 +8,8 @@ Each fit (a *stage*) writes one directory::
         knobs.f64       raw float64 rows [step, knob_0, knob_1, ...], one per step;
                         the row with step -1 holds the starting knobs
         result.json     how the fit ended, written when it finishes
+        uncertainty.json  the uncertainty stage after the fit: fitted knobs, state
+                        (running/done/failed), progress, timing, the Hessian used
 
 Only the knobs are stored, not the optics they produce: anything derived from
 them (a twiss, a tune, a chromaticity) is recomputed from the knobs when needed,

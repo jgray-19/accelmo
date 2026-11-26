@@ -16,6 +16,19 @@ TAB = "\t"
 PYTHON_IN_MAD = "python"
 
 
+# One DA map per particle of every batch, at the starts in ``init_coords`` and ``init_pts``.
+PARTICLE_MAPS_SCRIPT = """
+da_x0_c = table.new(num_batches, 0)
+for i=1,num_batches do
+    da_x0_c[i] = table.new(batch_size, 0)
+    for j=1,batch_size do
+        da_x0_c[i][j] = da_x0_base:copy()
+        da_x0_c[i][j]:set0(init_coords[i][j])
+    end
+end
+"""
+
+
 def dump_debug_script(
     script_name: str,
     text: str,
@@ -371,4 +384,105 @@ reset_before_validation()
 {_track_call(x0="da_x0_c[batch]", atexit="save_val_data")}
 
 {_send_block(observables, include_derivatives=False)}
+"""
+
+
+def build_second_order_rebuild_script() -> str:
+    """Rebuild the base map, the knob strengths and every particle map at TPSA order 2.
+
+    The constant parts (knob values, start coordinates, ``pt``) carry over. The strengths take an
+    order-2 zero so functions of them keep their second derivatives (parameters are order 1).
+    """
+    return f"""! Generated second-order rebuild script
+local consts = table.new(num_batches, 0)
+for b=1,num_batches do
+    consts[b] = table.new(batch_size, 0)
+    for j=1,batch_size do consts[b][j] = da_x0_c[b][j]:get0() end
+end
+
+da_x0_base = damap{{nv=6, np=#knob_names, mo=2, po=2, pn=knob_names}}
+local zero = da_x0_base.x:same()
+for _, param in ipairs(knob_names) do
+    loaded_sequence[param] = loaded_sequence[param]:get0() + zero + da_x0_base[param]
+end
+{PARTICLE_MAPS_SCRIPT}
+for b=1,num_batches do
+    for j=1,batch_size do da_x0_c[b][j]:set0(consts[b][j]) end
+end
+collectgarbage()
+"""
+
+
+def build_second_order_script(observables: tuple[str, ...], *, optimise_energy: bool) -> str:
+    """Contract ``w r`` with the second derivatives of the observables over one batch.
+
+    ``wr_<o>`` (particles, points) arrive from Python. One TPSA per particle accumulates
+    ``Σ_points wr m``; only its second-order coefficients leave MAD. A coefficient is the Hessian
+    entry between two monomial positions: knobs are positions ``7..``, the energy ``pt`` is
+    position 6 when fitted and the starts are positions 1 to 4.
+    """
+    observables = _validate_observables(observables)
+    receive = _join_lines(_per_observable(observables, f"wr_{{o}} = {PYTHON_IN_MAD}:recv()"))
+    contract = _join_lines(
+        _per_observable(
+            observables,
+            "a:axpbypc(mflw[i].{o}, 1, wr_{o}:get(i, observe_count), 0, a)",
+            level=3,
+        )
+    )
+    energy = "kcols[#kcols + 1] = 6" if optimise_energy else ""
+    return f"""! Generated second-order contraction script
+local matrix in MAD
+{receive}
+
+local acc = table.new(batch_size, 0)
+for i=1,batch_size do acc[i] = da_x0_base.x:same() end
+
+observe_count = 1
+local function contract(elm, mflw, _, slc)
+    if is_observation_point(elm, slc) then
+        for i=1,batch_size do
+            local a = acc[i]
+{contract}
+        end
+        observe_count = observe_count + 1
+    end
+end
+{_track_call(x0="da_x0_c[batch]", atexit="contract")}
+
+local n = #knob_names
+local kcols = {{}}
+for p=1,n do kcols[p] = 6 + p end
+{energy}
+local nk = #kcols
+
+-- Hessian entry between monomial positions i and j: twice the coefficient on the diagonal
+local function entry(a, i, j)
+    local digits = {{}}
+    for k=1,6 + n do digits[k] = '0' end
+    digits[i], digits[j] = '1', '1'
+    if i == j then digits[i] = '2' end
+    local v = a:get(table.concat(digits))
+    return i == j and 2 * v or v
+end
+
+local total = acc[1]:copy()
+for i=2,batch_size do total:axpbypc(acc[i], 1, 1, 0, total) end
+local rkk = matrix(nk, nk)
+for p=1,nk do
+    for q=p,nk do
+        local v = entry(total, kcols[p], kcols[q])
+        rkk:set(p, q, v) ; rkk:set(q, p, v)
+    end
+end
+local rks, rss = matrix(batch_size * nk, 4), matrix(batch_size * 4, 4)
+for i=1,batch_size do
+    for c=1,4 do
+        for p=1,nk do rks:set((i - 1) * nk + p, c, entry(acc[i], kcols[p], c)) end
+        for d=1,4 do rss:set((i - 1) * 4 + c, d, entry(acc[i], c, d)) end
+    end
+end
+{PYTHON_IN_MAD}:send(rkk)
+{PYTHON_IN_MAD}:send(rks)
+{PYTHON_IN_MAD}:send(rss)
 """

@@ -174,7 +174,7 @@ class MachineSetup:
         range_label = (
             "full cycled sequence ($start/$end)" if magnet_range == "$start/$end" else magnet_range
         )
-        LOGGER.info(
+        LOGGER.debug(
             "Total BPMs in model: %d, BPMs in configured observation range %s: %d",
             len(self.all_bpms),
             range_label,
@@ -213,7 +213,7 @@ class MachineSetup:
                     + ", ".join(invalid[:10])
                     + ("..." if len(invalid) > 10 else "")
                 )
-            LOGGER.info("Using provided initial knob strengths from previous optimisation")
+            LOGGER.debug("Using provided initial knob strengths from previous optimisation")
             self.initial_model_values.update(
                 {k: v for k, v in provided.items() if k in knob_name_set}
             )

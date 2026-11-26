@@ -17,7 +17,7 @@ from multiprocessing.reduction import ForkingPickler
 from typing import TYPE_CHECKING, Any, NoReturn, cast
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Callable, Iterable
     from multiprocessing import Process
     from multiprocessing.connection import Connection
 
@@ -76,9 +76,9 @@ class UpdateInitCoords:
 
 @dataclass(frozen=True)
 class SetUncertaintyMode:
-    """Whether to propagate uncertainty on :class:`Stop`."""
+    """The Hessians (``"true"``, ``"gauss_newton"``) to compute on :class:`Stop`; none disables it."""
 
-    enabled: bool
+    hessians: tuple[str, ...]
 
 
 #: Control commands a tracking worker answers between evaluations with an :class:`Ack`
@@ -127,6 +127,13 @@ class LossReply:
 @dataclass(frozen=True)
 class Ack:
     """A control command was applied."""
+
+    worker_id: int
+
+
+@dataclass(frozen=True)
+class UncertaintyProgress:
+    """One more batch of the second-order pass is done; sent before the final reply."""
 
     worker_id: int
 
@@ -193,19 +200,33 @@ class WorkerChannels:
         """Send one message to the worker at ``index``."""
         self.parent_conns[index].send(message)
 
-    def recv_all(self) -> list[Any]:
+    def recv_all(
+        self, on_progress: Callable[[UncertaintyProgress], None] | None = None
+    ) -> list[Any]:
         """Receive one message from each worker, preserving connection order."""
-        return self.recv_some(range(self._count))
+        return self.recv_some(range(self._count), on_progress)
 
-    def recv_some(self, indices: Iterable[int]) -> list[Any]:
-        """Receive one message from each listed worker, in the order of ``indices``."""
+    def recv_some(
+        self,
+        indices: Iterable[int],
+        on_progress: Callable[[UncertaintyProgress], None] | None = None,
+    ) -> list[Any]:
+        """Receive one message from each listed worker, in the order of ``indices``.
+
+        :class:`UncertaintyProgress` messages are passed to ``on_progress`` and are not replies.
+        """
         indices = list(indices)
         if not indices:
             return []
         if len(indices) == 1:
             conn = self.parent_conns[indices[0]]
-            wait([conn])
-            return [self._recv(conn, self.workers[indices[0]])]
+            while True:
+                wait([conn])
+                payload = self._recv(conn, self.workers[indices[0]])
+                if not isinstance(payload, UncertaintyProgress):
+                    return [payload]
+                if on_progress is not None:
+                    on_progress(payload)
 
         position = {
             self.parent_conns[i]: k for k, i in enumerate(indices)
@@ -219,7 +240,12 @@ class WorkerChannels:
                 k = position[conn]
                 if seen[k]:
                     continue
-                results[k] = self._recv(conn, self.workers[indices[k]])
+                payload = self._recv(conn, self.workers[indices[k]])
+                if isinstance(payload, UncertaintyProgress):
+                    if on_progress is not None:
+                        on_progress(payload)
+                    continue
+                results[k] = payload
                 seen[k] = 1
                 remaining -= 1
 

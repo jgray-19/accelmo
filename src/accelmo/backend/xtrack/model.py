@@ -183,7 +183,7 @@ class XtrackModel:
                     continue
                 self._install_knob(name, spec.kind, knob)
                 self.knob_names.append(knob)
-        LOGGER.info("xtrack backend: created %d knobs", len(self.knob_names))
+        LOGGER.debug("xtrack backend: created %d knobs", len(self.knob_names))
 
     @staticmethod
     def _strength(element, attribute: str) -> float:

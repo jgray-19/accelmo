@@ -21,7 +21,10 @@ from accelmo.backend.madng.interface import MadInterface
 from accelmo.backend.madng.machine_state import get_vars, set_vars
 from accelmo.backend.madng.scripts import (
     CLOSED_TWISS_INIT,
+    PARTICLE_MAPS_SCRIPT,
     PYTHON_IN_MAD,
+    build_second_order_rebuild_script,
+    build_second_order_script,
     build_track_speedup_script,
     build_tracking_init_script,
     build_tracking_preflight_script,
@@ -31,7 +34,7 @@ from accelmo.backend.madng.scripts import (
     build_zero_field_removal_script,
     dump_debug_script,
 )
-from accelmo.backend.protocol import ClosedSolution, TrackResult
+from accelmo.backend.protocol import ClosedSolution, SecondOrderBlocks, TrackResult
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -150,6 +153,7 @@ class TrackingEngine:
         mad["batch_size"] = plan.batch_size
         mad["num_batches"] = plan.num_batches
         mad["optimise_energy"] = accelerator.optimise_energy
+        self.optimise_energy = accelerator.optimise_energy
         mad["tracking_range"] = plan.geometry.tracking_range
         mad["n_run_turns"] = plan.geometry.n_turns
         if accelerator.has_ac_kickers:
@@ -223,16 +227,7 @@ init_coords = python:recv()
 init_pts = python:recv()
 """)
         mad.send(init_coords).send(init_pts)
-        mad.send("""
-da_x0_c = table.new(num_batches, 0)
-for i=1,num_batches do
-    da_x0_c[i] = table.new(batch_size, 0)
-    for j=1,batch_size do
-        da_x0_c[i][j] = da_x0_base:copy()
-        da_x0_c[i][j]:set0(init_coords[i][j])
-    end
-end
-""")
+        mad.send(PARTICLE_MAPS_SCRIPT)
         mad.send(self._init_script)
 
     def set_pts(self, pt: float, first_batch: int, last_batch: int) -> None:
@@ -300,6 +295,25 @@ end
             {o: np.stack(mad.recv(), axis=0) for o in observables} if start_derivatives else None
         )
         return TrackResult(obs, d_dk, d_dc0, int(loss_info["n_lost"]), int(loss_info["n_total"]))
+
+    def begin_second_order(self) -> None:
+        """See :meth:`accelmo.backend.protocol.TrackingEngine.begin_second_order`."""
+        self.session.mad.send(build_second_order_rebuild_script())
+
+    def second_order(
+        self, batch: int, weighted_residuals: dict[str, np.ndarray]
+    ) -> SecondOrderBlocks:
+        """See :meth:`accelmo.backend.protocol.TrackingEngine.second_order`."""
+        mad = self.session.mad
+        observables = self.plan.observables
+        mad.send(f"batch = {batch + 1}")
+        mad.send(build_second_order_script(observables, optimise_energy=self.optimise_energy))
+        for observable in observables:
+            mad.send(np.ascontiguousarray(weighted_residuals[observable], dtype=np.float64))
+        knob_knob = np.asarray(mad.recv())
+        knob_start = np.asarray(mad.recv()).reshape(-1, len(knob_knob), 4)
+        start_start = np.asarray(mad.recv()).reshape(-1, 4, 4)
+        return SecondOrderBlocks(knob_knob, knob_start, start_start)
 
     def close(self) -> None:
         """Close the MAD-NG process."""

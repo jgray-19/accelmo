@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 import numpy as np
 
+from accelmo.dashboard import FitDashboard
 from accelmo.fitting.lifecycle import run_with_workers
 from accelmo.fitting.lm_loop import LMPoint, LMProblem, run_levenberg_marquardt
 from accelmo.fitting.pool import WorkerPool
@@ -17,6 +19,7 @@ from accelmo.fitting.results import FitDiagnostics, FitResult
 from accelmo.fitting.setup import MachineSetup
 from accelmo.fitting.uncertainty import hessian_uncertainties, warn_if_singular
 from accelmo.fitting.worker import WorkerConfig
+from accelmo.fitting.worker_logging import WORKER_LOG_PATH
 from accelmo.optimisers.levenberg_marquardt import LevenbergMarquardtConfig
 from accelmo.poco.workers.closed_twiss import Observable, ObservableKind
 
@@ -189,14 +192,18 @@ class LMFitter:
         self.history: list[tuple[dict[str, float], float]] = []
         #: Posterior inverse covariance (data + prior) at the best knobs of the last run, in knob order.
         self.posterior_normal: np.ndarray | None = None
-        self.machine = MachineSetup(
-            accelerator,
-            sequence_config,
-            output_config=output_config,
-            initial_knob_strengths=initial_knob_strengths,
-            true_strengths=true_strengths,
-            debug=debug,
-        )
+        self.dashboard = FitDashboard(self.fit_label)
+        self.dashboard.skip("data")
+        self.dashboard.skip("uncertainty")
+        with self.dashboard.phase("model"):
+            self.machine = MachineSetup(
+                accelerator,
+                sequence_config,
+                output_config=output_config,
+                initial_knob_strengths=initial_knob_strengths,
+                true_strengths=true_strengths,
+                debug=debug,
+            )
         self.worker_payloads: list = []
         self.runtime = runtime
         self.debug = debug
@@ -216,23 +223,43 @@ class LMFitter:
     def run(self) -> FitResult:
         """Run the Levenberg-Marquardt fit on one worker per payload."""
         run_log = self.machine.make_run_log(self.log_suffix)
+        if run_log is not None:
+            self.worker_payloads = [
+                (
+                    replace(
+                        config,
+                        python_logfile=config.python_logfile or run_log.directory / WORKER_LOG_PATH,
+                    ),
+                    data,
+                )
+                for config, data in self.worker_payloads
+            ]
         pool = WorkerPool()
         knob_names = list(self.machine.knob_names)
         initial_knobs = self.machine.initial_knobs
 
+        if run_log is not None:
+            self.dashboard.run_log_path = run_log.directory
+
         def body() -> tuple[dict[str, float], np.ndarray | None]:
-            for worker_id, (config, data) in enumerate(self.worker_payloads):
-                pool.spawn(self.worker_class, worker_id, data, config, self.runtime).send(
-                    Start(dict(initial_knobs))
-                )
+            with self.dashboard.phase("workers"):
+                for worker_id, (config, data) in enumerate(self.worker_payloads):
+                    pool.spawn(self.worker_class, worker_id, data, config, self.runtime).send(
+                        Start(dict(initial_knobs))
+                    )
+            self.dashboard.fact("workers", len(self.worker_payloads))
+            self.dashboard.fact("knobs", len(knob_names))
             return self._solve(pool.channels, run_log)
 
-        knobs, normal_matrix = run_with_workers(
-            body,
-            fallback=lambda: (dict(initial_knobs), None),
-            stop_workers=pool.stop,
-            run_log=run_log,
-        )
+        try:
+            knobs, normal_matrix = run_with_workers(
+                body,
+                fallback=lambda: (dict(initial_knobs), None),
+                stop_workers=pool.stop,
+                run_log=run_log,
+            )
+        finally:
+            self.dashboard.close()
         logger.info("%s optimisation complete.", self.fit_label)
         self.posterior_normal = normal_matrix
         if not self.machine.output_config.include_uncertainty:
@@ -293,12 +320,34 @@ class LMFitter:
             self.history,
             loss_only_trials=self.loss_only_trials and not self.machine.accelerator.optimise_energy,
         )
+        self.begin_dashboard_fit(knob_names, initial)
         optimiser, self.diagnostics = run_levenberg_marquardt(
-            initial, problem, self.lm_config, run_log=run_log, param_names=knob_names
+            initial,
+            problem,
+            self.lm_config,
+            run_log=run_log,
+            param_names=knob_names,
+            dashboard=self.dashboard,
         )
         # Half the chi² Hessian (prior included) at the best point is the posterior inverse covariance.
         hessian = optimiser.best_hessian
         return problem.knobs(optimiser.best.value), None if hessian is None else 0.5 * hessian
+
+    def begin_dashboard_fit(
+        self, param_names: list[str], initial: np.ndarray, gain_names: list[str] | None = None
+    ) -> None:
+        """Start the dashboard's fit stage for parameters ``param_names`` starting at ``initial``."""
+        self.dashboard.begin_fit(
+            max_epochs=self.lm_config.max_iterations,
+            n_points=None,
+            n_params=len(param_names),
+            start_knobs=dict(zip(param_names, initial.tolist(), strict=True)),
+            knob_sigmas=dict(zip(self.machine.knob_names, self.knob_sigma, strict=True)),
+            gain_names=gain_names or [],
+            loss_is_total=True,
+            unit="iter",
+            rate_name="λ",
+        )
 
     def _evaluate_workers(
         self, channels, knobs: dict[str, float], *, loss_only: bool = False

@@ -84,9 +84,7 @@ def _reported_sigma(ctrl: ArcByArcFitter, true_knobs: dict[str, float]) -> float
     ctrl.start_session({**ctrl.machine.initial_model_values, **true_knobs}, enable_validation=False)
     knob_names = list(ctrl.machine.knob_names)
     ctrl.session.set_training_knobs(true_knobs)
-    normal, noise = ctrl.session.stop_and_collect_uncertainty(
-        len(knob_names), propagate_uncertainty=True
-    )
+    normal, noise = ctrl.session.stop_and_collect_uncertainty(len(knob_names)).primary
     return float(sandwich_uncertainties(normal, noise)[knob_names.index("pt")])
 
 

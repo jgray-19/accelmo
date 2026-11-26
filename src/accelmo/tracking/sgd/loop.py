@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from accelmo.config import OptimiserConfig
+    from accelmo.dashboard import FitDashboard
     from accelmo.fitting.protocol import WorkerChannels
     from accelmo.runlog import RunLog
     from accelmo.tracking.config.models import CheckpointConfig
@@ -47,7 +48,6 @@ class EpochState:
     true_diff: float = 0.0
     validation_loss: float | None = None
     new_best: bool = False
-    saved_checkpoint: bool = False
     #: Whatever the epoch-end hook returned, appended to the log line.
     note: str | None = None
 
@@ -85,7 +85,6 @@ class SGDLoop:
         self.diagnostics: FitDiagnostics | None = None
         optimiser_cls = OPTIMISERS[config.optimiser_type]
         self.optimiser = optimiser_cls(**optimiser_cls.config_kwargs(config, len(knob_names)))
-        LOGGER.info("Using optimiser: %s", type(self.optimiser).__name__)
         self.scheduler = LRScheduler(
             warmup_epochs=config.warmup_epochs,
             decay_epochs=config.decay_epochs,
@@ -101,6 +100,7 @@ class SGDLoop:
         *,
         n_points: int,
         run_log: RunLog | None = None,
+        dashboard: FitDashboard | None = None,
         checkpoint_config: CheckpointConfig | None = None,
         validation_loss_fn: Callable[[dict[str, float]], float | None] | None = None,
         loss_callback: Callable[[int, float, float | None, float, float], None] | None = None,
@@ -117,13 +117,12 @@ class SGDLoop:
         optimiser: after every batch each is set to its least-squares value given the
         current magnets, ``Σ w m (y - m) / (Σ w m² + gain_ridge / num_batches)``, from
         the sums the workers return; ``gain_ridge`` is the prior's ``1/σ²`` in the
-        same units.
+        same units. ``dashboard`` is redrawn after every epoch.
         """
         self.gain_names = list(gain_names or [])
         self.gain_ridge = gain_ridge
         if self.gain_names:
             knobs = {**knobs, **{k: knobs.get(k, 0.0) for k in self.gain_names}}
-        run_start = time.time()
         checkpointer = OptimisationCheckpointer(self, checkpoint_config)
 
         if knobs.get("pt") == 0.0:
@@ -142,11 +141,6 @@ class SGDLoop:
                 prev_loss = None
                 self.best = BestTracker(value={})
                 self.smoothed_loss_change = 0.0
-            LOGGER.info(
-                "Restored optimisation checkpoint from %s at epoch %d",
-                checkpointer.path,
-                checkpoint_state["saved_epoch"],
-            )
 
         if run_log is not None:
             run_log.begin(knobs, resume_step=start_epoch if checkpointer.restore else None)
@@ -170,25 +164,20 @@ class SGDLoop:
             last_completed_epoch = epoch
             if stop is None and checkpointer.should_save_periodic(epoch):
                 checkpointer.save(epoch, knobs, prev_loss)
-                state.saved_checkpoint = True
 
-            self._log_epoch(state, run_start, run_log)
+            self._log_epoch(state, run_log, dashboard)
             if loss_callback is not None:
                 loss_callback(
                     epoch, state.loss, state.validation_loss, state.grad_norm, state.true_diff
                 )
             if stop is not None:
-                LOGGER.info(
-                    "\nStopping early at epoch %d (%s): smoothed loss change %.3e.",
-                    epoch,
-                    stop,
-                    self.smoothed_loss_change,
-                )
                 stop_reason = stop
                 break
 
         if checkpointer.should_save_final(last_completed_epoch):
             checkpointer.save(last_completed_epoch, knobs, prev_loss)
+        if dashboard is not None:
+            dashboard.finish(stop_reason)
         self.diagnostics = FitDiagnostics(
             converged=stop_reason != "max_epochs",
             reason=stop_reason,
@@ -295,9 +284,11 @@ class SGDLoop:
             return sum(knobs.values())
         return np.sum([abs(knobs[k] - v) for k, v in self.true_strengths.items()])
 
-    def _log_epoch(self, state: EpochState, run_start: float, run_log: RunLog | None) -> None:
-        """Log the epoch to the console and the run log."""
-        now = time.time()
+    def _log_epoch(
+        self, state: EpochState, run_log: RunLog | None, dashboard: FitDashboard | None
+    ) -> None:
+        """Record the epoch in the run log and on the dashboard."""
+        epoch_time = time.time() - state.started
         if run_log is not None:
             run_log.log(
                 state.epoch,
@@ -306,22 +297,20 @@ class SGDLoop:
                 grad_norm=state.grad_norm,
                 learning_rate=state.lr,
                 true_diff=float(state.true_diff),
-                epoch_time=now - state.started,
+                epoch_time=epoch_time,
                 new_best=state.new_best,
             )
             run_log.record_knobs(state.epoch, state.knobs)
-
-        parts = [f"Ep {state.epoch}: loss={state.loss:.3e}"]
-        if state.validation_loss is not None:
-            parts.append(f"val={state.validation_loss:.3e}")
-        parts.append(f"g={state.grad_norm:.3e}")
-        parts.append(f"td={state.true_diff:.3e}")
-        if state.note:
-            parts.append(state.note)
-        parts.append(f"lr={state.lr:.2e}, et={now - state.started:.1f}s, tt={now - run_start:.1f}s")
-        message = ", ".join(parts)
-        if state.new_best:
-            message += " [b]"
-        if state.saved_checkpoint:
-            message += " [s]"
-        LOGGER.info("\r%s", message)
+        if dashboard is not None:
+            dashboard.update(
+                epoch=state.epoch,
+                loss=state.loss,
+                validation_loss=state.validation_loss,
+                grad_norm=state.grad_norm,
+                lr=state.lr,
+                epoch_time=epoch_time,
+                true_diff=float(state.true_diff),
+                knobs=state.knobs,
+                new_best=state.new_best,
+                note=state.note,
+            )

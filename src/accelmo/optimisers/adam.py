@@ -88,7 +88,7 @@ class AdamOptimiser(BaseOptimiser):
         """
         self.t += 1
 
-        LOGGER.debug(f"Adam step {self.t}: lr={lr}, weight_decay={self.weight_decay}")
+        LOGGER.debug("Adam step %d: lr=%s, weight_decay=%s", self.t, lr, self.weight_decay)
 
         grads = self.with_weight_decay(grads, params, self.weight_decay)
 
@@ -105,7 +105,7 @@ class AdamOptimiser(BaseOptimiser):
 
         new_params = params - update
         update_norm = np.linalg.norm(update)
-        LOGGER.debug(f"Update norm: {update_norm:.6e}")
+        LOGGER.debug("Update norm: %.6e", update_norm)
 
         return new_params
 

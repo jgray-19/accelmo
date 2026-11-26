@@ -211,7 +211,7 @@ class ClosedOrbitFitter(LMFitter):
             )
         cap = limit if max_workers is None else min(max_workers, limit)
         count = max(1, min(n_series, cap))
-        LOGGER.info(
+        LOGGER.debug(
             "%d series on %d worker(s); machine limit %d (%s)", n_series, count, limit, limited_by
         )
         return count
@@ -244,7 +244,7 @@ class ClosedOrbitFitter(LMFitter):
             data.shared_reference = True
         grouped = [*grouped, (config, [reference])]
         self._reference_worker = len(grouped) - 1
-        LOGGER.info(
+        LOGGER.debug(
             "Reference orbit solved once by worker %d for %d series",
             self._reference_worker,
             len(needing),
@@ -271,7 +271,7 @@ class ClosedOrbitFitter(LMFitter):
             return [(config, [data]) for config, data in payloads]
         costs = [len(item.measurements) for item in self.series]
         groups = distribute(costs, self.n_workers)
-        LOGGER.info(
+        LOGGER.debug(
             "Series per worker %s, momenta per worker %s",
             [len(group) for group in groups],
             [sum(costs[i] for i in group) for group in groups],

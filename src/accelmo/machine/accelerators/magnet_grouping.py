@@ -136,7 +136,7 @@ def normalise_lhcbend_magnets(
         if not matched:
             normalised[key] = value
 
-    LOGGER.info("Normalised %d sbends and %d rbends.", counts["sbend"], counts["rbend"])
+    LOGGER.debug("Normalised %d sbends and %d rbends.", counts["sbend"], counts["rbend"])
 
     def length_weighted_average(k_list: list[tuple[float, float]]) -> float:
         total_length = sum(length for _, length in k_list)

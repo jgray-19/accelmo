@@ -223,6 +223,17 @@ class TrackingEngine:
         )
         return TrackResult(obs, d_dk, d_dc0, n_lost, len(coords))
 
+    def begin_second_order(self) -> None:
+        """Second derivatives need MAD-NG's order-2 TPSA."""
+        raise NotImplementedError(
+            "the xtrack backend has no second derivatives: set "
+            "TrackingParameters(uncertainty_hessian='gauss_newton')"
+        )
+
+    def second_order(self, batch, weighted_residuals):
+        """See :meth:`begin_second_order`."""
+        self.begin_second_order()
+
     def close(self) -> None:
         """Release the line."""
         self.model.close()
@@ -248,7 +259,7 @@ class ClosedOrbitEngine:
         if optics_names:
             raise NotImplementedError("xtrack backend: closed orbit only (no optics)")
         self.model = _model(config, init_knobs)
-        LOGGER.info(
+        LOGGER.debug(
             "xtrack backend: %d zero-field magnets removed", self.model.remove_zero_field_magnets()
         )
         for configure in (
